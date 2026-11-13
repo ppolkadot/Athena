@@ -61,7 +61,7 @@ fn month_card(
 
     let left = rect.left() + 16.0;
     let title = month_name(vm.language(), entry.month.month);
-    let title_font = FontId::new(typography::SECTION, egui::FontFamily::Proportional);
+    let title_font = typography::section_font();
     let title_color = if is_current { p.accent } else { p.text };
     painter.text(
         egui::pos2(left, rect.top() + 14.0),

@@ -77,7 +77,7 @@ pub fn money_font() -> FontId {
     tabular_font(BODY)
 }
 
-/// Apply the size scale to a style.
+/// Apply the size scale and family mapping to a style.
 pub fn apply_text_styles(style: &mut Style) {
     style.text_styles = [
         (
@@ -85,20 +85,11 @@ pub fn apply_text_styles(style: &mut Style) {
             FontId::new(SECONDARY, FontFamily::Proportional),
         ),
         (TextStyle::Body, FontId::new(BODY, FontFamily::Proportional)),
-        (
-            TextStyle::Button,
-            FontId::new(BODY, FontFamily::Proportional),
-        ),
-        (
-            TextStyle::Heading,
-            FontId::new(HEADING, FontFamily::Proportional),
-        ),
-        (
-            TextStyle::Monospace,
-            FontId::new(BODY, FontFamily::Monospace),
-        ),
-        (section(), FontId::new(SECTION, FontFamily::Proportional)),
-        (display(), FontId::new(DISPLAY, FontFamily::Proportional)),
+        (TextStyle::Button, FontId::new(BODY, medium_family())),
+        (TextStyle::Heading, FontId::new(HEADING, display_family())),
+        (TextStyle::Monospace, tabular_font(BODY)),
+        (section(), section_font()),
+        (display(), FontId::new(DISPLAY, display_family())),
     ]
     .into();
 }
@@ -310,5 +301,34 @@ mod tests {
         assert!((style.text_styles[&section()].size - 20.0).abs() < f32::EPSILON);
         assert!((style.text_styles[&TextStyle::Heading].size - 28.0).abs() < f32::EPSILON);
         assert!((style.text_styles[&display()].size - 34.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn text_styles_use_the_polaris_families() {
+        let mut style = Style::default();
+        apply_text_styles(&mut style);
+        assert_eq!(
+            style.text_styles[&TextStyle::Body].family,
+            FontFamily::Proportional
+        );
+        assert_eq!(
+            style.text_styles[&TextStyle::Small].family,
+            FontFamily::Proportional
+        );
+        assert_eq!(
+            style.text_styles[&TextStyle::Button].family,
+            medium_family()
+        );
+        assert_eq!(
+            style.text_styles[&TextStyle::Heading].family,
+            display_family()
+        );
+        assert_eq!(style.text_styles[&section()].family, display_family());
+        assert_eq!(style.text_styles[&display()].family, display_family());
+        assert_eq!(
+            style.text_styles[&TextStyle::Monospace].family,
+            FontFamily::Monospace
+        );
+        assert_eq!(section_font().family, display_family());
     }
 }

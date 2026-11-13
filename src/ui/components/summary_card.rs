@@ -75,10 +75,7 @@ pub fn show(
             );
             ui.label(
                 RichText::new(value)
-                    .font(egui::FontId::new(
-                        typography::SECTION,
-                        egui::FontFamily::Monospace,
-                    ))
+                    .font(typography::tabular_font(typography::SECTION))
                     .strong()
                     .color(color),
             );
