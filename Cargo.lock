@@ -393,6 +393,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ttf-parser",
  "unicode-normalization",
  "winresource",
 ]
