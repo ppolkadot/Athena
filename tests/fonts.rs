@@ -5,13 +5,15 @@ use ttf_parser::{Face, name_id};
 const REGULAR: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Regular.otf");
 const MEDIUM: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Medium.otf");
 const SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Semibold.otf");
+const BOLD: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Bold.otf");
 const TABULAR: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Tabular.otf");
 const LICENSE: &str = include_str!("../assets/fonts/LICENSE.txt");
 
-const FACES: [(&str, &[u8]); 4] = [
+const FACES: [(&str, &[u8]); 5] = [
     ("Regular", REGULAR),
     ("Medium", MEDIUM),
     ("Semibold", SEMIBOLD),
+    ("Bold", BOLD),
     ("Tabular", TABULAR),
 ];
 
@@ -83,14 +85,16 @@ fn tabular_digits_share_one_advance() {
         "tabular digits differ: {widths:?}"
     );
 
-    let regular = Face::parse(REGULAR, 0).unwrap();
-    let mut proportional = digit_widths(&regular);
-    proportional.sort_unstable();
-    proportional.dedup();
-    assert!(
-        proportional.len() > 1,
-        "Regular digits should stay proportional"
-    );
+    for (label, bytes) in [("Regular", REGULAR), ("Semibold", SEMIBOLD), ("Bold", BOLD)] {
+        let face = Face::parse(bytes, 0).unwrap();
+        let mut proportional = digit_widths(&face);
+        proportional.sort_unstable();
+        proportional.dedup();
+        assert!(
+            proportional.len() > 1,
+            "{label} digits should stay proportional"
+        );
+    }
 }
 
 #[test]

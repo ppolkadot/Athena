@@ -101,11 +101,18 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, tx: &Transaction) -> Option<RowAc
                     // Drawn, not typed, so it never depends on a font having the glyph.
                     let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                     ui.painter().circle_filled(dot_rect.center(), 4.0, dot);
-                    ui.label(
-                        RichText::new(&category.name)
-                            .text_style(egui::TextStyle::Small)
-                            .color(p.muted),
-                    );
+                    ui.scope(|ui| {
+                        ui.set_max_width((ui.available_width() - 260.0).max(60.0));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&category.name)
+                                    .text_style(egui::TextStyle::Small)
+                                    .color(p.muted),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&category.name);
+                    });
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let ghost = |ui: &mut egui::Ui, text: &str, name: &str, danger: bool| {

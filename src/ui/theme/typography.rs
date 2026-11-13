@@ -1,6 +1,6 @@
 //! Embedded Salted Flutters Polaris subsets, with Windows fonts as glyph fallbacks.
-//! Body uses Regular, buttons use Medium, and headings use Semibold. Money and table
-//! dates use the frozen-tabular Regular face.
+//! Main UI text and buttons use Semibold, and titles (section, heading, display) use Bold.
+//! Money and table dates use the frozen-tabular Semibold face.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,6 +16,7 @@ pub const DISPLAY: f32 = 34.0;
 const POLARIS_REGULAR: &str = "athena-polaris-regular";
 const POLARIS_MEDIUM: &str = "athena-polaris-medium";
 const POLARIS_SEMIBOLD: &str = "athena-polaris-semibold";
+const POLARIS_BOLD: &str = "athena-polaris-bold";
 const POLARIS_TABULAR: &str = "athena-polaris-tabular";
 const POLARIS_DISPLAY: &str = "athena-polaris-display";
 const POLARIS_UI_MEDIUM: &str = "athena-polaris-ui-medium";
@@ -23,6 +24,7 @@ const POLARIS_UI_MEDIUM: &str = "athena-polaris-ui-medium";
 const REGULAR_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Regular.otf");
 const MEDIUM_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Medium.otf");
 const SEMIBOLD_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Semibold.otf");
+const BOLD_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Bold.otf");
 const TABULAR_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Tabular.otf");
 
 const SEGOE: (&str, &str) = ("segoeui", "segoeui.ttf");
@@ -34,13 +36,13 @@ fn named_family(name: &str) -> FontFamily {
     FontFamily::Name(name.into())
 }
 
-/// Semibold family for section titles, headings, and display text.
+/// Bold family for section titles, headings, and display text.
 #[must_use]
 pub fn display_family() -> FontFamily {
     named_family(POLARIS_DISPLAY)
 }
 
-/// Medium family for buttons and primary controls.
+/// Semibold family for buttons and primary controls.
 #[must_use]
 pub fn medium_family() -> FontFamily {
     named_family(POLARIS_UI_MEDIUM)
@@ -52,7 +54,7 @@ pub fn tabular_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
-/// `FontId` for 20 px section titles with the Semibold face.
+/// `FontId` for 20 px section titles with the Bold face.
 #[must_use]
 pub fn section_font() -> FontId {
     FontId::new(SECTION, display_family())
@@ -106,6 +108,7 @@ fn embedded_definitions() -> FontDefinitions {
         (POLARIS_REGULAR, REGULAR_BYTES),
         (POLARIS_MEDIUM, MEDIUM_BYTES),
         (POLARIS_SEMIBOLD, SEMIBOLD_BYTES),
+        (POLARIS_BOLD, BOLD_BYTES),
         (POLARIS_TABULAR, TABULAR_BYTES),
     ] {
         defs.font_data
@@ -114,7 +117,7 @@ fn embedded_definitions() -> FontDefinitions {
     defs.families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, POLARIS_REGULAR.to_owned());
+        .insert(0, POLARIS_SEMIBOLD.to_owned());
     defs.families
         .entry(FontFamily::Monospace)
         .or_default()
@@ -129,14 +132,17 @@ fn add_custom_families(defs: &mut FontDefinitions) {
         .cloned()
         .unwrap_or_default();
     for (family, weight) in [
-        (POLARIS_DISPLAY, POLARIS_SEMIBOLD),
-        (POLARIS_UI_MEDIUM, POLARIS_MEDIUM),
+        (POLARIS_DISPLAY, POLARIS_BOLD),
+        (POLARIS_UI_MEDIUM, POLARIS_SEMIBOLD),
     ] {
-        let mut chain = vec![weight.to_owned(), POLARIS_REGULAR.to_owned()];
+        let mut chain = vec![weight.to_owned()];
+        if weight != POLARIS_SEMIBOLD {
+            chain.push(POLARIS_SEMIBOLD.to_owned());
+        }
         chain.extend(
             fallback
                 .iter()
-                .filter(|name| name.as_str() != POLARIS_REGULAR)
+                .filter(|name| name.as_str() != POLARIS_SEMIBOLD)
                 .cloned(),
         );
         defs.families.insert(named_family(family), chain);
@@ -213,7 +219,7 @@ mod tests {
         std::fs::write(dir.path().join("consola.ttf"), b"not a real font").unwrap();
         let defs = font_definitions(dir.path());
         let proportional = &defs.families[&FontFamily::Proportional];
-        assert_eq!(proportional[0], POLARIS_REGULAR);
+        assert_eq!(proportional[0], POLARIS_SEMIBOLD);
         assert_eq!(proportional[1], SEGOE.0);
         assert_eq!(proportional[2], SEGOE_SYMBOLS.0);
         let monospace = &defs.families[&FontFamily::Monospace];
@@ -225,15 +231,18 @@ mod tests {
     fn missing_system_fonts_keep_polaris_primary() {
         let dir = tempfile::tempdir().unwrap();
         let defs = font_definitions(dir.path());
-        assert_eq!(defs.families[&FontFamily::Proportional][0], POLARIS_REGULAR);
+        assert_eq!(
+            defs.families[&FontFamily::Proportional][0],
+            POLARIS_SEMIBOLD
+        );
         assert_eq!(defs.families[&FontFamily::Monospace][0], POLARIS_TABULAR);
     }
 
     #[test]
     fn custom_families_start_with_the_right_weight() {
         let defs = test_font_definitions();
-        assert_eq!(defs.families[&display_family()][0], POLARIS_SEMIBOLD);
-        assert_eq!(defs.families[&medium_family()][0], POLARIS_MEDIUM);
+        assert_eq!(defs.families[&display_family()][0], POLARIS_BOLD);
+        assert_eq!(defs.families[&medium_family()][0], POLARIS_SEMIBOLD);
     }
 
     #[test]
@@ -265,15 +274,17 @@ mod tests {
         );
 
         let proportional = FontId::new(BODY, FontFamily::Proportional);
-        let regular: Vec<f32> = ctx.fonts_mut(|fonts| {
+        let proportional_widths: Vec<f32> = ctx.fonts_mut(|fonts| {
             "0123456789"
                 .chars()
                 .map(|ch| fonts.glyph_width(&proportional, ch))
                 .collect()
         });
         assert!(
-            regular.iter().any(|width| (width - regular[0]).abs() > 1.0),
-            "Regular digits should stay proportional: {regular:?}"
+            proportional_widths
+                .iter()
+                .any(|width| (width - proportional_widths[0]).abs() > 1.0),
+            "Proportional digits should stay proportional: {proportional_widths:?}"
         );
     }
 
@@ -284,12 +295,15 @@ mod tests {
             std::fs::write(dir.path().join(file), b"not a real font").unwrap();
         }
         let proportional = &font_definitions(dir.path()).families[&FontFamily::Proportional];
-        assert_eq!(&proportional[..3], [POLARIS_REGULAR, "segoeui", "seguisym"]);
+        assert_eq!(
+            &proportional[..3],
+            [POLARIS_SEMIBOLD, "segoeui", "seguisym"]
+        );
         let only_symbols = tempfile::tempdir().unwrap();
         std::fs::write(only_symbols.path().join("seguisym.ttf"), b"x").unwrap();
         let only_proportional =
             &font_definitions(only_symbols.path()).families[&FontFamily::Proportional];
-        assert_eq!(&only_proportional[..2], [POLARIS_REGULAR, "seguisym"]);
+        assert_eq!(&only_proportional[..2], [POLARIS_SEMIBOLD, "seguisym"]);
     }
 
     #[test]

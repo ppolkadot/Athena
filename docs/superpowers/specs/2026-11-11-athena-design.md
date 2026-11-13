@@ -101,7 +101,7 @@ Success is emotional and practical: opening Athena feels light, logging takes se
 - **Payment method.** Not stored. Added later only with a feature that reads it, as a fixed list.
 - **Portable mode.** If `athena.portable` sits next to the exe, data lives in `<exe dir>\data\`; otherwise `%APPDATA%\Athena\`.
 - **JSON import.** Moved to 1.1 so the JSON export is a verifiable restore path.
-- **Theme.** Dark default with a near-black canvas (`#050608`), light available as a full peer theme. Since 1.0.1, Athena embeds Salted Flutters Polaris subsets: Regular for text, Medium for buttons, Semibold for section/heading/display, and Tabular for money and dates. Segoe UI and Segoe UI Symbol remain glyph fallbacks; egui defaults cover other systems.
+- **Theme.** Dark default with a near-black canvas (`#050608`), light available as a full peer theme. Since 1.0.1, Athena embeds Salted Flutters Polaris subsets: Semibold for text and buttons, Bold for section/heading/display titles, and Tabular Semibold for money and dates. Segoe UI and Segoe UI Symbol remain glyph fallbacks; egui defaults cover other systems.
 - **Export 1.0.** JSON profile and CSV transactions, manual and atomic. CSV scope is the selected month or all time. XLSX in 1.1. Rotating backups in 1.1.
 - **Search.** Case- and accent-insensitive for Latin text, so `pao` finds `Pão`.
 - **Category target.** `applies_to` is editable in settings; income categories are seeded.
@@ -371,7 +371,7 @@ Dark is the default. Its canvas is near-black (`#050608`), not gray. Light is a 
 ### Type
 
 - Salted Flutters Polaris: 15 body, 13 secondary, 20 section, 28 heading, 34 display.
-- Regular for body and small text; Medium for buttons; Semibold for section, heading, and display.
+- Semibold for body, small text, and buttons; Bold for section, heading, and display titles.
 - Athena Polaris Tabular (frozen `tnum`) for monetary values and table dates.
 - Tabular numbers. Right-aligned amounts.
 - Fallback: Segoe UI, Segoe UI Symbol, then egui defaults.

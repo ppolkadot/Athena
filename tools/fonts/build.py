@@ -16,8 +16,8 @@ from pathlib import Path
 from fontTools import subset
 from fontTools.ttLib import TTFont
 
-STYLES = ("Regular", "Medium", "Semibold")
-TABULAR_SOURCE = "Regular"
+STYLES = ("Regular", "Medium", "Semibold", "Bold")
+TABULAR_SOURCE = "Semibold"
 COPYRIGHT = "Salted Flutters Polaris - Created by ppoolar"
 
 # Basic Latin, Latin-1, Latin Extended-A, general punctuation, currency, arrows and the
@@ -115,7 +115,7 @@ def main() -> None:
 
     font = subset_font(source_path(args.source_dir, TABULAR_SOURCE))
     freeze_tabular_digits(font)
-    rename(font, "Athena Polaris Tabular", "Regular")
+    rename(font, "Athena Polaris Tabular", TABULAR_SOURCE)
     save(font, args.out_dir, "AthenaPolaris-Tabular.otf")
 
 

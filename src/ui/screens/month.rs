@@ -330,10 +330,22 @@ fn rail_row(
     fraction: f32,
     color: egui::Color32,
 ) {
+    let amount_str = plain_brl(amount);
+    let amount_font = typography::money_font();
+    let amount_width = ui.fonts_mut(|f| {
+        f.layout_no_wrap(amount_str.clone(), amount_font.clone(), p.text)
+            .size()
+            .x
+    });
     ui.horizontal(|ui| {
-        ui.label(name);
+        let max_name_width = (ui.available_width() - amount_width - 12.0).max(40.0);
+        ui.scope(|ui| {
+            ui.set_max_width(max_name_width);
+            ui.add(egui::Label::new(name).truncate())
+                .on_hover_text(name);
+        });
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(plain_brl(amount)).font(typography::money_font()));
+            ui.label(RichText::new(amount_str).font(amount_font));
         });
     });
     bar(ui, p, fraction, color);
@@ -666,5 +678,80 @@ mod tests {
         harness.get_by_label("Delete Market").click();
         harness.run_steps(3);
         assert_eq!(harness.state().2, Some(MonthEvent::Delete(market)));
+    }
+
+    #[test]
+    fn long_category_names_do_not_overlap_rail_or_row_amounts() {
+        use egui_kittest::kittest::Queryable;
+        let long_name = "Categoria com nome extremamente longo ãõçáéíóúâêôàü para testar layout";
+        let mut core = core_with_month();
+        core.vm
+            .all_categories
+            .iter_mut()
+            .find(|c| c.name == "Housing")
+            .unwrap()
+            .name = long_name.into();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(Vec2::new(1100.0, 900.0))
+            .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, (vm, state, event): &mut MonthApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    crate::ui::theme::apply(ui.ctx(), vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    if let Some(e) = show(ui, vm, state) {
+                        *event = Some(e);
+                    }
+                },
+                (core.vm.clone(), core.ui.clone(), None),
+            );
+        harness.run_steps(3);
+
+        // Both the transaction row and the right rail render the category name with truncation,
+        // and each keeps the label strictly to the left of the amount on that row.
+        let mut categories: Vec<_> = harness
+            .query_all_by_label(long_name)
+            .map(|node| node.rect())
+            .collect();
+        assert_eq!(
+            categories.len(),
+            2,
+            "expected truncated category labels in both register row and right rail, found: {categories:?}"
+        );
+        // Transaction row is in the left column, rail row is in the right column.
+        categories.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        let row_cat = categories[0];
+        let rail_cat = categories[1];
+
+        let row_amount = harness
+            .query_all_by_label("−R$ 100,00")
+            .map(|node| node.rect())
+            .find(|r| (r.center().y - row_cat.center().y).abs() < 20.0)
+            .expect("row amount on the same row as the long category");
+        let row_person = harness
+            .query_all_by_label("A3")
+            .map(|node| node.rect())
+            .find(|r| (r.center().y - row_cat.center().y).abs() < 20.0)
+            .expect("person pill on the same row as the long category");
+        let rail_amount = harness
+            .query_all_by_label("R$ 100,00")
+            .map(|node| node.rect())
+            .find(|r| (r.center().y - rail_cat.center().y).abs() < 20.0)
+            .expect("rail amount on the same row as the long category");
+
+        assert!(
+            row_cat.max.x < row_person.min.x,
+            "row category ({row_cat:?}) overlaps person pill ({row_person:?})"
+        );
+        assert!(
+            row_cat.max.x < row_amount.min.x,
+            "row category ({row_cat:?}) overlaps row amount ({row_amount:?})"
+        );
+        assert!(
+            rail_cat.max.x < rail_amount.min.x,
+            "rail category ({rail_cat:?}) overlaps rail amount ({rail_amount:?})"
+        );
     }
 }
