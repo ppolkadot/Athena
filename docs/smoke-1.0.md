@@ -19,7 +19,7 @@ locale) by driving the window with UI Automation and real keyboard and mouse inp
 - [ ] The search empty-state icon `⌕` renders through the Segoe UI Symbol fallback; record it if it does not.
 - [ ] Dark and light themes use the same type hierarchy.
 - [ ] The sidebar or About text shows Version 1.0.1.
-- [ ] The installer places `LICENSE.txt` under the app directory at `licenses\Salted-Flutters-Polaris\LICENSE.txt`.
+- [ ] The installer places `LICENSE.txt` under the app directory at `licenses\Salted-Flutters-Polaris\LICENSE.txt`. (Compiled `target\installer\Athena-1.0.1-setup.exe` with Inno Setup 6.7.3 bundling `assets\fonts\LICENSE.txt`; interactive install not run.)
 
 ## First run and persistence
 - [x] First run onboarding: skip partner, valid balance, finish. The "Welcome" toast appears.
