@@ -1,5 +1,6 @@
-//! Fonts and text sizes. Segoe UI for text and Consolas for numbers when present (Windows),
-//! otherwise egui's bundled fonts.
+//! Embedded Salted Flutters Polaris subsets, with Windows fonts as glyph fallbacks.
+//! Body uses Regular, buttons use Medium, and headings use Semibold. Money and table
+//! dates use the frozen-tabular Regular face.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,10 +13,50 @@ pub const SECTION: f32 = 20.0;
 pub const HEADING: f32 = 28.0;
 pub const DISPLAY: f32 = 34.0;
 
+const POLARIS_REGULAR: &str = "athena-polaris-regular";
+const POLARIS_MEDIUM: &str = "athena-polaris-medium";
+const POLARIS_SEMIBOLD: &str = "athena-polaris-semibold";
+const POLARIS_TABULAR: &str = "athena-polaris-tabular";
+const POLARIS_DISPLAY: &str = "athena-polaris-display";
+const POLARIS_UI_MEDIUM: &str = "athena-polaris-ui-medium";
+
+const REGULAR_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Regular.otf");
+const MEDIUM_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Medium.otf");
+const SEMIBOLD_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Semibold.otf");
+const TABULAR_BYTES: &[u8] = include_bytes!("../../../assets/fonts/AthenaPolaris-Tabular.otf");
+
 const SEGOE: (&str, &str) = ("segoeui", "segoeui.ttf");
 const CONSOLAS: (&str, &str) = ("consola", "consola.ttf");
 /// Fallback for symbols Segoe UI lacks, such as the refund arrow and sidebar icons.
 const SEGOE_SYMBOLS: (&str, &str) = ("seguisym", "seguisym.ttf");
+
+fn named_family(name: &str) -> FontFamily {
+    FontFamily::Name(name.into())
+}
+
+/// Semibold family for section titles, headings, and display text.
+#[must_use]
+pub fn display_family() -> FontFamily {
+    named_family(POLARIS_DISPLAY)
+}
+
+/// Medium family for buttons and primary controls.
+#[must_use]
+pub fn medium_family() -> FontFamily {
+    named_family(POLARIS_UI_MEDIUM)
+}
+
+/// Frozen-tabular face for money and table dates.
+#[must_use]
+pub fn tabular_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Monospace)
+}
+
+/// `FontId` for 20 px section titles with the Semibold face.
+#[must_use]
+pub fn section_font() -> FontId {
+    FontId::new(SECTION, display_family())
+}
 
 /// `TextStyle` for 20 px section titles.
 #[must_use]
@@ -29,10 +70,11 @@ pub fn display() -> TextStyle {
     TextStyle::Name("display".into())
 }
 
-/// Monospace face for monetary values and table dates.
+/// Monospace family for monetary values and table dates. The first font is the
+/// frozen-tabular Polaris face; Consolas and egui defaults are fallbacks.
 #[must_use]
 pub fn money_font() -> FontId {
-    FontId::new(BODY, FontFamily::Monospace)
+    tabular_font(BODY)
 }
 
 /// Apply the size scale to a style.
@@ -67,36 +109,95 @@ fn windows_fonts_dir() -> PathBuf {
     windir.join("Fonts")
 }
 
-/// Font definitions with any available system fonts placed first. Missing or unreadable files are
-/// skipped silently, leaving egui's defaults.
-#[must_use]
-pub fn font_definitions(fonts_dir: &Path) -> FontDefinitions {
+fn embedded_definitions() -> FontDefinitions {
     let mut defs = FontDefinitions::default();
-    let segoe_loaded = std::fs::read(fonts_dir.join(SEGOE.1)).is_ok();
-    for (name, file, family, position) in [
-        (SEGOE.0, SEGOE.1, FontFamily::Proportional, 0),
-        // Right after Segoe UI, so text keeps its look and only missing symbols fall through.
-        (
-            SEGOE_SYMBOLS.0,
-            SEGOE_SYMBOLS.1,
-            FontFamily::Proportional,
-            usize::from(segoe_loaded),
-        ),
-        (CONSOLAS.0, CONSOLAS.1, FontFamily::Monospace, 0),
+    for (name, bytes) in [
+        (POLARIS_REGULAR, REGULAR_BYTES),
+        (POLARIS_MEDIUM, MEDIUM_BYTES),
+        (POLARIS_SEMIBOLD, SEMIBOLD_BYTES),
+        (POLARIS_TABULAR, TABULAR_BYTES),
     ] {
-        if let Ok(bytes) = std::fs::read(fonts_dir.join(file)) {
-            defs.font_data
-                .insert(name.to_string(), Arc::new(FontData::from_owned(bytes)));
-            defs.families
-                .entry(family)
-                .or_default()
-                .insert(position, name.to_string());
-        }
+        defs.font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
     }
+    defs.families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, POLARIS_REGULAR.to_owned());
+    defs.families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, POLARIS_TABULAR.to_owned());
     defs
 }
 
-/// Install Segoe UI and Consolas from the Windows fonts folder when present.
+fn add_custom_families(defs: &mut FontDefinitions) {
+    let fallback = defs
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for (family, weight) in [
+        (POLARIS_DISPLAY, POLARIS_SEMIBOLD),
+        (POLARIS_UI_MEDIUM, POLARIS_MEDIUM),
+    ] {
+        let mut chain = vec![weight.to_owned(), POLARIS_REGULAR.to_owned()];
+        chain.extend(
+            fallback
+                .iter()
+                .filter(|name| name.as_str() != POLARIS_REGULAR)
+                .cloned(),
+        );
+        defs.families.insert(named_family(family), chain);
+    }
+}
+
+fn font_definitions_with(system_fonts: Option<&Path>) -> FontDefinitions {
+    let mut defs = embedded_definitions();
+    if let Some(fonts_dir) = system_fonts {
+        let segoe_loaded = std::fs::read(fonts_dir.join(SEGOE.1)).is_ok();
+        for (name, file, family, position) in [
+            (SEGOE.0, SEGOE.1, FontFamily::Proportional, 1),
+            (
+                SEGOE_SYMBOLS.0,
+                SEGOE_SYMBOLS.1,
+                FontFamily::Proportional,
+                usize::from(segoe_loaded) + 1,
+            ),
+            (CONSOLAS.0, CONSOLAS.1, FontFamily::Monospace, 1),
+        ] {
+            if let Ok(bytes) = std::fs::read(fonts_dir.join(file)) {
+                defs.font_data
+                    .insert(name.to_string(), Arc::new(FontData::from_owned(bytes)));
+                defs.families
+                    .entry(family)
+                    .or_default()
+                    .insert(position, name.to_string());
+            }
+        }
+    }
+    add_custom_families(&mut defs);
+    defs
+}
+
+/// Font definitions with embedded Polaris first and any available system fonts after it.
+#[must_use]
+pub fn font_definitions(fonts_dir: &Path) -> FontDefinitions {
+    font_definitions_with(Some(fonts_dir))
+}
+
+/// Deterministic definitions for snapshots and font tests: no host fonts.
+#[cfg(test)]
+pub(crate) fn test_font_definitions() -> FontDefinitions {
+    font_definitions_with(None)
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_fonts(ctx: &Context) {
+    ctx.set_fonts(test_font_definitions());
+}
+
+/// Install embedded Polaris plus Segoe UI and Consolas from the Windows fonts folder when present.
 pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(font_definitions(&windows_fonts_dir()));
 }
@@ -105,28 +206,83 @@ pub fn install_fonts(ctx: &Context) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn missing_fonts_fall_back_to_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let defs = font_definitions(dir.path());
-        assert!(!defs.font_data.contains_key("segoeui"));
-        assert_eq!(
-            defs.families[&FontFamily::Proportional],
-            FontDefinitions::default().families[&FontFamily::Proportional]
-        );
+    fn test_context() -> Context {
+        let ctx = Context::default();
+        install_test_fonts(&ctx);
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx
     }
 
     #[test]
-    fn found_fonts_go_first_in_their_family() {
+    fn polaris_is_primary_and_system_fonts_follow() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("segoeui.ttf"), b"not a real font").unwrap();
+        std::fs::write(dir.path().join("seguisym.ttf"), b"not a real font").unwrap();
         std::fs::write(dir.path().join("consola.ttf"), b"not a real font").unwrap();
         let defs = font_definitions(dir.path());
-        assert_eq!(defs.families[&FontFamily::Proportional][0], "segoeui");
-        assert_eq!(defs.families[&FontFamily::Monospace][0], "consola");
+        let proportional = &defs.families[&FontFamily::Proportional];
+        assert_eq!(proportional[0], POLARIS_REGULAR);
+        assert_eq!(proportional[1], SEGOE.0);
+        assert_eq!(proportional[2], SEGOE_SYMBOLS.0);
+        let monospace = &defs.families[&FontFamily::Monospace];
+        assert_eq!(monospace[0], POLARIS_TABULAR);
+        assert_eq!(monospace[1], CONSOLAS.0);
+    }
+
+    #[test]
+    fn missing_system_fonts_keep_polaris_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let defs = font_definitions(dir.path());
+        assert_eq!(defs.families[&FontFamily::Proportional][0], POLARIS_REGULAR);
+        assert_eq!(defs.families[&FontFamily::Monospace][0], POLARIS_TABULAR);
+    }
+
+    #[test]
+    fn custom_families_start_with_the_right_weight() {
+        let defs = test_font_definitions();
+        assert_eq!(defs.families[&display_family()][0], POLARIS_SEMIBOLD);
+        assert_eq!(defs.families[&medium_family()][0], POLARIS_MEDIUM);
+    }
+
+    #[test]
+    fn embedded_fonts_cover_portuguese_and_money() {
+        let ctx = test_context();
+        let body = FontId::new(BODY, FontFamily::Proportional);
+        let money = money_font();
+        ctx.fonts_mut(|fonts| {
+            assert!(fonts.has_glyphs(&body, "R$ 1.234,56 − + ãõçáéíóúâêôàü"));
+            assert!(fonts.has_glyphs(&money, "R$ 1.234,56 − +"));
+        });
+    }
+
+    #[test]
+    fn money_digits_have_one_advance_width() {
+        let ctx = test_context();
+        let money = money_font();
+        let widths: Vec<f32> = ctx.fonts_mut(|fonts| {
+            "0123456789"
+                .chars()
+                .map(|ch| fonts.glyph_width(&money, ch))
+                .collect()
+        });
         assert!(
-            defs.families[&FontFamily::Proportional].len() > 1,
-            "defaults stay as fallback"
+            widths
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() < 0.01),
+            "money digits differ: {widths:?}"
+        );
+
+        let proportional = FontId::new(BODY, FontFamily::Proportional);
+        let regular: Vec<f32> = ctx.fonts_mut(|fonts| {
+            "0123456789"
+                .chars()
+                .map(|ch| fonts.glyph_width(&proportional, ch))
+                .collect()
+        });
+        assert!(
+            regular.iter().any(|width| (width - regular[0]).abs() > 1.0),
+            "Regular digits should stay proportional: {regular:?}"
         );
     }
 
@@ -137,13 +293,12 @@ mod tests {
             std::fs::write(dir.path().join(file), b"not a real font").unwrap();
         }
         let proportional = &font_definitions(dir.path()).families[&FontFamily::Proportional];
-        assert_eq!(&proportional[..2], ["segoeui", "seguisym"]);
+        assert_eq!(&proportional[..3], [POLARIS_REGULAR, "segoeui", "seguisym"]);
         let only_symbols = tempfile::tempdir().unwrap();
         std::fs::write(only_symbols.path().join("seguisym.ttf"), b"x").unwrap();
-        assert_eq!(
-            font_definitions(only_symbols.path()).families[&FontFamily::Proportional][0],
-            "seguisym"
-        );
+        let only_proportional =
+            &font_definitions(only_symbols.path()).families[&FontFamily::Proportional];
+        assert_eq!(&only_proportional[..2], [POLARIS_REGULAR, "seguisym"]);
     }
 
     #[test]
