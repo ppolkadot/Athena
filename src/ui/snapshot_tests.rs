@@ -1,9 +1,9 @@
 //! Pixel snapshots of every screen in English/dark and Portuguese/light. They guard the visual
 //! design against accidental change.
 //!
-//! The harness renders with egui's bundled fonts, a pinned date and simulated time, so output does
-//! not depend on installed fonts, the clock or the window system. A small pixel tolerance absorbs
-//! GPU differences. To accept an intended change run
+//! The harness renders with embedded Polaris and egui's bundled fallback fonts, a pinned date,
+//! and simulated time, so output does not depend on host fonts, the clock, or the window system. A
+//! small pixel tolerance absorbs GPU differences. To accept an intended change run
 //! `UPDATE_SNAPSHOTS=1 cargo test snapshot` and review the images in `src/ui/snapshots`.
 
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
@@ -55,20 +55,23 @@ fn snapshot(results: &mut SnapshotResults, name: &str, mut app: AthenaApp, size:
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Time is simulated; the same number of steps always draws the same frame.
-    let mut harness = Harness::builder().with_size(size).build_ui_state(
-        |ui, app: &mut AthenaApp| {
-            ui.ctx()
-                .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
-            theme::apply(ui.ctx(), app.theme_for_test());
-            let style = ui.ctx().global_style();
-            ui.set_style(style);
-            app.show_for_test(ui);
-        },
-        {
-            app.pin_today(today());
-            app
-        },
-    );
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .with_context_setup(theme::typography::install_test_fonts)
+        .build_ui_state(
+            |ui, app: &mut AthenaApp| {
+                ui.ctx()
+                    .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                theme::apply(ui.ctx(), app.theme_for_test());
+                let style = ui.ctx().global_style();
+                ui.set_style(style);
+                app.show_for_test(ui);
+            },
+            {
+                app.pin_today(today());
+                app
+            },
+        );
     harness.run_steps(6);
     let options = SnapshotOptions::new()
         .output_path("src/ui/snapshots")
