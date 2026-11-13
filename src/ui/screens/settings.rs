@@ -1028,7 +1028,8 @@ mod tests {
         ] {
             assert!(harness.query_all_by_label(label).count() > 0, "{label}");
         }
-        assert!(harness.query_by_label("Athena · Version 1.0.0").is_some());
+        let about = format!("Athena · Version {}", env!("CARGO_PKG_VERSION"));
+        assert!(harness.query_by_label(about.as_str()).is_some());
         for category in ["Food", "Salary", "Other income"] {
             assert!(
                 harness.query_all_by_label(category).count() > 0,

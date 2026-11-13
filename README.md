@@ -6,11 +6,17 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.0.0. English and Brazilian Portuguese. Windows is the primary target.
+Version 1.0.1. English and Brazilian Portuguese. Windows is the primary target.
+
+Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
+license and provenance live in `assets/fonts/`.
+
+Portable builds: keep `assets/fonts/LICENSE.txt` beside `athena.exe` when redistributing; the
+font license requires the license file to travel with the fonts.
 
 ## Running it
 
-Download or build `athena.exe` and run it. There is no installer.
+Download or build `athena.exe` and run it. The Inno Setup script is `installer/athena.iss`.
 
 ```powershell
 cargo run --release          # build and run from source
@@ -100,8 +106,9 @@ cargo test
 cargo build --release
 ```
 
-Design: `docs/superpowers/specs/`. Implementation plans: `docs/superpowers/plans/`. Definition of
-done for a task: `docs/dod.md`. Release smoke checklist: `docs/smoke-1.0.md`.
+Design: `docs/superpowers/specs/`. Designer brief: `docs/design/athena-designer-brief.md`.
+Implementation plans: `docs/superpowers/plans/`. Definition of done: `docs/dod.md`. Release smoke
+checklist: `docs/smoke-1.0.md`.
 
 Pixel snapshots of every screen live in `src/ui/snapshots`. After an intended visual change run
 `UPDATE_SNAPSHOTS=1 cargo test snapshot_` and review the new images.

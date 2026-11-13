@@ -1,4 +1,4 @@
-# Athena 1.0 smoke checklist
+# Athena 1.0.x smoke checklist
 
 Run this on the release build (`target\release\athena.exe`), ideally on a clean Windows profile or
 VM with no Rust installed. Tick each box. A failure blocks the release.
@@ -10,6 +10,16 @@ what this list is for.
 `[x]` means it was checked on the real release exe (portable mode, Windows 11, Portuguese system
 locale) by driving the window with UI Automation and real keyboard and mouse input on 2026-11-12.
 `[ ]` means it still needs a person. Notes after a box say what was observed.
+
+## 1.0.1 type and fonts
+- [ ] Month, Calendar, Settings, and onboarding use the embedded Polaris letterforms.
+- [ ] Amounts such as `R$ 1.234,56` align digit-for-digit in the register and calendar.
+- [ ] Portuguese accents (`ã õ ç á é í ó ú â ê ô à ü`) render without tofu at 13 px and 15 px.
+- [ ] The refund arrow `↩` renders through the Segoe UI Symbol fallback.
+- [ ] The search empty-state icon `⌕` renders through the Segoe UI Symbol fallback; record it if it does not.
+- [ ] Dark and light themes use the same type hierarchy.
+- [ ] The sidebar or About text shows Version 1.0.1.
+- [ ] The installer places `LICENSE.txt` under the app directory at `licenses\Salted-Flutters-Polaris\LICENSE.txt`.
 
 ## First run and persistence
 - [x] First run onboarding: skip partner, valid balance, finish. The "Welcome" toast appears.
