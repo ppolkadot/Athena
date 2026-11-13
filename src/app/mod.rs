@@ -1,0 +1,1415 @@
+pub mod actions;
+pub mod instance;
+pub mod navigation;
+pub mod store;
+pub mod ui_state;
+pub mod view_model;
+
+use eframe::egui::{self, Key, Modifiers};
+
+use crate::application::services::export;
+use crate::application::services::onboarding::OnboardingResult;
+use crate::domain::category::Category;
+use crate::domain::date::YearMonth;
+use crate::domain::export::{default_export_name, default_json_name};
+use crate::domain::person::Person;
+use crate::domain::settings::{Language, Profile, Theme};
+use crate::domain::transaction::TxDraft;
+use crate::i18n::{PluralKey, ToastKey, plural, strings};
+use crate::infrastructure::config::AppDirs;
+use crate::infrastructure::db::Db;
+use crate::shared::error::Result;
+use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
+use crate::ui::components::toast::{self, Toast};
+use crate::ui::quick_add::{self, QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
+use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
+use crate::ui::screens::settings::{self, SettingsError};
+use crate::ui::screens::{ExportRequest, ScreenEvent};
+use crate::ui::{shell, theme};
+
+use self::actions::{ActionOutcome, AppAction};
+use self::navigation::Screen;
+use self::store::Store;
+use self::ui_state::UiState;
+use self::view_model::ViewModel;
+
+/// Thin composition root. It owns the three state parts and holds no logic: every method builds an
+/// [`AppAction`] (or sets UI state), applies it through the store, and refreshes the view model.
+#[derive(Debug)]
+pub struct AppCore {
+    pub store: Store,
+    pub vm: ViewModel,
+    pub ui: UiState,
+}
+
+impl AppCore {
+    /// Open the app on a migrated database: load the view model and run the once-per-launch
+    /// startup tasks (daily snapshot, debug integrity check).
+    ///
+    /// # Errors
+    /// Database errors loading the first view.
+    pub fn new(db: Db, dirs: AppDirs) -> Result<Self> {
+        let mut core = Self {
+            store: Store::new(db, dirs),
+            vm: ViewModel::new(Language::from_system()),
+            ui: UiState::default(),
+        };
+        core.store
+            .run_startup_tasks(chrono::Local::now().date_naive());
+        core.sync()?;
+        Ok(core)
+    }
+
+    /// An in-memory app for tests. Skips the startup tasks and keeps its data folder out of the
+    /// way of any real one.
+    ///
+    /// # Panics
+    /// If the first view cannot be loaded from the given database.
+    #[cfg(test)]
+    #[must_use]
+    pub fn empty_for_test(db: Db) -> Self {
+        let dirs = AppDirs::from_root(std::env::temp_dir().join("athena-core-test"));
+        let mut core = Self {
+            store: Store::new(db, dirs),
+            vm: ViewModel::new(Language::En),
+            ui: UiState::new(YearMonth::new(2026, 11).unwrap()),
+        };
+        core.vm.today = crate::shared::test_fixtures::today();
+        core.sync().unwrap();
+        core
+    }
+
+    /// Reload the view model if the store or the selection changed.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn sync(&mut self) -> Result<bool> {
+        self.vm.sync(&self.store, &self.ui)
+    }
+
+    /// Apply an action and reload what it affected.
+    ///
+    /// # Errors
+    /// Whatever the action fails with; nothing changes in that case.
+    pub fn apply(&mut self, action: AppAction) -> Result<ActionOutcome> {
+        let outcome = self.store.apply(action)?;
+        self.vm.reload(&self.store, &self.ui, outcome.refresh)?;
+        Ok(outcome)
+    }
+
+    /// # Errors
+    /// Database errors.
+    pub fn set_month(&mut self, month: YearMonth) -> Result<()> {
+        self.ui.set_month(month);
+        self.sync().map(|_| ())
+    }
+
+    /// # Errors
+    /// Database errors.
+    pub fn set_calendar_year(&mut self, year: i32) -> Result<()> {
+        self.ui.set_calendar_year(year);
+        self.sync().map(|_| ())
+    }
+
+    pub fn set_screen(&mut self, screen: Screen) {
+        self.ui.set_screen(screen);
+    }
+
+    /// Show the register for `month`: select it and switch to the Month screen.
+    ///
+    /// # Errors
+    /// Database errors loading the month.
+    pub fn open_month(&mut self, month: YearMonth) -> Result<()> {
+        self.set_screen(Screen::Month);
+        self.set_month(month)
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> Option<&Person> {
+        self.vm.owner()
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn complete_onboarding(&mut self, result: OnboardingResult) -> Result<ActionOutcome> {
+        self.apply(AppAction::CompleteOnboarding(result))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn create_transaction(&mut self, draft: TxDraft) -> Result<ActionOutcome> {
+        self.apply(AppAction::SaveTransaction(draft))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn update_transaction(&mut self, id: i64, draft: TxDraft) -> Result<ActionOutcome> {
+        self.apply(AppAction::UpdateTransaction(id, draft))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn delete_transaction(&mut self, id: i64) -> Result<ActionOutcome> {
+        self.apply(AppAction::DeleteTransaction(id))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn save_profile(&mut self, profile: Profile) -> Result<ActionOutcome> {
+        self.apply(AppAction::SaveProfile(profile))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn save_person(&mut self, person: Person) -> Result<ActionOutcome> {
+        self.apply(AppAction::SavePerson(person))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`]; the owner cannot be archived.
+    pub fn archive_person(&mut self, id: i64) -> Result<ActionOutcome> {
+        self.apply(AppAction::ArchivePerson(id))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn save_category(&mut self, category: Category) -> Result<ActionOutcome> {
+        self.apply(AppAction::SaveCategory(category))
+    }
+
+    /// # Errors
+    /// See [`AppCore::apply`].
+    pub fn archive_category(&mut self, id: i64) -> Result<ActionOutcome> {
+        self.apply(AppAction::ArchiveCategory(id))
+    }
+}
+
+/// Whether the quick-add modal stays up after handling an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalAfter {
+    Keep,
+    Close,
+}
+
+/// Apply what the quick-add modal asked for. A new entry saves and leaves the modal open, reset
+/// for the next one; an edit saves and closes it. A refused save keeps the modal and its input.
+pub fn handle_quick_add(
+    core: &mut AppCore,
+    state: &mut QuickAddState,
+    event: QuickAddEvent,
+) -> (ModalAfter, Option<ToastKey>) {
+    let draft = match event {
+        QuickAddEvent::Close => return (ModalAfter::Close, None),
+        QuickAddEvent::Submit(draft) => draft,
+    };
+    let action = match state.mode {
+        QuickAddMode::Create => AppAction::SaveTransaction(draft),
+        QuickAddMode::Edit(id) => AppAction::UpdateTransaction(id, draft),
+    };
+    match core.apply(action) {
+        Ok(outcome) => match state.mode {
+            QuickAddMode::Create => {
+                state.reset_for_next();
+                (ModalAfter::Keep, outcome.toast)
+            }
+            QuickAddMode::Edit(_) => (ModalAfter::Close, outcome.toast),
+        },
+        Err(err) => {
+            tracing::warn!("quick add could not save: {err}");
+            state.errors = vec![QuickAddError::Save];
+            (ModalAfter::Keep, None)
+        }
+    }
+}
+
+/// Open the quick-add form on a stored transaction, prefilled in the mode it was saved with.
+///
+/// # Errors
+/// [`crate::shared::error::AppError::NotFound`] when the transaction no longer exists.
+pub fn begin_edit(core: &AppCore, id: i64) -> Result<QuickAddState> {
+    let tx = core.store.transaction(id)?;
+    let people: Vec<_> = core.vm.active_people().into_iter().cloned().collect();
+    Ok(QuickAddState::from_transaction(
+        &tx,
+        &people,
+        core.vm.language(),
+    ))
+}
+
+/// The "delete this?" dialog for a transaction, naming it and its amount.
+///
+/// # Errors
+/// [`crate::shared::error::AppError::NotFound`] when the transaction no longer exists.
+pub fn delete_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
+    let tx = core.store.transaction(id)?;
+    let s = strings(core.vm.language());
+    Ok(ConfirmDialog {
+        title: s.confirm_delete_title.to_string(),
+        body: s
+            .confirm_delete_body
+            .replace("{title}", &tx.title)
+            .replace("{amount}", &tx.amount.format_brl()),
+        confirm_label: s.delete.to_string(),
+        danger: true,
+        action: AppAction::DeleteTransaction(id),
+    })
+}
+
+/// Apply an action the user confirmed. Returns the toast text, which names a deleted entry.
+/// A failure is logged and shows nothing.
+pub fn apply_confirmed(core: &mut AppCore, action: AppAction) -> Option<String> {
+    let deleted_title = match &action {
+        AppAction::DeleteTransaction(id) => core.store.transaction(*id).ok().map(|tx| tx.title),
+        _ => None,
+    };
+    match core.apply(action) {
+        Ok(outcome) => {
+            let language = core.vm.language();
+            match deleted_title {
+                Some(title) => Some(
+                    strings(language)
+                        .toast_deleted_named
+                        .replace("{title}", &title),
+                ),
+                None => outcome.toast.map(|key| key.text(language).to_string()),
+            }
+        }
+        Err(err) => {
+            tracing::warn!("confirmed action failed: {err}");
+            None
+        }
+    }
+}
+
+/// Apply an action raised on the settings screen. Success drops the screen's unsaved edits so it
+/// reloads from what is stored; a refusal is remembered so the screen can say so.
+/// Returns the toast text and whether the action succeeded.
+pub fn apply_settings_action(core: &mut AppCore, action: AppAction) -> (Option<String>, bool) {
+    match core.apply(action) {
+        Ok(outcome) => {
+            core.ui.settings.reset();
+            let text = outcome
+                .toast
+                .map(|key| key.text(core.vm.language()).to_string());
+            (text, true)
+        }
+        Err(err) => {
+            tracing::warn!("settings change refused: {err}");
+            core.ui.settings.error = Some(SettingsError::SaveRejected);
+            (None, false)
+        }
+    }
+}
+
+/// Show `folder` in the system file manager. A failure is logged and otherwise ignored.
+fn open_folder(folder: &std::path::Path) {
+    let (program, args) = settings::folder_command(folder);
+    if let Err(err) = std::process::Command::new(program).args(args).spawn() {
+        tracing::warn!("could not open the data folder: {err}");
+    }
+}
+
+/// Ask where to save an export, suggesting the standard file name in the exports folder.
+/// `None` when the user cancels the dialog.
+fn pick_export_path(
+    core: &AppCore,
+    request: ExportRequest,
+    today: chrono::NaiveDate,
+) -> Option<std::path::PathBuf> {
+    let (name, filter_name, extensions): (String, &str, &[&str]) = match request {
+        ExportRequest::Json => (default_json_name(today), "JSON", &["json"]),
+        ExportRequest::Csv(scope) => (default_export_name(scope), "CSV", &["csv"]),
+    };
+    rfd::FileDialog::new()
+        .set_file_name(name)
+        .set_directory(&core.store.dirs().exports_dir)
+        .add_filter(filter_name, extensions)
+        .save_file()
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Run an export to `path` and return the toast text: where it went and how much, or that it
+/// failed (in which case any existing file at `path` is untouched).
+pub fn run_export(
+    core: &AppCore,
+    request: ExportRequest,
+    path: &std::path::Path,
+    exported_at: &str,
+) -> String {
+    let language = core.vm.language();
+    let s = strings(language);
+    let conn = core.store.db().conn();
+    let result = match request {
+        ExportRequest::Json => match core.vm.profile.as_ref() {
+            Some(profile) => export::export_json(conn, profile, exported_at, path),
+            None => Err(crate::shared::error::AppError::Export(
+                "no profile yet".into(),
+            )),
+        },
+        ExportRequest::Csv(scope) => export::export_csv(conn, language, scope, path),
+    };
+    match result {
+        Ok(receipt) => s
+            .toast_exported
+            .replace(
+                "{count}",
+                &plural(PluralKey::Entries, receipt.record_count, language),
+            )
+            .replace("{path}", &receipt.path.display().to_string()),
+        Err(err) => {
+            tracing::warn!("export failed: {err}");
+            s.toast_export_failed.to_string()
+        }
+    }
+}
+
+pub struct AthenaApp {
+    core: AppCore,
+    applied_theme: Theme,
+    onboarding: OnboardingState,
+    quick_add: Option<QuickAddState>,
+    confirm: Option<ConfirmDialog>,
+    toast: Option<Toast>,
+    /// Tests pin the date so they do not depend on when they run.
+    pinned_today: Option<chrono::NaiveDate>,
+}
+
+impl AthenaApp {
+    #[must_use]
+    pub fn new(cc: &eframe::CreationContext<'_>, core: AppCore) -> Self {
+        theme::install_fonts(&cc.egui_ctx);
+        let applied_theme = core.vm.theme();
+        theme::apply(&cc.egui_ctx, applied_theme);
+        let onboarding = OnboardingState::new(core.vm.language());
+        Self {
+            core,
+            applied_theme,
+            onboarding,
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: None,
+        }
+    }
+
+    /// Act on what a screen asked for. Returns `false` when an applied action was refused.
+    fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
+        let idle = self.quick_add.is_none() && self.confirm.is_none();
+        match event {
+            ScreenEvent::NewTransaction if self.quick_add.is_none() => self.open_quick_add(),
+            ScreenEvent::EditTransaction(id) if idle => match begin_edit(&self.core, id) {
+                Ok(state) => self.quick_add = Some(state),
+                Err(err) => tracing::warn!("could not open the transaction: {err}"),
+            },
+            ScreenEvent::DeleteTransaction(id) if idle => match delete_confirmation(&self.core, id)
+            {
+                Ok(dialog) => self.confirm = Some(dialog),
+                Err(err) => tracing::warn!("could not open the transaction: {err}"),
+            },
+            ScreenEvent::OpenMonth(month) => {
+                if let Err(err) = self.core.open_month(month) {
+                    tracing::error!("could not open the month: {err}");
+                }
+            }
+            ScreenEvent::Apply(action) => {
+                let (text, ok) = apply_settings_action(&mut self.core, action);
+                self.raise_toast_text(ctx, text);
+                return ok;
+            }
+            ScreenEvent::OpenDataFolder => open_folder(&self.core.store.dirs().root),
+            ScreenEvent::Export(request) => {
+                if let Some(path) = pick_export_path(&self.core, request, self.today()) {
+                    let text = run_export(&self.core, request, &path, &now_rfc3339());
+                    self.raise_toast_text(ctx, Some(text));
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// An app around `core` for tests, with the date pinned to [`crate::shared::test_fixtures::today`].
+    #[cfg(test)]
+    pub(crate) fn for_test(core: AppCore) -> Self {
+        Self {
+            applied_theme: core.vm.theme(),
+            onboarding: OnboardingState::new(core.vm.language()),
+            core,
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_today(&mut self, today: chrono::NaiveDate) {
+        self.pinned_today = Some(today);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_onboarding_for_test(&mut self, state: OnboardingState) {
+        self.onboarding = state;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn theme_for_test(&self) -> Theme {
+        self.core.vm.theme()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn show_for_test(&mut self, ui: &mut egui::Ui) {
+        self.show(ui);
+    }
+
+    fn today(&self) -> chrono::NaiveDate {
+        self.pinned_today
+            .unwrap_or_else(|| chrono::Local::now().date_naive())
+    }
+
+    fn open_quick_add(&mut self) {
+        let people: Vec<_> = self.core.vm.active_people().into_iter().cloned().collect();
+        let today = self.today();
+        self.quick_add = Some(QuickAddState::new(&people, today, self.core.vm.language()));
+    }
+
+    fn raise_toast(&mut self, ctx: &egui::Context, key: Option<ToastKey>) {
+        let text = key.map(|key| key.text(self.core.vm.language()).to_string());
+        self.raise_toast_text(ctx, text);
+    }
+
+    fn raise_toast_text(&mut self, ctx: &egui::Context, text: Option<String>) {
+        if let Some(text) = text {
+            // The clock starts when the toast is first drawn, not now: a native dialog or a slow
+            // export may block this thread for seconds before the next frame.
+            self.toast = Some(Toast::pending(text));
+            ctx.request_repaint();
+        }
+    }
+}
+
+impl eframe::App for AthenaApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
+    }
+}
+
+impl AthenaApp {
+    /// One frame of the whole app. Kept apart from `eframe::App::ui` so tests can drive it.
+    fn show(&mut self, ui: &mut egui::Ui) {
+        self.core.vm.today = self.today();
+        if let Err(err) = self.core.sync() {
+            tracing::error!("could not refresh the view: {err}");
+        }
+        let theme = self.core.vm.theme();
+        if theme != self.applied_theme {
+            theme::apply(ui.ctx(), theme);
+            self.applied_theme = theme;
+        }
+        if !self.core.vm.onboarding_complete() {
+            let theme = self.core.vm.theme();
+            if let Some(result) = onboarding::show(ui, theme, &mut self.onboarding) {
+                match self.core.complete_onboarding(result) {
+                    Ok(outcome) => {
+                        self.core.set_screen(Screen::Month);
+                        let ctx = ui.ctx().clone();
+                        self.raise_toast(&ctx, outcome.toast);
+                    }
+                    Err(err) => {
+                        tracing::error!("onboarding could not be saved: {err}");
+                        self.onboarding.error = Some(OnboardingIssue::SaveFailed);
+                    }
+                }
+            }
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        if self.quick_add.is_none() && self.confirm.is_none() {
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
+                self.open_quick_add();
+            }
+            for (key, screen) in [
+                (Key::Num1, Screen::ALL[0]),
+                (Key::Num2, Screen::ALL[1]),
+                (Key::Num3, Screen::ALL[2]),
+            ] {
+                if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, key)) {
+                    self.core.set_screen(screen);
+                }
+            }
+        }
+        let output = shell::show(ui, &self.core.vm, &mut self.core.ui);
+        if let Some(screen) = output.navigate {
+            self.core.set_screen(screen);
+        }
+        let mut settings_failed = false;
+        for event in output.events {
+            // After one refused settings change, the rest of that batch is dropped.
+            if settings_failed && matches!(event, ScreenEvent::Apply(_)) {
+                continue;
+            }
+            settings_failed |= !self.handle_screen_event(&ctx, event);
+        }
+
+        if let Some(mut state) = self.quick_add.take() {
+            match quick_add::show(&ctx, &mut state, &self.core.vm) {
+                Some(event) => {
+                    let (after, toast) = handle_quick_add(&mut self.core, &mut state, event);
+                    self.raise_toast(&ctx, toast);
+                    if after == ModalAfter::Keep {
+                        self.quick_add = Some(state);
+                    }
+                }
+                None => self.quick_add = Some(state),
+            }
+        }
+        if let Some(dialog) = self.confirm.take() {
+            match confirm_dialog::show(&ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
+            {
+                Some(ConfirmChoice::Confirmed(action)) => {
+                    let text = apply_confirmed(&mut self.core, action);
+                    self.raise_toast_text(&ctx, text);
+                }
+                Some(ConfirmChoice::Cancelled) => {}
+                None => self.confirm = Some(dialog),
+            }
+        }
+        toast::show(&ctx, &mut self.toast, self.core.vm.theme());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::money::Money;
+    use crate::domain::person::PersonKind;
+    use crate::domain::transaction::{Allocation, TransactionType};
+    use crate::i18n::ToastKey;
+    use crate::shared::test_fixtures::draft_with;
+
+    fn onboarded(partner: Option<&str>) -> AppCore {
+        let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        core.complete_onboarding(OnboardingResult {
+            display_name: "A3".into(),
+            partner_name: partner.map(Into::into),
+            start_balance: Money::from_cents(10_000),
+            language: Language::En,
+        })
+        .unwrap();
+        core
+    }
+
+    #[test]
+    fn onboarding_creates_owner_and_partner() {
+        let core = onboarded(Some("Ana"));
+        assert_eq!(core.vm.all_people.len(), 2);
+        assert_eq!(core.vm.all_people[0].kind, PersonKind::Owner);
+        assert_eq!(core.vm.all_people[1].kind, PersonKind::Partner);
+        assert_eq!(core.owner().unwrap().name, "A3");
+        assert!(core.vm.profile.as_ref().unwrap().onboarding_complete);
+        assert_eq!(core.vm.owner_name(), Some("A3"));
+        assert_eq!(core.vm.balance, Money::from_cents(10_000));
+    }
+
+    #[test]
+    fn before_onboarding_the_view_model_is_empty_but_usable() {
+        let core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        assert!(!core.vm.onboarding_complete());
+        assert_eq!(core.vm.language(), Language::En);
+        assert_eq!(core.vm.theme(), Theme::Dark);
+        assert_eq!(core.vm.owner_name(), None);
+        assert_eq!(core.vm.calendar.len(), 12);
+        assert_eq!(core.vm.summary.count, 0);
+    }
+
+    #[test]
+    fn language_and_theme_come_from_the_profile() {
+        let mut core = onboarded(None);
+        let mut profile = core.vm.profile.clone().unwrap();
+        profile.language = Language::PtBr;
+        profile.theme = Theme::Light;
+        let outcome = core.save_profile(profile).unwrap();
+        assert_eq!(outcome.toast, Some(ToastKey::ProfileSaved));
+        assert_eq!(core.vm.language(), Language::PtBr);
+        assert_eq!(core.vm.theme(), Theme::Light);
+    }
+
+    #[test]
+    fn archived_person_leaves_active_list_keeps_history() {
+        let mut core = onboarded(Some("Ana"));
+        let partner = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.kind == PersonKind::Partner)
+            .unwrap()
+            .id;
+        core.archive_person(partner).unwrap();
+        assert!(
+            !core
+                .vm
+                .all_people
+                .iter()
+                .any(|p| p.id == partner && !p.archived)
+        );
+        assert!(
+            core.vm
+                .all_people
+                .iter()
+                .any(|p| p.id == partner && p.archived)
+        );
+        assert!(core.vm.active_people().iter().all(|p| p.id != partner));
+        assert_eq!(
+            core.vm.person(partner).map(|p| p.name.as_str()),
+            Some("Ana")
+        );
+    }
+
+    #[test]
+    fn the_owner_cannot_be_archived() {
+        let mut core = onboarded(None);
+        let owner = core.owner().unwrap().id;
+        let version = core.store.data_version();
+        assert!(core.archive_person(owner).is_err());
+        assert_eq!(core.store.data_version(), version);
+        assert!(!core.owner().unwrap().archived);
+    }
+
+    #[test]
+    fn archived_category_still_resolves_its_label() {
+        let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        let id = core
+            .vm
+            .all_categories
+            .iter()
+            .find(|c| c.name == "Food")
+            .unwrap()
+            .id;
+        core.apply(AppAction::ArchiveCategory(id)).unwrap();
+        assert_eq!(core.vm.category(id).map(|c| c.name.as_str()), Some("Food"));
+        assert!(
+            core.vm
+                .active_categories(TransactionType::Expense)
+                .iter()
+                .all(|c| c.id != id)
+        );
+    }
+
+    #[test]
+    fn category_pickers_follow_the_kind() {
+        let core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        let names = |kind| -> Vec<&str> {
+            core.vm
+                .active_categories(kind)
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect()
+        };
+        assert!(names(TransactionType::Income).contains(&"Salary"));
+        assert!(!names(TransactionType::Expense).contains(&"Salary"));
+        assert!(names(TransactionType::Refund).contains(&"Food"));
+    }
+
+    #[test]
+    fn creating_a_transaction_refreshes_the_register_and_totals() {
+        let mut core = onboarded(Some("Ana"));
+        let owner = core.owner().unwrap().id;
+        let draft = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(2_500),
+        }]);
+        core.create_transaction(draft).unwrap();
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert_eq!(core.vm.summary.expenses, Money::from_cents(2_500));
+        assert_eq!(core.vm.balance, Money::from_cents(7_500));
+        assert_eq!(core.vm.person_totals.len(), 1);
+        assert_eq!(core.vm.calendar[10].summary.count, 1);
+    }
+
+    #[test]
+    fn changing_month_reloads_the_register_without_another_action() {
+        let mut core = onboarded(None);
+        core.create_transaction(draft_with(vec![])).unwrap();
+        assert_eq!(core.vm.transactions.len(), 1);
+        core.set_month(YearMonth::new(2026, 10).unwrap()).unwrap();
+        assert!(core.vm.transactions.is_empty());
+        assert_eq!(core.vm.summary.count, 0);
+        core.set_month(YearMonth::new(2026, 11).unwrap()).unwrap();
+        assert_eq!(core.vm.transactions.len(), 1);
+    }
+
+    #[test]
+    fn sync_reloads_only_when_something_changed() {
+        let mut core = onboarded(None);
+        assert!(!core.sync().unwrap());
+        core.ui.filter.text = "x".into();
+        assert!(core.sync().unwrap());
+        assert!(!core.sync().unwrap());
+        core.set_calendar_year(2027).unwrap();
+        assert_eq!(core.vm.calendar[0].month.year, 2027);
+    }
+
+    #[test]
+    fn scoped_reloads_leave_other_data_alone() {
+        let mut core = onboarded(None);
+        core.create_transaction(draft_with(vec![])).unwrap();
+        core.save_person(Person {
+            id: 0,
+            name: "Bia".into(),
+            kind: PersonKind::Other,
+            archived: false,
+            created_at: String::new(),
+        })
+        .unwrap();
+        assert_eq!(core.vm.all_people.len(), 2);
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert!(
+            !core.sync().unwrap(),
+            "a scoped reload leaves the cache current"
+        );
+    }
+
+    #[test]
+    fn failed_actions_change_nothing() {
+        let mut core = onboarded(None);
+        let mut bad = draft_with(vec![]);
+        bad.amount = Money::ZERO;
+        assert!(core.create_transaction(bad).is_err());
+        assert!(core.vm.transactions.is_empty());
+    }
+
+    fn quick_state(core: &AppCore) -> QuickAddState {
+        let people: Vec<_> = core.vm.active_people().into_iter().cloned().collect();
+        QuickAddState::new(&people, crate::shared::test_fixtures::today(), Language::En)
+    }
+
+    fn valid_draft(state: &mut QuickAddState) -> crate::domain::transaction::TxDraft {
+        state.title = "Market".into();
+        state.amount_input = "45,90".into();
+        state.to_draft().unwrap()
+    }
+
+    #[test]
+    fn a_new_entry_saves_and_leaves_the_modal_ready_for_the_next() {
+        let mut core = onboarded(Some("Ana"));
+        let mut state = quick_state(&core);
+        let draft = valid_draft(&mut state);
+        let (after, toast) = handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        assert_eq!(
+            (after, toast),
+            (ModalAfter::Keep, Some(ToastKey::TransactionSaved))
+        );
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert_eq!(core.vm.transactions[0].title, "Market");
+        assert_eq!(core.vm.summary.expenses, Money::from_cents(4_590));
+        assert!(state.title.is_empty() && state.amount_input.is_empty());
+        assert!(
+            state.focus_amount,
+            "focus returns to the amount for repeated entry"
+        );
+        assert_eq!(state.payer_id, core.owner().map(|p| p.id));
+    }
+
+    #[test]
+    fn editing_saves_and_closes() {
+        let mut core = onboarded(None);
+        let mut state = quick_state(&core);
+        let draft = valid_draft(&mut state);
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        let stored = core.vm.transactions[0].clone();
+        let people: Vec<_> = core.vm.active_people().into_iter().cloned().collect();
+        let mut edit = QuickAddState::from_transaction(&stored, &people, Language::En);
+        edit.title = "Supermarket".into();
+        let draft = edit.to_draft().unwrap();
+        let (after, toast) = handle_quick_add(&mut core, &mut edit, QuickAddEvent::Submit(draft));
+        assert_eq!(
+            (after, toast),
+            (ModalAfter::Close, Some(ToastKey::TransactionUpdated))
+        );
+        assert_eq!(core.vm.transactions[0].title, "Supermarket");
+        assert_eq!(core.vm.transactions.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_save_keeps_the_modal_and_the_input() {
+        let mut core = onboarded(Some("Ana"));
+        let mut state = quick_state(&core);
+        let mut draft = valid_draft(&mut state);
+        draft.payer_id = Some(9_999);
+        let (after, toast) = handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        assert_eq!((after, toast), (ModalAfter::Keep, None));
+        assert_eq!(state.errors, vec![QuickAddError::Save]);
+        assert_eq!(state.title, "Market", "nothing the user typed is lost");
+        assert!(core.vm.transactions.is_empty());
+    }
+
+    #[test]
+    fn close_discards_without_saving() {
+        let mut core = onboarded(None);
+        let mut state = quick_state(&core);
+        valid_draft(&mut state);
+        let (after, toast) = handle_quick_add(&mut core, &mut state, QuickAddEvent::Close);
+        assert_eq!((after, toast), (ModalAfter::Close, None));
+        assert!(core.vm.transactions.is_empty());
+    }
+
+    #[test]
+    fn opening_a_month_from_the_calendar_selects_it_and_shows_the_register() {
+        let mut core = onboarded(None);
+        let mut draft = draft_with(vec![]);
+        draft.date = crate::shared::test_fixtures::date(2026, 3, 9);
+        core.create_transaction(draft).unwrap();
+        core.set_screen(Screen::Calendar);
+        core.open_month(YearMonth::new(2026, 3).unwrap()).unwrap();
+        assert_eq!(core.ui.screen, Screen::Month);
+        assert_eq!(core.ui.month, YearMonth::new(2026, 3).unwrap());
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert_eq!(core.vm.summary.count, 1);
+    }
+
+    #[test]
+    fn editing_a_stored_transaction_changes_it_in_place_and_closes() {
+        let mut core = onboarded(Some("Ana"));
+        let mut state = quick_state(&core);
+        let draft = valid_draft(&mut state);
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        let id = core.vm.transactions[0].id;
+
+        let mut edit = begin_edit(&core, id).unwrap();
+        assert_eq!(edit.mode, QuickAddMode::Edit(id));
+        assert_eq!(edit.title, "Market");
+        assert_eq!(edit.amount_input, "45,90");
+        assert_eq!(
+            edit.payer_id,
+            core.owner().map(|p| p.id),
+            "the payer is prefilled too"
+        );
+        edit.title = "Supermarket".into();
+        edit.amount_input = "50,00".into();
+        let draft = edit.to_draft().unwrap();
+        let (after, toast) = handle_quick_add(&mut core, &mut edit, QuickAddEvent::Submit(draft));
+        assert_eq!(
+            (after, toast),
+            (ModalAfter::Close, Some(ToastKey::TransactionUpdated))
+        );
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert_eq!(core.vm.transactions[0].title, "Supermarket");
+        assert_eq!(core.vm.summary.expenses, Money::from_cents(5_000));
+        assert!(begin_edit(&core, 9_999).is_err());
+    }
+
+    #[test]
+    fn deleting_asks_first_names_the_entry_and_removes_it_only_when_confirmed() {
+        let mut core = onboarded(None);
+        let mut state = quick_state(&core);
+        let draft = valid_draft(&mut state);
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        let id = core.vm.transactions[0].id;
+
+        let dialog = delete_confirmation(&core, id).unwrap();
+        assert!(dialog.danger);
+        assert!(
+            dialog.body.contains("Market") && dialog.body.contains("R$ 45,90"),
+            "{}",
+            dialog.body
+        );
+        assert_eq!(dialog.action, AppAction::DeleteTransaction(id));
+        assert_eq!(
+            core.vm.transactions.len(),
+            1,
+            "building the dialog deletes nothing"
+        );
+
+        let toast = apply_confirmed(&mut core, dialog.action);
+        assert_eq!(toast.as_deref(), Some("Deleted \u{201c}Market\u{201d}."));
+        assert!(core.vm.transactions.is_empty());
+        assert_eq!(core.vm.summary.count, 0);
+        assert!(delete_confirmation(&core, id).is_err());
+    }
+
+    #[test]
+    fn a_failed_confirmed_action_shows_no_toast() {
+        let mut core = onboarded(None);
+        assert_eq!(
+            apply_confirmed(&mut core, AppAction::DeleteTransaction(9_999)),
+            None
+        );
+    }
+
+    #[test]
+    fn other_confirmed_actions_use_their_standard_toast() {
+        let mut core = onboarded(Some("Ana"));
+        let partner = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.kind == PersonKind::Partner)
+            .unwrap()
+            .id;
+        let toast = apply_confirmed(&mut core, AppAction::ArchivePerson(partner));
+        assert_eq!(toast.as_deref(), Some("Person archived."));
+    }
+
+    /// The whole app, driven like a user: onboarding, add an entry, edit it, delete it, browse the
+    /// calendar. The date is pinned so the test does not depend on when it runs.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one long journey is the point of this test
+    fn a_user_can_set_up_log_edit_delete_and_browse() {
+        use egui_kittest::kittest::Queryable;
+
+        let core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        let mut app = AthenaApp {
+            core,
+            applied_theme: Theme::Dark,
+            onboarding: OnboardingState::new(Language::En),
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        };
+        app.core.ui.set_month(YearMonth::new(2026, 11).unwrap());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    // The harness only has egui's bundled fonts, which lack some of our symbols.
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                app,
+            );
+        let type_into =
+            |harness: &mut egui_kittest::Harness<'_, AthenaApp>, index: usize, text: &str| {
+                harness
+                    .get_all_by_role(egui::Role::TextInput)
+                    .nth(index)
+                    .unwrap()
+                    .focus();
+                harness.run_steps(2);
+                harness
+                    .get_all_by_role(egui::Role::TextInput)
+                    .nth(index)
+                    .unwrap()
+                    .type_text(text);
+                harness.run_steps(2);
+            };
+
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Welcome to Athena").is_some());
+        harness.get_by_label("Continue").click();
+        harness.run_steps(3);
+        type_into(&mut harness, 0, "A3");
+        harness.get_by_label("Continue").click();
+        harness.run_steps(3);
+        harness.get_by_label("Skip").click();
+        harness.run_steps(3);
+        harness.get_by_label("Start").click();
+        harness.run_steps(4);
+        assert!(harness.state().core.vm.onboarding_complete());
+        assert_eq!(
+            harness.state().core.owner().map(|p| p.name.as_str()),
+            Some("A3")
+        );
+        assert!(
+            harness.query_by_label("November 2026").is_some(),
+            "the Month screen opens"
+        );
+        assert!(
+            harness
+                .query_by_label("Nothing logged in November 2026 yet.")
+                .is_some()
+        );
+
+        harness
+            .get_all_by_label("New transaction")
+            .next()
+            .unwrap()
+            .click();
+        harness.run_steps(3);
+        // The register's search box comes first in the tree, then the modal's fields.
+        type_into(&mut harness, 1, "12,50");
+        type_into(&mut harness, 2, "Coffee");
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.transactions.len(), 1);
+        assert!(
+            harness
+                .state()
+                .quick_add
+                .as_ref()
+                .is_some_and(|q| q.title.is_empty())
+        );
+        assert!(
+            harness.state().toast.is_some(),
+            "a confirmation toast appears"
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run_steps(3);
+        assert!(harness.state().quick_add.is_none());
+        assert!(harness.query_by_label("Edit Coffee").is_some());
+        assert_eq!(
+            harness.state().core.vm.summary.expenses,
+            Money::from_cents(1_250)
+        );
+
+        harness.get_by_label("Edit Coffee").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Edit transaction").is_some());
+        type_into(&mut harness, 2, " Beans");
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(4);
+        assert!(
+            harness.state().quick_add.is_none(),
+            "an edit closes the modal"
+        );
+        assert_eq!(
+            harness.state().core.vm.transactions[0].title,
+            "Coffee Beans"
+        );
+
+        harness.get_by_label("Delete Coffee Beans").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Delete this transaction?").is_some());
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().core.vm.transactions.len(),
+            1,
+            "cancel keeps the row"
+        );
+        harness.get_by_label("Delete Coffee Beans").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete").click();
+        harness.run_steps(4);
+        assert!(harness.state().core.vm.transactions.is_empty());
+        assert!(
+            harness
+                .query_by_label("Nothing logged in November 2026 yet.")
+                .is_some()
+        );
+
+        harness.get_by_label("Calendar").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.ui.screen, Screen::Calendar);
+        harness.get_by_label("March 2026").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.ui.screen, Screen::Month);
+        assert_eq!(
+            harness.state().core.ui.month,
+            YearMonth::new(2026, 3).unwrap()
+        );
+        assert!(harness.query_by_label("March 2026").is_some());
+    }
+
+    #[test]
+    fn settings_changes_apply_and_the_screen_reloads_what_is_stored() {
+        let mut core = onboarded(Some("Ana"));
+        core.set_screen(Screen::Settings);
+        core.ui.settings.owner_name = "Half typed".into();
+        let mut profile = core.vm.profile.clone().unwrap();
+        profile.language = Language::PtBr;
+        let (text, ok) = apply_settings_action(&mut core, AppAction::SaveProfile(profile));
+        assert!(ok);
+        assert_eq!(
+            text.as_deref(),
+            Some("Perfil salvo."),
+            "the toast speaks the new language"
+        );
+        assert_eq!(core.vm.language(), Language::PtBr);
+        assert_eq!(
+            core.ui.settings.owner_name, "",
+            "edits reset, so the form reloads from the store"
+        );
+    }
+
+    #[test]
+    fn a_refused_settings_change_is_reported_and_changes_nothing() {
+        let mut core = onboarded(Some("Ana"));
+        let mut owner = core.owner().unwrap().clone();
+        owner.name = "ana".into();
+        let before = core.store.data_version();
+        let (text, ok) = apply_settings_action(&mut core, AppAction::SavePerson(owner));
+        assert_eq!((text, ok), (None, false));
+        assert_eq!(core.ui.settings.error, Some(SettingsError::SaveRejected));
+        assert_eq!(core.store.data_version(), before);
+        assert_eq!(core.owner().unwrap().name, "A3");
+    }
+
+    #[test]
+    fn leaving_settings_drops_unsaved_edits() {
+        let mut core = onboarded(None);
+        core.set_screen(Screen::Settings);
+        core.ui.settings.new_person = "Typed".into();
+        core.set_screen(Screen::Month);
+        assert_eq!(core.ui.settings.new_person, "");
+    }
+
+    #[test]
+    fn an_archived_person_leaves_the_pickers_but_keeps_their_name_on_old_entries() {
+        let mut core = onboarded(Some("Ana"));
+        let ana = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.kind == PersonKind::Partner)
+            .unwrap()
+            .id;
+        let mut state = quick_state(&core);
+        state.set_split(crate::ui::quick_add::SplitChoice::Person(ana));
+        let draft = valid_draft(&mut state);
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+
+        let (_, ok) = apply_settings_action(&mut core, AppAction::ArchivePerson(ana));
+        assert!(ok);
+        assert!(
+            core.vm.active_people().iter().all(|p| p.id != ana),
+            "hidden from new entries"
+        );
+        assert!(quick_state(&core).to_draft().is_err() || quick_state(&core).payer_id != Some(ana));
+        let stored = &core.vm.transactions[0];
+        assert_eq!(
+            crate::ui::components::transaction_row::people_label(stored, &core.vm),
+            "Ana"
+        );
+    }
+
+    /// Settings through the real app: rename the owner, switch language and theme, archive the
+    /// partner. The sidebar and every screen follow immediately.
+    #[test]
+    fn settings_changes_show_up_across_the_whole_app() {
+        use egui_kittest::kittest::Queryable;
+
+        let core = onboarded(Some("Ana"));
+        let app = AthenaApp {
+            core,
+            applied_theme: Theme::Dark,
+            onboarding: OnboardingState::new(Language::En),
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 2600.0))
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                app,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Settings").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.ui.screen, Screen::Settings);
+
+        harness
+            .get_all_by_role(egui::Role::TextInput)
+            .next()
+            .unwrap()
+            .focus();
+        harness.run_steps(2);
+        harness
+            .get_all_by_role(egui::Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text("x");
+        harness.run_steps(2);
+        assert_eq!(harness.state().core.ui.settings.owner_name, "A3x");
+        harness.get_by_label("Save").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.owner().unwrap().name, "A3x");
+        assert!(
+            harness.query_all_by_label("A3x").count() > 0,
+            "the sidebar shows the owner"
+        );
+        assert!(harness.state().toast.is_some());
+
+        harness.get_by_label("Light").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.theme(), Theme::Light);
+        assert_eq!(harness.state().applied_theme, Theme::Light);
+        harness.get_by_label("Português").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.language(), Language::PtBr);
+        assert!(harness.query_all_by_label("Configurações").count() > 0);
+        assert!(harness.query_all_by_label("Perfil").count() > 0);
+
+        harness.get_all_by_label("Arquivar").next().unwrap().click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().core.vm.active_people().len(),
+            2,
+            "asking archives nothing"
+        );
+        // People come before categories in the tree: the partner's own button, then the confirm button.
+        let confirm = harness.get_all_by_label("Arquivar").nth(1).unwrap();
+        confirm.click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.active_people().len(), 1);
+        assert_eq!(
+            harness.state().core.vm.all_people.len(),
+            2,
+            "the archived person stays in history"
+        );
+    }
+
+    #[test]
+    fn exports_report_where_they_went_and_how_much() {
+        let mut core = onboarded(Some("Ana"));
+        let mut state = quick_state(&core);
+        let draft = valid_draft(&mut state);
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        let dir = tempfile::tempdir().unwrap();
+
+        let json = dir.path().join("all.json");
+        let text = run_export(&core, ExportRequest::Json, &json, "2026-11-12T10:00:00Z");
+        assert!(text.starts_with("Exported 1 entry to "), "{text}");
+        assert!(text.contains("all.json") && json.exists());
+
+        let csv = dir.path().join("all.csv");
+        let scope = crate::domain::export::ExportScope::All;
+        let text = run_export(&core, ExportRequest::Csv(scope), &csv, "");
+        assert!(text.contains("all.csv") && csv.exists());
+        let csv_text = std::fs::read_to_string(&csv).unwrap();
+        assert!(csv_text.contains("Market") && csv_text.contains(";45,90;"));
+    }
+
+    #[test]
+    fn a_failed_export_says_so_and_keeps_the_old_file() {
+        let core = onboarded(None);
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked.csv");
+        std::fs::create_dir(&blocked).unwrap();
+        let text = run_export(
+            &core,
+            ExportRequest::Csv(crate::domain::export::ExportScope::All),
+            &blocked,
+            "",
+        );
+        assert_eq!(text, "Export failed. Any existing file was left untouched.");
+        assert!(blocked.is_dir());
+    }
+
+    #[test]
+    fn export_toasts_follow_the_language() {
+        let mut core = onboarded(None);
+        let mut profile = core.vm.profile.clone().unwrap();
+        profile.language = Language::PtBr;
+        core.save_profile(profile).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let text = run_export(
+            &core,
+            ExportRequest::Csv(crate::domain::export::ExportScope::All),
+            &dir.path().join("x.csv"),
+            "",
+        );
+        assert!(text.starts_with("Exportado: 0 lançamentos em "), "{text}");
+    }
+
+    /// Keyboard-first: Ctrl+N opens quick add from any screen, Esc closes it, Ctrl+1/2/3 switch
+    /// screens, and the shortcuts stay out of the way while a modal is open.
+    #[test]
+    fn keyboard_shortcuts_work_from_every_screen() {
+        let app = AthenaApp {
+            core: onboarded(Some("Ana")),
+            applied_theme: Theme::Dark,
+            onboarding: OnboardingState::new(Language::En),
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 900.0))
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                app,
+            );
+        harness.run_steps(3);
+        let ctrl = Modifiers::COMMAND;
+
+        harness.key_press_modifiers(ctrl, Key::Num2);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Calendar);
+        harness.key_press_modifiers(ctrl, Key::Num3);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Settings);
+
+        harness.key_press_modifiers(ctrl, Key::N);
+        harness.run_steps(3);
+        assert!(harness.state().quick_add.is_some());
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert!(harness.state().quick_add.is_none());
+        assert!(harness.state().core.vm.transactions.is_empty());
+
+        harness.key_press_modifiers(ctrl, Key::N);
+        harness.run_steps(3);
+        harness.key_press_modifiers(ctrl, Key::Num1);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Settings);
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        harness.key_press_modifiers(ctrl, Key::Num1);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Month);
+    }
+
+    #[test]
+    fn a_long_title_is_truncated_not_allowed_to_push_the_amount_away() {
+        use egui_kittest::kittest::Queryable;
+        let mut core = onboarded(None);
+        let mut state = quick_state(&core);
+        state.title = "A very long title ".repeat(20);
+        state.amount_input = "9,99".into();
+        let draft = state.to_draft().unwrap();
+        handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
+        let app = AthenaApp {
+            core,
+            applied_theme: Theme::Dark,
+            onboarding: OnboardingState::new(Language::En),
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1000.0, 800.0))
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                app,
+            );
+        harness.run_steps(4);
+        let amount = harness.get_all_by_label("−R$ 9,99").next().unwrap().rect();
+        assert!(
+            amount.right() <= 1000.0,
+            "the amount stays inside the window: {amount:?}"
+        );
+    }
+}
