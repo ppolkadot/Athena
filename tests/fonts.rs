@@ -1,6 +1,6 @@
 //! Validates the committed font assets. The build never downloads a font.
 
-use ttf_parser::{Face, name_id};
+use ttf_parser::{Face, Weight, name_id};
 
 const REGULAR: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Regular.otf");
 const MEDIUM: &[u8] = include_bytes!("../assets/fonts/AthenaPolaris-Medium.otf");
@@ -103,4 +103,31 @@ fn upstream_license_is_shipped_unmodified() {
     assert!(!LICENSE.contains('\r'));
     assert!(LICENSE.starts_with("SALTED FLUTTERS POLARIS FONT LICENSE"));
     assert!(LICENSE.contains("Salted Flutters Polaris - Created by ppoolar"));
+}
+
+#[test]
+fn faces_have_expected_weights_and_distinct_bold_outlines() {
+    let expected = [
+        ("Regular", REGULAR, Weight::Normal),
+        ("Medium", MEDIUM, Weight::Medium),
+        ("Semibold", SEMIBOLD, Weight::SemiBold),
+        ("Bold", BOLD, Weight::Bold),
+        ("Tabular", TABULAR, Weight::SemiBold),
+    ];
+    for (label, bytes, weight) in expected {
+        let face = Face::parse(bytes, 0).unwrap();
+        assert_eq!(face.weight(), weight, "{label} weight mismatch");
+    }
+
+    let bold = Face::parse(BOLD, 0).unwrap();
+    let semibold = Face::parse(SEMIBOLD, 0).unwrap();
+    assert!(bold.is_bold(), "Bold face must report is_bold()");
+    assert_ne!(BOLD, SEMIBOLD, "Bold and Semibold bytes must differ");
+    let bold_a = bold.glyph_index('A').unwrap();
+    let semi_a = semibold.glyph_index('A').unwrap();
+    assert_ne!(
+        bold.glyph_hor_advance(bold_a),
+        semibold.glyph_hor_advance(semi_a),
+        "Bold and Semibold glyph advances should differ"
+    );
 }

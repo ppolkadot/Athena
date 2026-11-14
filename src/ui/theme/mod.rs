@@ -5,13 +5,14 @@ pub mod typography;
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke, Style, Vec2, Visuals};
 
-pub use palette::{Palette, contrast_ratio, palette, parse_hex};
+pub use palette::{Palette, composite, contrast_ratio, palette, parse_hex};
 pub use typography::install_fonts;
 
 use crate::domain::settings::Theme;
 
 const CARD_RADIUS: u8 = 16;
 const CONTROL_RADIUS: u8 = 10;
+const SELECTION_BG_ALPHA: u8 = 36;
 
 fn egui_theme(theme: Theme) -> egui::Theme {
     match theme {
@@ -46,7 +47,7 @@ fn configure(style: &mut Style, p: &Palette, theme: Theme) {
     v.hyperlink_color = p.accent;
     v.warn_fg_color = p.warning;
     v.error_fg_color = p.negative;
-    v.selection.bg_fill = tint(p.accent, 70);
+    v.selection.bg_fill = tint(p.accent, SELECTION_BG_ALPHA);
     v.selection.stroke = Stroke::new(1.0, p.accent);
 
     let w = &mut v.widgets;
@@ -133,5 +134,25 @@ mod tests {
         let style = ctx.style_of(egui::Theme::Dark);
         assert!((style.spacing.interact_size.y - 36.0).abs() < f32::EPSILON);
         assert_eq!(style.visuals.window_corner_radius, CornerRadius::same(16));
+    }
+
+    #[test]
+    fn selected_visuals_meet_wcag_aa_contrast() {
+        let ctx = egui::Context::default();
+        apply(&ctx, Theme::Dark);
+        for theme in [Theme::Dark, Theme::Light] {
+            let p = palette(theme);
+            let style = ctx.style_of(egui_theme(theme));
+            let sel_fill = style.visuals.selection.bg_fill;
+            let sel_fg = style.visuals.selection.stroke.color;
+            for surface in [p.bg, p.panel, p.card, p.card_hover] {
+                let composited = surface.blend(sel_fill);
+                let ratio = contrast_ratio(sel_fg, composited);
+                assert!(
+                    ratio >= 4.5,
+                    "{theme:?} selected control on {surface:?}: {ratio:.2} < 4.5"
+                );
+            }
+        }
     }
 }

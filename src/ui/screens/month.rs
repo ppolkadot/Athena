@@ -188,6 +188,8 @@ fn filters(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) {
             .map_or(s.all_categories, |c| c.name.as_str());
         let mut category = state.filter.category_id;
         let combo = ComboBox::from_id_salt("month-category-filter")
+            .width(ui.available_width().clamp(120.0, 200.0))
+            .truncate()
             .selected_text(selected)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut category, None, s.all_categories);
@@ -337,17 +339,28 @@ fn rail_row(
             .size()
             .x
     });
-    ui.horizontal(|ui| {
-        let max_name_width = (ui.available_width() - amount_width - 12.0).max(40.0);
-        ui.scope(|ui| {
-            ui.set_max_width(max_name_width);
+    let avail = ui.available_width();
+    if avail < amount_width + 56.0 {
+        ui.vertical(|ui| {
             ui.add(egui::Label::new(name).truncate())
                 .on_hover_text(name);
+            ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
+                ui.label(RichText::new(amount_str).font(amount_font));
+            });
         });
-        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(amount_str).font(amount_font));
+    } else {
+        ui.horizontal(|ui| {
+            let max_name_width = avail - amount_width - 12.0;
+            ui.scope(|ui| {
+                ui.set_max_width(max_name_width);
+                ui.add(egui::Label::new(name).truncate())
+                    .on_hover_text(name);
+            });
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(amount_str).font(amount_font));
+            });
         });
-    });
+    }
     bar(ui, p, fraction, color);
     ui.add_space(6.0);
 }
@@ -753,5 +766,180 @@ mod tests {
             rail_cat.max.x < rail_amount.min.x,
             "rail category ({rail_cat:?}) overlaps rail amount ({rail_amount:?})"
         );
+    }
+
+    const LONG_CAT: &str = "Categoria com nome extremamente longo ãõçáéíóúâêôàü para testar layout";
+    const LONG_TITLE: &str =
+        "Compra parcelada com descrição muito longa para testar quebra e truncamento";
+
+    fn narrow_layout_core(lang: Language) -> AppCore {
+        use crate::domain::settings::{Profile, Theme};
+        use crate::domain::transaction::Allocation;
+
+        let mut core = core_with_month();
+        core.vm.profile = Some(Profile {
+            start_balance: Money::ZERO,
+            theme: Theme::Dark,
+            language: lang,
+            onboarding_complete: true,
+        });
+        core.vm
+            .all_categories
+            .iter_mut()
+            .find(|c| c.name == "Housing")
+            .unwrap()
+            .name = LONG_CAT.into();
+        let rent = core
+            .vm
+            .transactions
+            .iter_mut()
+            .find(|t| t.title == "Rent")
+            .unwrap();
+        rent.title = LONG_TITLE.into();
+        rent.amount = Money::from_cents(123_456_789);
+        rent.allocations = vec![
+            Allocation {
+                person_id: 1,
+                amount: Money::from_cents(61_728_395),
+            },
+            Allocation {
+                person_id: 2,
+                amount: Money::from_cents(61_728_394),
+            },
+        ];
+        let cat_id = rent.category_id;
+        core.ui.set_category_filter(cat_id);
+        if let Some(t) = core
+            .vm
+            .category_totals
+            .iter_mut()
+            .find(|t| t.category_id == cat_id)
+        {
+            t.net = Money::from_cents(123_456_789);
+        }
+        core
+    }
+
+    fn assert_narrow_layout_for(
+        lang: Language,
+        edit_word: &str,
+        delete_word: &str,
+        width: f32,
+        height: f32,
+    ) {
+        use egui_kittest::kittest::Queryable;
+
+        let core = narrow_layout_core(lang);
+        let content_width = (width - 268.0).min(1100.0);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(Vec2::new(content_width, height))
+            .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, (vm, state, event): &mut MonthApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    crate::ui::theme::apply(ui.ctx(), vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_max_width(ui.available_width());
+                            if let Some(e) = show(ui, vm, state) {
+                                *event = Some(e);
+                            }
+                        });
+                },
+                (core.vm.clone(), core.ui.clone(), None),
+            );
+        harness.run_steps(3);
+
+        let row_amount = harness
+            .query_all_by_label("−R$ 1.234.567,89")
+            .map(|n| n.rect())
+            .next()
+            .unwrap_or_else(|| panic!("{lang:?} {width}x{height}: missing row amount"));
+        let row_person = harness
+            .query_all_by_label("A3 · Ana")
+            .map(|n| n.rect())
+            .next()
+            .unwrap_or_else(|| panic!("{lang:?} {width}x{height}: missing A3 · Ana pill"));
+        let edit_rect = harness
+            .get_by_label(&format!("{edit_word} {LONG_TITLE}"))
+            .rect();
+        let delete_rect = harness
+            .get_by_label(&format!("{delete_word} {LONG_TITLE}"))
+            .rect();
+
+        for (name, rect) in [
+            ("row_amount", row_amount),
+            ("row_person", row_person),
+            ("edit", edit_rect),
+            ("delete", delete_rect),
+        ] {
+            assert!(
+                rect.left() >= -1.0 && rect.right() <= content_width + 1.0,
+                "{lang:?} {width}x{height} {name} out of 0..={content_width}: {rect:?}"
+            );
+        }
+
+        let title_rect = harness
+            .query_all_by_label(LONG_TITLE)
+            .map(|n| n.rect())
+            .next()
+            .unwrap_or_else(|| panic!("{lang:?} {width}x{height}: missing long title"));
+        for (name, right_rect) in [
+            ("row_amount", row_amount),
+            ("row_person", row_person),
+            ("edit", edit_rect),
+            ("delete", delete_rect),
+        ] {
+            assert!(
+                !title_rect.intersects(right_rect),
+                "{lang:?} {width}x{height} title ({title_rect:?}) intersects {name} ({right_rect:?})"
+            );
+        }
+
+        let mut cats: Vec<_> = harness
+            .query_all_by_label(LONG_CAT)
+            .map(|n| n.rect())
+            .collect();
+        assert!(
+            cats.len() >= 2,
+            "{lang:?} {width}x{height}: expected category labels, got {}",
+            cats.len()
+        );
+        cats.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+        assert!(
+            cats[0].right() <= content_width + 1.0,
+            "{lang:?} {width}x{height}: top category overflowed {content_width}: {:?}",
+            cats[0]
+        );
+        for cat_rect in &cats[1..] {
+            assert!(
+                cat_rect.right() <= content_width + 1.0,
+                "{lang:?} {width}x{height}: category rect overflowed {content_width}: {cat_rect:?}"
+            );
+            assert!(
+                !cat_rect.intersects(row_amount) && !cat_rect.intersects(row_person),
+                "{lang:?} {width}x{height}: category ({cat_rect:?}) intersects row controls"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_viewports_and_long_labels_never_overlap_or_clip_amounts() {
+        for (lang, edit_word, delete_word) in [
+            (Language::En, "Edit", "Delete"),
+            (Language::PtBr, "Editar", "Excluir"),
+        ] {
+            for (width, height) in [
+                (760.0_f32, 560.0_f32),
+                (640.0_f32, 410.0_f32),
+                (1100.0_f32, 760.0_f32),
+            ] {
+                assert_narrow_layout_for(lang, edit_word, delete_word, width, height);
+            }
+        }
     }
 }

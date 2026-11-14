@@ -6,7 +6,7 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.0.1. English and Brazilian Portuguese. Windows is the primary target.
+Version 1.0.2. English and Brazilian Portuguese. Windows is the primary target.
 
 Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
 license and provenance live in `assets/fonts/`.

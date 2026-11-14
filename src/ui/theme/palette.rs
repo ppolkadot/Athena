@@ -48,12 +48,27 @@ pub fn palette(theme: Theme) -> Palette {
             border: rgb(0xE2_E5_EE),
             text: rgb(0x14_18_21),
             muted: rgb(0x5C_64_76),
-            accent: rgb(0x4F_6B_FF),
-            positive: rgb(0x1F_9E_6E),
-            negative: rgb(0xD6_45_5A),
-            warning: rgb(0xB0_7B_12),
+            accent: rgb(0x3F_55_C6),
+            positive: rgb(0x14_7D_52),
+            negative: rgb(0xB8_32_47),
+            warning: rgb(0x7A_5B_00),
         },
     }
+}
+
+/// Alpha-composite an opaque `fg` with opacity `alpha` (`0..=255`) over an opaque `bg`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn composite(fg: Color32, alpha: u8, bg: Color32) -> Color32 {
+    let a = u16::from(alpha);
+    let inv = 255 - a;
+    let channel =
+        |f: u8, b: u8| -> u8 { ((u16::from(f) * a + u16::from(b) * inv + 127) / 255) as u8 };
+    Color32::from_rgb(
+        channel(fg.r(), bg.r()),
+        channel(fg.g(), bg.g()),
+        channel(fg.b(), bg.b()),
+    )
 }
 
 /// `#RRGGBB` to a color; `None` for anything else.
@@ -128,17 +143,44 @@ mod tests {
     }
 
     #[test]
-    fn amount_and_accent_colors_are_readable_as_large_text() {
+    fn semantic_colors_meet_wcag_aa_for_normal_text_on_every_surface() {
         for theme in [Theme::Dark, Theme::Light] {
             let p = palette(theme);
-            for color in [p.accent, p.positive, p.negative, p.warning] {
+            for surface in [p.bg, p.panel, p.card, p.card_hover] {
+                for (role, color) in [
+                    ("accent", p.accent),
+                    ("positive", p.positive),
+                    ("negative", p.negative),
+                    ("warning", p.warning),
+                ] {
+                    let ratio = contrast_ratio(color, surface);
+                    assert!(
+                        ratio >= 4.5,
+                        "{theme:?} {role} ({color:?}) on {surface:?}: {ratio:.2} < 4.5"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn button_and_selection_states_meet_wcag_aa() {
+        for theme in [Theme::Dark, Theme::Light] {
+            let p = palette(theme);
+            for (label, fg, bg) in [
+                ("primary button", p.bg, p.accent),
+                ("danger button", p.bg, p.negative),
+                ("nav active", p.accent, composite(p.accent, 36, p.panel)),
+            ] {
+                let ratio = contrast_ratio(fg, bg);
+                assert!(ratio >= 4.5, "{theme:?} {label}: {ratio:.2} < 4.5");
+            }
+            for surface in [p.bg, p.panel, p.card, p.card_hover] {
+                let active_bg = composite(p.accent, 50, surface);
+                let ratio = contrast_ratio(p.text, active_bg);
                 assert!(
-                    contrast_ratio(color, p.bg) >= 3.0,
-                    "{theme:?} {color:?} on bg"
-                );
-                assert!(
-                    contrast_ratio(color, p.card) >= 3.0,
-                    "{theme:?} {color:?} on card"
+                    ratio >= 4.5,
+                    "{theme:?} active press on {surface:?}: {ratio:.2} < 4.5"
                 );
             }
         }

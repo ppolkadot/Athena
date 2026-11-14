@@ -429,7 +429,7 @@ pub fn show(
     let mut event = None;
 
     let modal = egui::Modal::new(Id::unique("quick-add")).show(ctx, |ui| {
-        ui.set_width(520.0);
+        ui.set_width((ctx.content_rect().width() - 48.0).clamp(280.0, 520.0));
         let heading = if matches!(state.mode, QuickAddMode::Edit(_)) {
             s.qa_edit_title
         } else {
@@ -443,7 +443,7 @@ pub fn show(
         ui.add_space(12.0);
         // The form can be taller than a small window (a shared split adds a row per person),
         // so the fields scroll while the title and the Save/Cancel row stay in view.
-        let max_height = (ctx.content_rect().height() - 220.0).max(240.0);
+        let max_height = (ctx.content_rect().height() - 220.0).clamp(160.0, 480.0);
         egui::ScrollArea::vertical()
             .max_height(max_height)
             .auto_shrink([false, true])
@@ -1246,6 +1246,40 @@ mod tests {
             assert!(
                 rect.top() >= 0.0 && rect.bottom() <= 640.0,
                 "{label} stays on screen: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quick_add_fits_within_640x410_scaled_viewport() {
+        use egui_kittest::kittest::Queryable;
+        let vm = onboarded_vm();
+        let people: Vec<Person> = vm.active_people().into_iter().cloned().collect();
+        let state = QuickAddState::new(&people, today(), Language::En);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(640.0, 410.0))
+            .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, (state, vm, event): &mut ModalApp| {
+                    themed(ui, vm);
+                    if let Some(e) = show(ui.ctx(), state, vm) {
+                        *event = Some(e);
+                    }
+                },
+                (state, vm, None),
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Shared").click();
+        harness.run_steps(4);
+        for label in ["Save", "Cancel", "New transaction"] {
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                rect.top() >= 0.0 && rect.bottom() <= 410.0,
+                "{label} overflows 410 px height: {rect:?}"
+            );
+            assert!(
+                rect.left() >= 0.0 && rect.right() <= 640.0,
+                "{label} overflows 640 px width: {rect:?}"
             );
         }
     }

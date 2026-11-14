@@ -321,28 +321,65 @@ mod tests {
     fn text_styles_use_the_polaris_families() {
         let mut style = Style::default();
         apply_text_styles(&mut style);
+        let defs = test_font_definitions();
+        let resolved_primary = |family: &FontFamily| defs.families[family][0].as_str();
+
         assert_eq!(
             style.text_styles[&TextStyle::Body].family,
             FontFamily::Proportional
+        );
+        assert_eq!(
+            resolved_primary(&style.text_styles[&TextStyle::Body].family),
+            POLARIS_SEMIBOLD
         );
         assert_eq!(
             style.text_styles[&TextStyle::Small].family,
             FontFamily::Proportional
         );
         assert_eq!(
+            resolved_primary(&style.text_styles[&TextStyle::Small].family),
+            POLARIS_SEMIBOLD
+        );
+        assert_eq!(
             style.text_styles[&TextStyle::Button].family,
             medium_family()
+        );
+        assert_eq!(
+            resolved_primary(&style.text_styles[&TextStyle::Button].family),
+            POLARIS_SEMIBOLD
         );
         assert_eq!(
             style.text_styles[&TextStyle::Heading].family,
             display_family()
         );
+        assert_eq!(
+            resolved_primary(&style.text_styles[&TextStyle::Heading].family),
+            POLARIS_BOLD
+        );
         assert_eq!(style.text_styles[&section()].family, display_family());
+        assert_eq!(
+            resolved_primary(&style.text_styles[&section()].family),
+            POLARIS_BOLD
+        );
         assert_eq!(style.text_styles[&display()].family, display_family());
+        assert_eq!(
+            resolved_primary(&style.text_styles[&display()].family),
+            POLARIS_BOLD
+        );
         assert_eq!(
             style.text_styles[&TextStyle::Monospace].family,
             FontFamily::Monospace
         );
+        assert_eq!(
+            resolved_primary(&style.text_styles[&TextStyle::Monospace].family),
+            POLARIS_TABULAR
+        );
         assert_eq!(section_font().family, display_family());
+        assert_eq!(resolved_primary(&section_font().family), POLARIS_BOLD);
+        assert_eq!(tabular_font(BODY).family, FontFamily::Monospace);
+        assert_eq!(
+            resolved_primary(&tabular_font(BODY).family),
+            POLARIS_TABULAR
+        );
     }
 }

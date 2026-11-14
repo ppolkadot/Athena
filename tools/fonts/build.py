@@ -17,6 +17,7 @@ from fontTools import subset
 from fontTools.ttLib import TTFont
 
 STYLES = ("Regular", "Medium", "Semibold", "Bold")
+WEIGHT_CLASSES = {"Regular": 400, "Medium": 500, "Semibold": 600, "Bold": 700}
 TABULAR_SOURCE = "Semibold"
 COPYRIGHT = "Salted Flutters Polaris - Created by ppoolar"
 
@@ -70,6 +71,9 @@ def rename(font: TTFont, family: str, style: str) -> None:
     for record in font["name"].names:
         if record.nameID in values:
             record.string = values[record.nameID]
+    if "OS/2" in font:
+        # Upstream Bold carries usWeightClass=600 despite having distinct Bold outlines and macStyle=1.
+        font["OS/2"].usWeightClass = WEIGHT_CLASSES[style]
 
 
 def freeze_tabular_digits(font: TTFont) -> None:

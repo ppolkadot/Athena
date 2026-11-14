@@ -35,7 +35,7 @@ Target: Salted Flutters Polaris (github.com/ppolkadot/Salted-Flutters-Polaris). 
 
 ## Visual baseline — open to redesign
 Dark default near-black; light is a full peer.
-bg `#050608` / `#F6F7FB`; panel `#0A0C10` / `#FFFFFF`; card `#0F1218` / `#FFFFFF`; border `#232A36` / `#E2E5EE`; text `#ECEEF4` / `#141821`; muted `#8B95A7` / `#5C6476`; accent `#6C8CFF` / `#4F6BFF`; positive `#3DDC97` / `#1F9E6E`; negative `#FF6B7A` / `#D6455A`; warning `#F5C451` / `#B07B12`.
+bg `#050608` / `#F6F7FB`; panel `#0A0C10` / `#FFFFFF`; card `#0F1218` / `#FFFFFF`; border `#232A36` / `#E2E5EE`; text `#ECEEF4` / `#141821`; muted `#8B95A7` / `#5C6476`; accent `#6C8CFF` / `#3F55C6`; positive `#3DDC97` / `#147D52`; negative `#FF6B7A` / `#B83247`; warning `#F5C451` / `#7A5B00`.
 
 8 pt grid; cards 16 radius/1 px border/16 padding; buttons 10 radius/36 height; content 1100 max; sidebar 220; window 1280×820. Motion 120–180 ms ease, fade + 8 px slide. Hover changes border/background only.
 
