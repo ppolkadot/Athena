@@ -8,6 +8,9 @@
 
 Capture the repository review as one brief per version, including correctness fixes, UX requirements, visual direction, verification, and the decisions needed before rewriting the implementation plans.
 
+- [Canonical contracts](contracts.md)
+- [Phase 0 plan: finish 1.0.2 and prepare for 1.1](../plans/2026-11-16-athena-phase-0-foundation.md)
+- [1.1.0 Safe data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md)
 - [1.0.1: shipped foundation and remaining patch work](2026-11-13-athena-1.0.1-revision-brief.md)
 - [1.0.2: contrast and foundation follow-up](2026-11-13-athena-1.0.2-revision-brief.md)
 - [1.1.0: reliable daily workflows and Apple/Onyx design](2026-11-13-athena-1.1.0-revision-brief.md)
