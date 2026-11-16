@@ -180,6 +180,7 @@ Databases at schema ≥ 2 carry `application_id = 0x41544E41`. Version-1 files h
 ### §6.3 Undo
 
 - Undo is offered for `DeleteTransaction` only, through a toast action that applies `outcome.inverse`.
+- Purging a row (`PurgeTransaction(id)`) clears a matching `RestoreTransaction(id)` Undo toast (and `EmptyTrash` clears any `RestoreTransaction` Undo toast); if an undo fails anyway, an `UndoFailed` toast is shown.
 - The toast lifetime starts at first display and pauses while hovered or focused.
 - `Ctrl+Z` triggers the visible toast's undo, except while a text field has focus.
 
@@ -472,7 +473,7 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - when opened via **Record** while viewing a month other than `today`'s month, shows a non-blocking warning stating the viewed month and that the settlement will be dated `today`
 - **Month:** the settlement card sits in the rail. It shows the sentence or transfers (or `settlement_unavailable` / `settlement_no_balances` when applicable), an "as of" date, a **Record** button per transfer, and a coverage line when exclusions exist: "2 entries without payer · 5 with no one responsible", where each count opens its repair filter.
 - **Trash screen:**
-  - header explaining the 30-day rule and that daily backups keep removed items
+  - header explaining the 30-day rule and that daily backups keep the latest 7 daily snapshots
   - rows: deleted date, transaction date, title, amount, kind
   - actions: **Restore**, **Delete forever** (confirm), **Empty trash** (confirm, states the count)
   - focus moves to the nearest remaining row after removal
@@ -558,3 +559,4 @@ These reserve names and rules. They are not frozen.
 - 2026-11-16 — Added `pre-purge-YYYY-MM-DD_HH-MM-SS.db` verified Athena snapshot guard before automatic trash retention (§6.2, §9.1).
 - 2026-11-16 — Froze atomic `ViewModel::reload` staging, `settlement_unavailable` / `refresh_failed` state with same-key retry suppression, and `AppCore::apply` committed outcome preservation (§8.2, §8.3).
 - 2026-11-16 — Updated settlement card visibility (`balances.len() >= 2 || excluded.any() || settlement_unavailable`, §7.3, §12) and added non-blocking Quick Add viewed-month date warning on `Record` (§7.4, §12).
+- 2026-11-16 — Cleared stale `RestoreTransaction` Undo toast on purge, added `UndoFailed` toast (§6.3), and clarified the 7-day rolling window for daily backups in Trash copy (§12).

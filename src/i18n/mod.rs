@@ -192,6 +192,7 @@ strings! {
     toast_category_saved,
     toast_category_archived,
     toast_welcome,
+    toast_undo_failed,
     settlement_title,
     settlement_as_of,
     settlement_all_settled,
@@ -201,6 +202,7 @@ strings! {
     settlement_owes_other,
     settlement_record,
     settlement_restore_to_record,
+    settlement_restore_name_taken,
     settlement_archived_suffix,
     settlement_unavailable,
     view_refresh_failed,
@@ -241,6 +243,7 @@ pub enum ToastKey {
     CategorySaved,
     CategoryArchived,
     Welcome,
+    UndoFailed,
 }
 
 impl ToastKey {
@@ -260,6 +263,7 @@ impl ToastKey {
             ToastKey::CategorySaved => s.toast_category_saved,
             ToastKey::CategoryArchived => s.toast_category_archived,
             ToastKey::Welcome => s.toast_welcome,
+            ToastKey::UndoFailed => s.toast_undo_failed,
         }
     }
 }

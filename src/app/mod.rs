@@ -289,7 +289,35 @@ impl AthenaApp {
                 self.raise_toast_text(ctx, text);
                 return ok;
             }
-            ScreenEvent::Settlement(SettlementEvent::Record { from, to, amount }) if idle => {
+            ScreenEvent::Settlement(event) => {
+                return self.handle_settlement_event(ctx, event, idle);
+            }
+            ScreenEvent::OpenDataFolder => open_folder(&self.core.store.dirs().root),
+            ScreenEvent::Export(request) => {
+                if let Some(path) = pick_export_path(&self.core, request, self.today()) {
+                    let text = run_export(&self.core, request, &path, &now_rfc3339());
+                    self.raise_toast_text(ctx, Some(text));
+                }
+            }
+            ScreenEvent::RetryRefresh => {
+                self.core.vm.clear_refresh_failure();
+                if let Err(err) = self.core.sync() {
+                    tracing::error!("could not refresh the view: {err}");
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_settlement_event(
+        &mut self,
+        ctx: &egui::Context,
+        event: SettlementEvent,
+        idle: bool,
+    ) -> bool {
+        match event {
+            SettlementEvent::Record { from, to, amount } if idle => {
                 let from_name = self.core.vm.person(from).map_or("", |p| p.name.as_str());
                 let to_name = self.core.vm.person(to).map_or("", |p| p.name.as_str());
                 let title = format!("{from_name} → {to_name}");
@@ -309,7 +337,7 @@ impl AthenaApp {
                     .with_viewed_month_warning(self.core.ui.month, today),
                 );
             }
-            ScreenEvent::Settlement(SettlementEvent::RestorePerson(id)) => {
+            SettlementEvent::RestorePerson(id) => {
                 match self.core.apply(AppAction::RestorePerson(id)) {
                     Ok(outcome) => {
                         let text = outcome
@@ -319,31 +347,23 @@ impl AthenaApp {
                     }
                     Err(err) => {
                         tracing::warn!("could not restore person: {err}");
-                        let text = strings(self.core.vm.language())
-                            .settings_save_failed
-                            .to_string();
+                        let language = self.core.vm.language();
+                        let s = strings(language);
+                        let text = match (err, self.core.vm.person(id)) {
+                            (crate::shared::error::AppError::Validation(_), Some(person)) => s
+                                .settlement_restore_name_taken
+                                .replace("{name}", &person.name),
+                            _ => s.settings_save_failed.to_string(),
+                        };
                         self.raise_toast_text(ctx, Some(text));
                         return false;
                     }
                 }
             }
-            ScreenEvent::Settlement(SettlementEvent::FilterIssue { issue, as_of }) => {
+            SettlementEvent::FilterIssue { issue, as_of } => {
                 self.core.ui.set_repair_filter(issue, as_of);
             }
-            ScreenEvent::OpenDataFolder => open_folder(&self.core.store.dirs().root),
-            ScreenEvent::Export(request) => {
-                if let Some(path) = pick_export_path(&self.core, request, self.today()) {
-                    let text = run_export(&self.core, request, &path, &now_rfc3339());
-                    self.raise_toast_text(ctx, Some(text));
-                }
-            }
-            ScreenEvent::RetryRefresh => {
-                self.core.vm.clear_refresh_failure();
-                if let Err(err) = self.core.sync() {
-                    tracing::error!("could not refresh the view: {err}");
-                }
-            }
-            _ => {}
+            SettlementEvent::Record { .. } => {}
         }
         true
     }
@@ -420,9 +440,10 @@ impl AthenaApp {
         }
     }
 
-    fn apply_undo(&mut self, action: AppAction) {
+    fn apply_undo(&mut self, ctx: &egui::Context, action: AppAction) {
         if let Err(err) = self.core.apply(action) {
             tracing::warn!("undo action failed: {err}");
+            self.raise_toast(ctx, Some(ToastKey::UndoFailed));
         }
     }
 }
@@ -490,7 +511,7 @@ impl AthenaApp {
                 && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z))
                 && let Some(ToastAction::Undo(action)) = self.toast.take().and_then(|t| t.action)
             {
-                self.apply_undo(action);
+                self.apply_undo(&ctx, action);
             }
         }
         let output = shell::show(ui, &self.core.vm, &mut self.core.ui);
@@ -513,7 +534,7 @@ impl AthenaApp {
             self.core.vm.theme(),
             self.core.vm.language(),
         ) {
-            self.apply_undo(undo_action);
+            self.apply_undo(&ctx, undo_action);
         }
     }
 
@@ -538,7 +559,33 @@ impl AthenaApp {
                 Some(ConfirmChoice::Confirmed(action)) => {
                     let is_purge = matches!(action, AppAction::PurgeTransaction(_));
                     let is_delete = matches!(action, AppAction::DeleteTransaction(_));
+                    let purged_id = match action {
+                        AppAction::PurgeTransaction(id) => Some(id),
+                        _ => None,
+                    };
+                    let emptied_trash = matches!(action, AppAction::EmptyTrash);
+                    let before_version = self.core.store.data_version();
                     let toast = apply_confirmed_outcome(&mut self.core, action);
+                    if self.core.store.data_version() != before_version {
+                        if let Some(id) = purged_id && self.toast.as_ref().is_some_and(|t| {
+                            matches!(
+                                &t.action,
+                                Some(ToastAction::Undo(AppAction::RestoreTransaction(restore_id)))
+                                    if *restore_id == id
+                            )
+                        }) {
+                            self.toast = None;
+                        } else if emptied_trash
+                            && self.toast.as_ref().is_some_and(|t| {
+                                matches!(
+                                    &t.action,
+                                    Some(ToastAction::Undo(AppAction::RestoreTransaction(_)))
+                                )
+                            })
+                        {
+                            self.toast = None;
+                        }
+                    }
                     self.raise_confirmed_toast(ctx, toast);
                     if is_purge {
                         self.core.ui.trash_focus_row = self.core.ui.pending_purge_focus_row.take();
@@ -1956,5 +2003,134 @@ mod tests {
             settlement.date,
             crate::shared::test_fixtures::date(2026, 11, 11)
         );
+    }
+
+    #[test]
+    fn purge_clears_matching_undo_toast_and_undo_failure_shows_toast() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        let mut d = draft_with(vec![]);
+        d.title = "Coffee".into();
+        core.create_transaction(d).unwrap();
+        let tx_id = core.vm.transactions[0].id;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 900.0))
+            .with_step_dt(0.05)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        // Delete -> Undo toast for RestoreTransaction(tx_id) appears.
+        harness.get_by_label("Delete Coffee").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete").click();
+        harness.run_steps(3);
+        assert!(matches!(
+            harness.state().toast.as_ref().and_then(|t| t.action.as_ref()),
+            Some(ToastAction::Undo(AppAction::RestoreTransaction(id))) if *id == tx_id
+        ));
+
+        // Switch to Trash and purge Coffee permanently -> stale Undo toast is cleared.
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+        harness.run_steps(3);
+        harness.get_by_label("Delete forever Coffee").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete forever").click();
+        harness.run_steps(3);
+        assert!(
+            harness.state().toast.is_none(),
+            "purging must clear the stale RestoreTransaction Undo toast"
+        );
+
+        // Pressing Ctrl+Z after purge must not trigger a failed restore.
+        harness.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        harness.run_steps(1);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run_steps(3);
+        assert!(harness.state().toast.is_none());
+
+        // Clicking a failing Undo action shows the localized undo-failed toast.
+        harness.state_mut().toast = Some(Toast::pending("Deleted “Missing”.").with_action(Some(
+            ToastAction::Undo(AppAction::RestoreTransaction(999_999)),
+        )));
+        harness.run_steps(2);
+        harness.get_by_label("Undo").click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("Could not undo that change.")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn restore_person_duplicate_name_shows_specific_localized_error() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(Some("Ana"));
+        let owner_id = core.owner().unwrap().id;
+        let ana_id = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.kind == PersonKind::Partner)
+            .unwrap()
+            .id;
+        let mut d = draft_with(vec![Allocation {
+            person_id: ana_id,
+            amount: Money::from_cents(2_000),
+        }]);
+        d.payer_id = Some(owner_id);
+        core.create_transaction(d).unwrap();
+        core.archive_person(ana_id).unwrap();
+        core.save_person(Person {
+            id: 0,
+            name: "Ana".into(),
+            kind: PersonKind::Other,
+            archived: false,
+            created_at: String::new(),
+        })
+        .unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        harness.get_by_label("Restore Ana to record this").click();
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_by_label("Cannot restore Ana: an active person already uses that name.")
+                .is_some()
+        );
+        assert!(harness.state().core.vm.person(ana_id).unwrap().archived);
     }
 }
