@@ -1101,6 +1101,8 @@ mod tests {
             payer_id: Some(b),
             description: Some("with friends".into()),
             split_mode: Some(SplitMode::Custom),
+            created_at: "2026-11-11T00:00:00Z".into(),
+            updated_at: "2026-11-11T00:00:00Z".into(),
             allocations: vec![
                 Allocation {
                     person_id: a,
@@ -1132,6 +1134,8 @@ mod tests {
             payer_id: Some(gone),
             description: None,
             split_mode: Some(SplitMode::Custom),
+            created_at: "2026-11-11T00:00:00Z".into(),
+            updated_at: "2026-11-11T00:00:00Z".into(),
             allocations: vec![
                 Allocation {
                     person_id: id(&people, 0),

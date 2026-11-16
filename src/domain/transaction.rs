@@ -86,6 +86,8 @@ pub struct Transaction {
     pub payer_id: Option<i64>,
     pub description: Option<String>,
     pub split_mode: Option<SplitMode>,
+    pub created_at: String,
+    pub updated_at: String,
     pub allocations: Vec<Allocation>,
 }
 

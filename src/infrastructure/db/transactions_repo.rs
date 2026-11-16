@@ -15,7 +15,7 @@ use crate::domain::transaction::{
 };
 use crate::shared::error::{AppError, Result};
 
-pub(crate) const COLUMNS: &str = "t.id, t.title, t.amount_cents, t.date, t.kind, t.category_id, t.payer_id, t.description, t.split_mode";
+pub(crate) const COLUMNS: &str = "t.id, t.title, t.amount_cents, t.date, t.kind, t.category_id, t.payer_id, t.description, t.split_mode, t.created_at, t.updated_at";
 
 pub(crate) fn date_text(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
@@ -42,6 +42,8 @@ pub(crate) fn from_row(row: &Row<'_>) -> rusqlite::Result<Transaction> {
                 Some(SplitMode::from_code(&code).ok_or_else(|| bad_code(8, "split mode", &code))?)
             }
         },
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
         allocations: Vec::new(),
     })
 }

@@ -2,6 +2,8 @@
 //! folder, checked, then renamed into place, so a failure never damages an existing export.
 
 pub mod csv;
+pub mod format_v1;
+pub mod format_v2;
 pub mod json;
 
 use std::fs::File;

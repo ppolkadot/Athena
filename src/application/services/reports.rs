@@ -329,7 +329,7 @@ mod tests {
             use crate::domain::export::ExportScope;
             use crate::domain::settings::Language;
             use crate::domain::transaction::TxFilter;
-            use crate::infrastructure::export::json::ProfileDocument;
+            use crate::infrastructure::export::format_v2::DocumentV2;
             use crate::shared::test_fixtures::profile;
 
             let dir = tempfile::tempdir().unwrap();
@@ -344,7 +344,7 @@ mod tests {
             let json_count = export_json(db.conn(), &profile(), "2026-11-12T10:00:00Z", &json_path)
                 .unwrap()
                 .record_count;
-            let doc: ProfileDocument =
+            let doc: DocumentV2 =
                 serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
             Self {
                 txs: transactions_repo::list(db.conn(), &TxFilter::default()).unwrap(),

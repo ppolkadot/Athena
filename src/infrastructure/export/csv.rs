@@ -43,12 +43,13 @@ fn row(
     language: Language,
     people: &HashMap<i64, String>,
     categories: &HashMap<i64, String>,
-) -> [String; 8] {
+) -> [String; 9] {
     let name_of = |id: i64| people.get(&id).map_or("?", String::as_str);
     let category = tx
         .category_id
         .and_then(|id| categories.get(&id))
         .map_or("", String::as_str);
+    let payer = tx.payer_id.map_or("", name_of);
     let names: Vec<&str> = tx
         .allocations
         .iter()
@@ -65,6 +66,7 @@ fn row(
         csv_safe(type_label(tx.kind, language)),
         tx.amount.br_number(),
         csv_safe(category),
+        csv_safe(payer),
         csv_safe(&names.join(", ")),
         csv_safe(&split.join("|")),
         csv_safe(tx.description.as_deref().unwrap_or("")),
@@ -98,6 +100,7 @@ pub fn write_csv(
         s.csv_type,
         s.csv_amount,
         s.csv_category,
+        s.csv_payer,
         s.csv_people,
         s.csv_allocations,
         s.csv_description,

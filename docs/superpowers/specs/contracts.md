@@ -160,6 +160,8 @@ Databases at schema ≥ 2 carry `application_id = 0x41544E41`. Version-1 files h
 | CSV export | row | row | row | row, kind column `settlement` |
 | JSON format 2 | record | record | record | record |
 
+CSV columns (9, `;`-delimited, localized headers): `Date;Title;Type;Amount;Category;Payer;People;Allocations;Description` (`Data;Título;Tipo;Valor;Categoria;Pagador;Pessoas;Divisão;Descrição`). Payer is empty on `None`, `"?"` if unresolved, and formula-escaped via `csv_safe`.
+
 `SUMMARY_SELECT`, `summaries_for_year`, and every `CASE t.kind` aggregate must exclude settlement explicitly. A test seeds one row of each kind and asserts every row of this table.
 
 ## §6 Trash — Frozen for 1.1
@@ -425,7 +427,7 @@ Restore is synchronous on the UI thread in 1.1, with a measured budget of < 1 s 
   - allocation people exist with no duplicates; non-empty allocations sum exactly (checked)
   - `split_mode` rules; settlement shape per §5.2
   - timestamps RFC 3339
-- **Aggregates:** the lifetime sums of income, expenses, refunds, and `start_balance + net` fit in `i64` (checked). SQLite `SUM` would otherwise fail later in reports.
+- **Aggregates & settlement overflow:** per-month and lifetime `income`, `expenses`, `refunds`, `income + refunds`, `expenses - refunds`, `net`, and `start_balance + net` fit in `i64` (matching `MonthSummary::new` and `tracked_balance`); additionally, scanning valid settlement-eligible transactions in deterministic `date ASC, id ASC` order, cumulative per-person `paid` and `owed` fit in `i64` at every row, and `balance = paid - owed` plus debtor negation (`0 - balance`) fit in `i64` at every distinct month-end boundary and final totals.
 
 ### §10.5 Import pipeline
 
@@ -560,3 +562,4 @@ These reserve names and rules. They are not frozen.
 - 2026-11-16 — Froze atomic `ViewModel::reload` staging, `settlement_unavailable` / `refresh_failed` state with same-key retry suppression, and `AppCore::apply` committed outcome preservation (§8.2, §8.3).
 - 2026-11-16 — Updated settlement card visibility (`balances.len() >= 2 || excluded.any() || settlement_unavailable`, §7.3, §12) and added non-blocking Quick Add viewed-month date warning on `Record` (§7.4, §12).
 - 2026-11-16 — Cleared stale `RestoreTransaction` Undo toast on purge, added `UndoFailed` toast (§6.3), and clarified the 7-day rolling window for daily backups in Trash copy (§12).
+- 2026-11-16 — Expanded `§10.4` `ImportError::Overflow` to cover per-month/lifetime report sums and chronological (`date ASC, id ASC`) cumulative settlement balances/negations (D-P5), and added the 9th `Payer`/`Pagador` CSV column to `§5.3` (D-P6).

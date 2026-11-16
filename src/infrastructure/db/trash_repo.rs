@@ -37,7 +37,7 @@ pub fn list(conn: &Connection) -> Result<Vec<TrashItem>> {
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |r| Ok((from_row(r)?, r.get::<_, String>(9)?)))?
+        .query_map([], |r| Ok((from_row(r)?, r.get::<_, String>(11)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let (mut txs, stamps): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
     load_allocations(conn, &mut txs)?;
@@ -57,7 +57,7 @@ pub fn get_deleted(conn: &Connection, id: i64) -> Result<TrashItem> {
         "SELECT {COLUMNS}, t.deleted_at FROM transactions t WHERE t.id = ?1 AND t.deleted_at IS NOT NULL"
     );
     let found = conn
-        .query_row(&sql, [id], |r| Ok((from_row(r)?, r.get::<_, String>(9)?)))
+        .query_row(&sql, [id], |r| Ok((from_row(r)?, r.get::<_, String>(11)?)))
         .optional()?;
     let (mut tx, deleted_at) = found.ok_or(AppError::NotFound("transaction"))?;
     load_allocations(conn, std::slice::from_mut(&mut tx))?;

@@ -29,6 +29,8 @@ pub fn tx_on(y: i32, m: u32, d: u32) -> Transaction {
         payer_id: None,
         description: None,
         split_mode: None,
+        created_at: "2026-11-11T00:00:00Z".into(),
+        updated_at: "2026-11-11T00:00:00Z".into(),
         allocations: vec![],
     }
 }

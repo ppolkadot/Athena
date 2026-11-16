@@ -14,7 +14,7 @@ use crate::domain::money::MoneyError;
 use crate::domain::settings::Language;
 use crate::domain::transaction::{TransactionType, ValidationError};
 use crate::infrastructure::db::backup::BackupKind;
-use crate::shared::error::{AppError, RestoreError};
+use crate::shared::error::{AppError, ImportError, RestoreError};
 
 /// Declares [`Strings`] and a `fields()` listing used by the completeness tests.
 macro_rules! strings {
@@ -120,6 +120,7 @@ strings! {
     csv_type,
     csv_amount,
     csv_category,
+    csv_payer,
     csv_people,
     csv_allocations,
     csv_description,
@@ -158,6 +159,50 @@ strings! {
     err_restore_verification_failed,
     err_restore_rollback_failed,
     err_restore_failed,
+    err_import_too_large,
+    err_import_io,
+    err_import_malformed_json,
+    err_import_not_athena,
+    err_import_too_new,
+    err_import_invalid_version,
+    err_import_invalid_exported_at,
+    err_import_templates_not_supported,
+    err_import_invalid_theme,
+    err_import_invalid_language,
+    err_import_non_positive_person_id,
+    err_import_duplicate_person_id,
+    err_import_blank_person_name,
+    err_import_invalid_person_kind,
+    err_import_invalid_person_timestamp,
+    err_import_owner_count,
+    err_import_owner_archived,
+    err_import_non_positive_category_id,
+    err_import_duplicate_category_id,
+    err_import_blank_category_name,
+    err_import_duplicate_category_name,
+    err_import_invalid_category_color,
+    err_import_invalid_category_scope,
+    err_import_invalid_category_timestamp,
+    err_import_non_positive_transaction_id,
+    err_import_duplicate_transaction_id,
+    err_import_blank_transaction_title,
+    err_import_non_positive_amount,
+    err_import_invalid_date,
+    err_import_invalid_transaction_kind,
+    err_import_missing_category,
+    err_import_category_scope_mismatch,
+    err_import_missing_payer,
+    err_import_missing_allocation_person,
+    err_import_duplicate_allocation_person,
+    err_import_negative_allocation_share,
+    err_import_allocation_sum_mismatch,
+    err_import_invalid_split_mode,
+    err_import_split_mode_without_shared_split,
+    err_import_invalid_settlement_shape,
+    err_import_invalid_transaction_timestamp,
+    err_import_overflow,
+    err_import_snapshot_failed,
+    err_import_verification_failed,
     startup_failed,
     startup_schema_too_new,
     startup_corrupt,
@@ -598,6 +643,135 @@ pub fn restore_error_message(error: &RestoreError, language: Language) -> String
     }
 }
 
+/// Localized message for every [`ImportError`] variant.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn import_error_message(error: &ImportError, language: Language) -> String {
+    let s = strings(language);
+    match error {
+        ImportError::TooLarge => s.err_import_too_large.to_string(),
+        ImportError::Io(detail) => s.err_import_io.replace("{detail}", detail),
+        ImportError::MalformedJson(detail) => {
+            s.err_import_malformed_json.replace("{detail}", detail)
+        }
+        ImportError::NotAthena => s.err_import_not_athena.to_string(),
+        ImportError::TooNew { found, supported } => s
+            .err_import_too_new
+            .replace("{found}", &found.to_string())
+            .replace("{supported}", &supported.to_string()),
+        ImportError::InvalidVersion => s.err_import_invalid_version.to_string(),
+        ImportError::InvalidExportedAt => s.err_import_invalid_exported_at.to_string(),
+        ImportError::TemplatesNotSupported => s.err_import_templates_not_supported.to_string(),
+        ImportError::InvalidTheme => s.err_import_invalid_theme.to_string(),
+        ImportError::InvalidLanguage => s.err_import_invalid_language.to_string(),
+        ImportError::NonPositivePersonId { index, id } => s
+            .err_import_non_positive_person_id
+            .replace("{index}", &index.to_string())
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicatePersonId { id } => s
+            .err_import_duplicate_person_id
+            .replace("{id}", &id.to_string()),
+        ImportError::BlankPersonName { id } => s
+            .err_import_blank_person_name
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidPersonKind { id } => s
+            .err_import_invalid_person_kind
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidPersonTimestamp { id } => s
+            .err_import_invalid_person_timestamp
+            .replace("{id}", &id.to_string()),
+        ImportError::OwnerCount { count } => s
+            .err_import_owner_count
+            .replace("{count}", &count.to_string()),
+        ImportError::OwnerArchived => s.err_import_owner_archived.to_string(),
+        ImportError::NonPositiveCategoryId { index, id } => s
+            .err_import_non_positive_category_id
+            .replace("{index}", &index.to_string())
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicateCategoryId { id } => s
+            .err_import_duplicate_category_id
+            .replace("{id}", &id.to_string()),
+        ImportError::BlankCategoryName { id } => s
+            .err_import_blank_category_name
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicateCategoryName { name } => {
+            s.err_import_duplicate_category_name.replace("{name}", name)
+        }
+        ImportError::InvalidCategoryColor { id } => s
+            .err_import_invalid_category_color
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidCategoryScope { id } => s
+            .err_import_invalid_category_scope
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidCategoryTimestamp { id } => s
+            .err_import_invalid_category_timestamp
+            .replace("{id}", &id.to_string()),
+        ImportError::NonPositiveTransactionId { index, id } => s
+            .err_import_non_positive_transaction_id
+            .replace("{index}", &index.to_string())
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicateTransactionId { id } => s
+            .err_import_duplicate_transaction_id
+            .replace("{id}", &id.to_string()),
+        ImportError::BlankTransactionTitle { id } => s
+            .err_import_blank_transaction_title
+            .replace("{id}", &id.to_string()),
+        ImportError::NonPositiveAmount { id } => s
+            .err_import_non_positive_amount
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidDate { id } => {
+            s.err_import_invalid_date.replace("{id}", &id.to_string())
+        }
+        ImportError::InvalidTransactionKind { id } => s
+            .err_import_invalid_transaction_kind
+            .replace("{id}", &id.to_string()),
+        ImportError::MissingCategory { id, category_id } => s
+            .err_import_missing_category
+            .replace("{id}", &id.to_string())
+            .replace("{category_id}", &category_id.to_string()),
+        ImportError::CategoryScopeMismatch { id } => s
+            .err_import_category_scope_mismatch
+            .replace("{id}", &id.to_string()),
+        ImportError::MissingPayer { id, payer_id } => s
+            .err_import_missing_payer
+            .replace("{id}", &id.to_string())
+            .replace("{payer_id}", &payer_id.to_string()),
+        ImportError::MissingAllocationPerson { id, person_id } => s
+            .err_import_missing_allocation_person
+            .replace("{id}", &id.to_string())
+            .replace("{person_id}", &person_id.to_string()),
+        ImportError::DuplicateAllocationPerson { id, person_id } => s
+            .err_import_duplicate_allocation_person
+            .replace("{id}", &id.to_string())
+            .replace("{person_id}", &person_id.to_string()),
+        ImportError::NegativeAllocationShare { id } => s
+            .err_import_negative_allocation_share
+            .replace("{id}", &id.to_string()),
+        ImportError::AllocationSumMismatch { id } => s
+            .err_import_allocation_sum_mismatch
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidSplitMode { id } => s
+            .err_import_invalid_split_mode
+            .replace("{id}", &id.to_string()),
+        ImportError::SplitModeWithoutSharedSplit { id } => s
+            .err_import_split_mode_without_shared_split
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidSettlementShape { id } => s
+            .err_import_invalid_settlement_shape
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidTransactionTimestamp { id } => s
+            .err_import_invalid_transaction_timestamp
+            .replace("{id}", &id.to_string()),
+        ImportError::Overflow => s.err_import_overflow.to_string(),
+        ImportError::SnapshotFailed(detail) => {
+            s.err_import_snapshot_failed.replace("{detail}", detail)
+        }
+        ImportError::VerificationFailed(detail) => {
+            s.err_import_verification_failed.replace("{detail}", detail)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +883,81 @@ mod tests {
         for err in &cases {
             let en = restore_error_message(err, Language::En);
             let pt = restore_error_message(err, Language::PtBr);
+            assert!(!en.trim().is_empty() && !pt.trim().is_empty());
+            assert_ne!(en, pt, "{err:?}");
+            assert!(
+                !en.contains('{') && !pt.contains('{'),
+                "{err:?}: {en} / {pt}"
+            );
+        }
+    }
+
+    #[test]
+    fn import_errors_are_localized() {
+        let cases = [
+            ImportError::TooLarge,
+            ImportError::Io("read".into()),
+            ImportError::MalformedJson("eof".into()),
+            ImportError::NotAthena,
+            ImportError::TooNew {
+                found: 9,
+                supported: 2,
+            },
+            ImportError::InvalidVersion,
+            ImportError::InvalidExportedAt,
+            ImportError::TemplatesNotSupported,
+            ImportError::InvalidTheme,
+            ImportError::InvalidLanguage,
+            ImportError::NonPositivePersonId { index: 0, id: 0 },
+            ImportError::DuplicatePersonId { id: 1 },
+            ImportError::BlankPersonName { id: 1 },
+            ImportError::InvalidPersonKind { id: 1 },
+            ImportError::InvalidPersonTimestamp { id: 1 },
+            ImportError::OwnerCount { count: 2 },
+            ImportError::OwnerArchived,
+            ImportError::NonPositiveCategoryId { index: 0, id: -1 },
+            ImportError::DuplicateCategoryId { id: 2 },
+            ImportError::BlankCategoryName { id: 2 },
+            ImportError::DuplicateCategoryName {
+                name: "Food".into(),
+            },
+            ImportError::InvalidCategoryColor { id: 2 },
+            ImportError::InvalidCategoryScope { id: 2 },
+            ImportError::InvalidCategoryTimestamp { id: 2 },
+            ImportError::NonPositiveTransactionId { index: 0, id: 0 },
+            ImportError::DuplicateTransactionId { id: 3 },
+            ImportError::BlankTransactionTitle { id: 3 },
+            ImportError::NonPositiveAmount { id: 3 },
+            ImportError::InvalidDate { id: 3 },
+            ImportError::InvalidTransactionKind { id: 3 },
+            ImportError::MissingCategory {
+                id: 3,
+                category_id: 9,
+            },
+            ImportError::CategoryScopeMismatch { id: 3 },
+            ImportError::MissingPayer { id: 3, payer_id: 9 },
+            ImportError::MissingAllocationPerson {
+                id: 3,
+                person_id: 9,
+            },
+            ImportError::DuplicateAllocationPerson {
+                id: 3,
+                person_id: 1,
+            },
+            ImportError::NegativeAllocationShare { id: 3 },
+            ImportError::AllocationSumMismatch { id: 3 },
+            ImportError::InvalidSplitMode { id: 3 },
+            ImportError::SplitModeWithoutSharedSplit { id: 3 },
+            ImportError::InvalidSettlementShape { id: 3 },
+            ImportError::InvalidTransactionTimestamp { id: 3 },
+            ImportError::Overflow,
+            ImportError::SnapshotFailed("disk".into()),
+            ImportError::VerificationFailed("fk".into()),
+        ];
+        assert_eq!(cases.len(), 44);
+        for err in &cases {
+            let en = import_error_message(err, Language::En);
+            let pt = import_error_message(err, Language::PtBr);
             assert!(!en.trim().is_empty() && !pt.trim().is_empty());
             assert_ne!(en, pt, "{err:?}");
             assert!(

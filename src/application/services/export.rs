@@ -43,9 +43,13 @@ mod tests {
     use super::*;
     use crate::domain::date::YearMonth;
     use crate::domain::money::Money;
-    use crate::infrastructure::db::transactions_repo;
-    use crate::infrastructure::export::json::ProfileDocument;
-    use crate::shared::test_fixtures::{date, draft_with, profile, seed_month, seeded_db};
+    use crate::infrastructure::db::{people_repo, transactions_repo};
+    use crate::infrastructure::export::format_v1::DocumentV1;
+    use crate::infrastructure::export::format_v2::DocumentV2;
+    use crate::infrastructure::export::json::{FORMAT_NAME, FORMAT_VERSION};
+    use crate::shared::test_fixtures::{
+        date, draft_with, profile, seed_all_kinds, seed_month, seed_people, seeded_db,
+    };
 
     const STAMP: &str = "2026-11-12T10:00:00Z";
 
@@ -58,28 +62,37 @@ mod tests {
         assert!(receipt.bytes > 0);
         assert_eq!(receipt.record_count, 3);
         let text = std::fs::read_to_string(&path).unwrap();
-        let doc: ProfileDocument = serde_json::from_str(&text).unwrap();
-        assert_eq!(doc.schema_version, 1);
+        let doc: DocumentV2 = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc.format, FORMAT_NAME);
+        assert_eq!(doc.format_version, FORMAT_VERSION);
         assert_eq!(doc.exported_at, STAMP);
         assert_eq!(doc.transactions.len(), 3);
-        assert!(doc.templates.is_empty());
         let shared = doc
             .transactions
             .iter()
-            .find(|t| t.title == "Test" && t.amount.cents() == 20_000)
+            .find(|t| t.title == "Test" && t.amount_cents == 20_000)
             .unwrap();
         assert_eq!(shared.allocations.len(), 2);
         assert_eq!(
             shared
                 .allocations
                 .iter()
-                .map(|a| a.amount.cents())
+                .map(|a| a.amount_cents)
                 .sum::<i64>(),
-            shared.amount.cents()
+            shared.amount_cents
         );
         assert_eq!(doc.people.len(), 2);
         assert_eq!(doc.categories.len(), 12);
-        assert_eq!(doc.profile, profile());
+        assert_eq!(
+            doc.profile.start_balance_cents,
+            profile().start_balance.cents()
+        );
+        assert_eq!(doc.profile.theme, profile().theme.code());
+        assert_eq!(doc.profile.language, profile().language.code());
+        assert_eq!(
+            doc.profile.onboarding_complete,
+            profile().onboarding_complete
+        );
     }
 
     #[test]
@@ -96,27 +109,73 @@ mod tests {
             "same data, same bytes"
         );
         assert!(
-            text.contains("\"amount\": 123456"),
+            text.contains("\"amount_cents\": 123456"),
             "money is integer cents"
         );
         assert!(text.contains("\"date\": \"2026-11-10\""));
-        let doc: ProfileDocument = serde_json::from_str(&text).unwrap();
-        let dates: Vec<_> = doc.transactions.iter().map(|t| (t.date, t.id)).collect();
+        let doc: DocumentV2 = serde_json::from_str(&text).unwrap();
+        let dates: Vec<_> = doc
+            .transactions
+            .iter()
+            .map(|t| (t.date.clone(), t.id))
+            .collect();
         let mut sorted = dates.clone();
         sorted.sort();
         assert_eq!(dates, sorted, "transactions go by date then id");
     }
 
     #[test]
-    fn a_1_0_document_without_templates_still_parses() {
-        let db = seeded_db();
+    fn export_writes_format_2_with_record_timestamps_and_settlements() {
+        let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
+        seed_all_kinds(&db);
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.json");
-        export_json(db.conn(), &profile(), STAMP, &path).unwrap();
-        let mut value: serde_json::Value =
+        let path = dir.path().join("v2.json");
+        let receipt = export_json(db.conn(), &profile(), STAMP, &path).unwrap();
+        assert_eq!(receipt.record_count, 4);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"schema_version\""), "{text}");
+        assert!(!text.contains("\"templates\""), "{text}");
+        let doc: DocumentV2 = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc.format, "athena-profile");
+        assert_eq!(doc.format_version, 2);
+        let settlement = doc
+            .transactions
+            .iter()
+            .find(|t| t.kind == "settlement")
+            .expect("settlement exported");
+        assert!(!settlement.created_at.trim().is_empty());
+        assert!(!settlement.updated_at.trim().is_empty());
+        assert!(chrono::DateTime::parse_from_rfc3339(&settlement.created_at).is_ok());
+        assert!(chrono::DateTime::parse_from_rfc3339(&settlement.updated_at).is_ok());
+    }
+
+    #[test]
+    fn export_excludes_trash() {
+        let db = seeded_db();
+        let trashed_id = transactions_repo::list(db.conn(), &ExportScope::All.filter())
+            .unwrap()
+            .into_iter()
+            .find(|t| t.amount.cents() == 123_456)
+            .unwrap()
+            .id;
+        transactions_repo::delete(db.conn(), trashed_id).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no-trash.json");
+        let receipt = export_json(db.conn(), &profile(), STAMP, &path).unwrap();
+        assert_eq!(receipt.record_count, 2);
+        let doc: DocumentV2 =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc.transactions.len(), 2);
+        assert!(doc.transactions.iter().all(|t| t.id != trashed_id));
+    }
+
+    #[test]
+    fn a_1_0_document_without_templates_still_parses() {
+        let raw = include_str!("../../../tests/fixtures/format1-1.0.2.json");
+        let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
         value.as_object_mut().unwrap().remove("templates");
-        let doc: ProfileDocument = serde_json::from_value(value).unwrap();
+        let doc: DocumentV1 = serde_json::from_value(value).unwrap();
         assert!(doc.templates.is_empty());
     }
 
@@ -130,7 +189,9 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[0..3], &[0xEF, 0xBB, 0xBF]);
         let text = String::from_utf8(bytes).unwrap();
-        assert!(text.contains("Date;Title;Type;Amount;Category;People;Allocations;Description"));
+        assert!(
+            text.contains("Date;Title;Type;Amount;Category;Payer;People;Allocations;Description")
+        );
         assert!(text.contains(";1234,56;"));
         assert!(text.contains("A3:100,00|Ana:100,00"));
         assert!(text.contains("A3, Ana"), "people are a readable list");
@@ -144,8 +205,49 @@ mod tests {
         let path = dir.path().join("pt.csv");
         export_csv(db.conn(), Language::PtBr, ExportScope::All, &path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("Data;Título;Tipo;Valor;Categoria;Pessoas;Divisão;Descrição"));
+        assert!(
+            text.contains("Data;Título;Tipo;Valor;Categoria;Pagador;Pessoas;Divisão;Descrição")
+        );
         assert!(text.contains("Reembolso") && text.contains("Despesa"));
+    }
+
+    #[test]
+    fn csv_includes_payer_column_with_formula_guard_and_empty_when_none() {
+        let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let formula_payer = people_repo::insert(
+            db.conn(),
+            "=CMD()",
+            crate::domain::person::PersonKind::Other,
+        )
+        .unwrap();
+
+        let mut with_payer = draft_with(vec![]);
+        with_payer.title = "SharedLunch".into();
+        with_payer.payer_id = Some(formula_payer);
+        transactions_repo::create(db.conn(), &with_payer).unwrap();
+
+        let mut without_payer = draft_with(vec![]);
+        without_payer.title = "Solo".into();
+        without_payer.payer_id = None;
+        transactions_repo::create(db.conn(), &without_payer).unwrap();
+
+        let _ = owner;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payers.csv");
+        export_csv(db.conn(), Language::En, ExportScope::All, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<Vec<&str>> = text
+            .trim_start_matches('\u{FEFF}')
+            .lines()
+            .map(|l| l.split(';').collect())
+            .collect();
+        assert_eq!(rows[0].len(), 9);
+        assert_eq!(rows[0][5], "Payer");
+        let lunch_row = rows.iter().find(|r| r[1] == "SharedLunch").unwrap();
+        assert_eq!(lunch_row[5], "'=CMD()");
+        let solo_row = rows.iter().find(|r| r[1] == "Solo").unwrap();
+        assert_eq!(solo_row[5], "");
     }
 
     #[test]
@@ -206,8 +308,8 @@ mod tests {
     fn rows_are_ordered_by_date_then_id_and_archived_names_still_resolve() {
         let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
         seed_month(&db);
-        let (_, partner) = crate::shared::test_fixtures::seed_people(db.conn());
-        crate::infrastructure::db::people_repo::set_archived(db.conn(), partner, true).unwrap();
+        let (_, partner) = seed_people(db.conn());
+        people_repo::set_archived(db.conn(), partner, true).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("o.csv");
         export_csv(db.conn(), Language::En, ExportScope::All, &path).unwrap();
@@ -246,7 +348,7 @@ mod tests {
     #[test]
     fn csv_writes_settlement_kind() {
         let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
-        crate::shared::test_fixtures::seed_all_kinds(&db);
+        seed_all_kinds(&db);
         let dir = tempfile::tempdir().unwrap();
         let en = dir.path().join("en.csv");
         export_csv(db.conn(), Language::En, ExportScope::All, &en).unwrap();
