@@ -68,11 +68,30 @@ Current release artifact SHA-256 (rebuilt after Semibold/Bold font update and ca
   - [ ] Installer and portable launch checks have not been repeated for the rebuilt artifacts below.
   - [ ] Live interactive multi-screen UI walk-through, real `200%` Windows DPI scaling window check, and clean Windows machine testing remain untested for `1.0.2`.
 
-1.0.2 release artifact SHA-256 after the fallback-height fix:
+1.0.2 release artifact SHA-256 after the fallback-height fix (superseded by 2026-11-16 final artifacts below):
 
 - `athena.exe` (17,915,904 bytes): `9D870D1092CD7BE288C499316D23949F00A11BDEA3FA576C43A34E3EE995BEDD`
 - `Athena-1.0.2-setup.exe` (7,499,213 bytes): `EF7D70D031CADC6A7336D744D00BF5208DB8DD47B05C004B2AC86FE1EE354A9F`
 - `assets/fonts/LICENSE.txt`: `931886D07182110715CCEE3504A076B59929503E4EBACADBE0DA789184850A61`
+
+### 1.0.2 final artifacts (2026-11-16)
+
+Built from `25b5bb8` after Phase 0 Task P0-1 (`rail_rows_stay_compact_in_a_scrolling_rail` passed without reproducing the `ScrollArea` height expansion; `transaction_row.rs` bound parameterized by style; `266` unit + `1` `design_assets` + `5` `fonts` = `272` tests, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --release --locked`, and Inno Setup 6.7.3 all passed).
+
+Final release artifact SHA-256:
+
+- `athena.exe` (`17,891,328` bytes): `98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`
+- `Athena-1.0.2-setup.exe` (`7,492,215` bytes): `A02E7C5DA949C4516A80D8ABFEDCCDC1FCFD2ED8C2BE4B0E86D5A12C472C7E05`
+- `assets/fonts/LICENSE.txt` (`3,274` bytes): `931886D07182110715CCEE3504A076B59929503E4EBACADBE0DA789184850A61`
+
+Checks against these final hashes:
+
+- [x] `target\release\athena.exe` (`98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`) FileVersion and ProductVersion are both `1.0.2`.
+- [x] `Athena-1.0.2-setup.exe` (`A02E7C5DA949C4516A80D8ABFEDCCDC1FCFD2ED8C2BE4B0E86D5A12C472C7E05`) silently installed into an isolated temp directory, placed byte-identical `athena.exe` (`98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`) and `licenses\Salted-Flutters-Polaris\LICENSE.txt` (`931886D07182110715CCEE3504A076B59929503E4EBACADBE0DA789184850A61`), launched cleanly, and silently uninstalled (`exit 0`, installed `athena.exe` removed).
+- [x] Isolated portable release launch of `athena.exe` (`98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`) with `athena.portable` stayed running and created `data\athena.db`, `data\backups\auto-2026-11-16.db`, and `data\logs\athena.log.2026-11-16` logging `athena 1.0.2 starting` and `daily snapshot written` with no errors or panics.
+- [ ] Live interactive multi-screen UI walk-through (Month, Calendar, Settings in both languages and themes) on `98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`: not run interactively by a human in this session (automated headless kittest + snapshot suites passed).
+- [ ] Real `200%` Windows DPI scaling window check on `98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`: not run in a live scaled desktop session (automated `640x410` logical scale layout test passed).
+- [ ] Clean Windows machine check (no Rust installed): no separate clean machine available in this session; remains untested.
 
 ## First run and persistence
 - [x] First run onboarding: skip partner, valid balance, finish. The "Welcome" toast appears.
