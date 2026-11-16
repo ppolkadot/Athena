@@ -181,6 +181,48 @@ pub fn seed_mixed(db: &crate::infrastructure::db::Db) {
     seed_month(db);
 }
 
+/// November 2026 with one row of each kind: expense 100,00 (Housing, A3), income 300,00,
+/// refund 20,00 (A3), and settlement 80,00 (Ana -> A3).
+pub fn seed_all_kinds(db: &crate::infrastructure::db::Db) -> (i64, i64) {
+    let (owner, partner) = seed_people(db.conn());
+    let housing = seeded_category(db.conn(), "Housing");
+
+    let mut expense = draft_with(vec![alloc(owner, 10_000)]);
+    expense.title = "Rent".into();
+    expense.category_id = Some(housing);
+    expense.payer_id = Some(owner);
+    expense.date = date(2026, 11, 1);
+    create(db, &expense);
+
+    let mut income = draft_with(vec![]);
+    income.title = "Salary".into();
+    income.amount = Money::from_cents(30_000);
+    income.kind = TransactionType::Income;
+    income.date = date(2026, 11, 5);
+    create(db, &income);
+
+    let mut refund = draft_with(vec![alloc(owner, 2_000)]);
+    refund.title = "Refund".into();
+    refund.kind = TransactionType::Refund;
+    refund.payer_id = Some(owner);
+    refund.date = date(2026, 11, 8);
+    create(db, &refund);
+
+    let settlement = TxDraft {
+        title: "Ana -> A3".into(),
+        amount: Money::from_cents(8_000),
+        date: date(2026, 11, 10),
+        kind: TransactionType::Settlement,
+        category_id: None,
+        payer_id: Some(partner),
+        description: None,
+        allocations: vec![alloc(owner, 8_000)],
+        split_mode: None,
+    };
+    create(db, &settlement);
+    (owner, partner)
+}
+
 /// Three transactions ordered by date then id: a 200,00 shared A3/Ana split, a 1234,56 expense
 /// and a 50,00 refund.
 pub fn seeded_db() -> crate::infrastructure::db::Db {

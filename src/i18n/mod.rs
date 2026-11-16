@@ -47,6 +47,7 @@ strings! {
     expenses,
     expense,
     refund,
+    settlement,
     result,
     new_transaction,
     save,
@@ -154,12 +155,15 @@ strings! {
     qa_category,
     qa_no_category,
     qa_paid_by,
+    qa_from,
+    qa_to,
     qa_for,
     qa_split_between,
     qa_even_split,
     qa_more,
     qa_description,
     qa_summary,
+    qa_settlement_summary,
     qa_save_failed,
     v_date_invalid,
     toast_transaction_saved,
@@ -179,6 +183,11 @@ strings! {
     v_negative_share,
     v_shares_mismatch,
     v_split_needs_two,
+    v_settlement_needs_from,
+    v_settlement_needs_to,
+    v_settlement_same_person,
+    v_settlement_no_category,
+    v_settlement_no_split,
     m_empty,
     m_invalid,
     m_too_precise,
@@ -296,7 +305,7 @@ pub fn weekday_short(language: Language, weekday: Weekday) -> &'static str {
 }
 
 /// Sign plus label for a transaction kind, so meaning never rests on color alone:
-/// `− Expense`, `+ Income`, `↩ Refund`.
+/// `− Expense`, `+ Income`, `↩ Refund`, `⇄ Settlement`.
 #[must_use]
 pub fn kind_label(kind: TransactionType, language: Language) -> String {
     let s = strings(language);
@@ -304,6 +313,7 @@ pub fn kind_label(kind: TransactionType, language: Language) -> String {
         TransactionType::Expense => format!("− {}", s.expense),
         TransactionType::Income => format!("+ {}", s.income),
         TransactionType::Refund => format!("↩ {}", s.refund),
+        TransactionType::Settlement => format!("⇄ {}", s.settlement),
     }
 }
 
@@ -378,6 +388,11 @@ pub fn validation_message(error: &ValidationError, language: Language) -> String
             .replace("{actual}", &actual.format_brl())
             .replace("{expected}", &expected.format_brl()),
         ValidationError::SplitModeWithoutSharedSplit => s.v_split_needs_two.to_string(),
+        ValidationError::SettlementNeedsFrom => s.v_settlement_needs_from.to_string(),
+        ValidationError::SettlementNeedsOneRecipient => s.v_settlement_needs_to.to_string(),
+        ValidationError::SettlementSamePerson => s.v_settlement_same_person.to_string(),
+        ValidationError::SettlementHasCategory => s.v_settlement_no_category.to_string(),
+        ValidationError::SettlementHasSplitMode => s.v_settlement_no_split.to_string(),
     }
 }
 

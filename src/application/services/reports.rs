@@ -241,4 +241,63 @@ mod tests {
         let people = person_totals(db.conn(), nov()).unwrap();
         assert_eq!(people.iter().map(|p| p.net.cents()).sum::<i64>(), 300);
     }
+
+    #[test]
+    fn settlement_is_excluded_from_every_aggregate() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = crate::shared::test_fixtures::seed_all_kinds(&db);
+        let summary = month_summary(db.conn(), nov()).unwrap();
+        assert_eq!(summary.income, Money::from_cents(30_000));
+        assert_eq!(summary.expenses, Money::from_cents(10_000));
+        assert_eq!(summary.refunds, Money::from_cents(2_000));
+        assert_eq!(summary.net, Money::from_cents(22_000));
+        assert_eq!(summary.count, 3);
+
+        let cats = category_totals(db.conn(), nov()).unwrap();
+        assert_eq!(cats.iter().map(|c| c.net.cents()).sum::<i64>(), 8_000);
+
+        let people = person_totals(db.conn(), nov()).unwrap();
+        assert_eq!(people.iter().map(|p| p.net.cents()).sum::<i64>(), 8_000);
+        assert!(people.iter().all(|p| p.person_id == owner));
+
+        let days = day_totals(db.conn(), nov()).unwrap();
+        assert_eq!(days.len(), 2);
+        assert!(days.iter().all(|d| d.date != date(2026, 11, 10)));
+
+        let cal = year_calendar(db.conn(), 2026).unwrap();
+        assert_eq!(cal[10].summary, summary);
+        assert_eq!(
+            tracked_balance(db.conn(), Money::from_cents(100_000)).unwrap(),
+            Money::from_cents(122_000)
+        );
+
+        let shared_only = transactions_repo::list(
+            db.conn(),
+            &crate::domain::transaction::TxFilter {
+                shared_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(shared_only.is_empty());
+
+        let by_payer = transactions_repo::list(
+            db.conn(),
+            &crate::domain::transaction::TxFilter {
+                person_id: Some(partner),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_payer.len(), 1);
+        let by_recipient = transactions_repo::list(
+            db.conn(),
+            &crate::domain::transaction::TxFilter {
+                person_id: Some(owner),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_recipient.len(), 3);
+    }
 }

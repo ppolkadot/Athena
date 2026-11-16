@@ -21,23 +21,37 @@ pub fn type_badge(kind: TransactionType, language: Language) -> (&'static str, &
         TransactionType::Expense => ("−", s.expense),
         TransactionType::Income => ("+", s.income),
         TransactionType::Refund => ("↩", s.refund),
+        TransactionType::Settlement => ("⇄", s.settlement),
     }
 }
 
-/// `−R$ 45,90` for expenses, `+R$ 45,90` for income and refunds.
+/// `−R$ 45,90` for expenses, `+R$ 45,90` for income and refunds, `R$ 45,90` for settlements.
 #[must_use]
 pub fn amount_text(kind: TransactionType, amount: Money) -> String {
-    let sign = if kind == TransactionType::Expense {
-        "−"
-    } else {
-        "+"
-    };
-    format!("{sign}{}", amount.format_brl())
+    match kind {
+        TransactionType::Expense => format!("−{}", amount.format_brl()),
+        TransactionType::Income | TransactionType::Refund => format!("+{}", amount.format_brl()),
+        TransactionType::Settlement => amount.format_brl(),
+    }
 }
 
-/// Names of the people on an entry, or `No one` when it is unassigned.
+/// Names of the people on an entry, `From → To` for settlements, or `No one` when unassigned.
 #[must_use]
 pub fn people_label(tx: &Transaction, vm: &ViewModel) -> String {
+    if tx.kind == TransactionType::Settlement {
+        let from = tx
+            .payer_id
+            .and_then(|id| vm.person(id))
+            .map(|p| p.name.as_str());
+        let to = tx
+            .allocations
+            .first()
+            .and_then(|a| vm.person(a.person_id))
+            .map(|p| p.name.as_str());
+        if let (Some(from), Some(to)) = (from, to) {
+            return format!("{from} → {to}");
+        }
+    }
     let names: Vec<String> = tx
         .allocations
         .iter()
@@ -91,6 +105,7 @@ fn measure_row<'a>(
     let amount_color = match tx.kind {
         TransactionType::Expense => p.negative,
         TransactionType::Income | TransactionType::Refund => p.positive,
+        TransactionType::Settlement => p.accent,
     };
     let category = tx.category_id.and_then(|id| vm.category(id));
     let amount_str = amount_text(tx.kind, tx.amount);
@@ -718,6 +733,43 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn register_row_shows_settlement_label_and_glyph() {
+        use egui_kittest::kittest::Queryable;
+
+        for (lang, label) in [(Language::En, "Settlement"), (Language::PtBr, "Acerto")] {
+            let mut vm = ViewModel::new(lang);
+            vm.all_people = vec![
+                person(1, "A3", PersonKind::Owner),
+                person(2, "Ana", PersonKind::Partner),
+            ];
+            let mut tx = tx_on(2026, 11, 14);
+            tx.title = "Ana -> A3".into();
+            tx.kind = TransactionType::Settlement;
+            tx.payer_id = Some(2);
+            tx.amount = Money::from_cents(8_000);
+            tx.allocations = vec![Allocation {
+                person_id: 1,
+                amount: Money::from_cents(8_000),
+            }];
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(Vec2::new(720.0, 120.0))
+                .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+                .build_ui(|ui| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    crate::ui::theme::apply(ui.ctx(), vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    show(ui, &vm, &tx);
+                });
+            harness.run_steps(2);
+            assert!(harness.query_by_label("⇄").is_some());
+            assert!(harness.query_by_label(label).is_some());
+            assert!(harness.query_by_label("Ana → A3").is_some());
         }
     }
 }

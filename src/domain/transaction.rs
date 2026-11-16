@@ -15,6 +15,7 @@ pub enum TransactionType {
     Expense,
     Income,
     Refund,
+    Settlement,
 }
 
 impl TransactionType {
@@ -24,6 +25,7 @@ impl TransactionType {
             TransactionType::Expense => "expense",
             TransactionType::Income => "income",
             TransactionType::Refund => "refund",
+            TransactionType::Settlement => "settlement",
         }
     }
 
@@ -33,6 +35,7 @@ impl TransactionType {
             "expense" => Some(TransactionType::Expense),
             "income" => Some(TransactionType::Income),
             "refund" => Some(TransactionType::Refund),
+            "settlement" => Some(TransactionType::Settlement),
             _ => None,
         }
     }
@@ -101,12 +104,13 @@ pub struct TxDraft {
 }
 
 impl Transaction {
-    /// The effect on the balance: expenses subtract, income and refunds add.
+    /// The effect on the balance: expenses subtract, income and refunds add, settlements are excluded.
     #[must_use]
     pub fn signed_amount(&self) -> Money {
         match self.kind {
             TransactionType::Expense => -self.amount,
             TransactionType::Income | TransactionType::Refund => self.amount,
+            TransactionType::Settlement => Money::ZERO,
         }
     }
 
@@ -153,6 +157,16 @@ pub enum ValidationError {
     ShareSumMismatch { expected: Money, actual: Money },
     #[error("a split mode needs at least two people")]
     SplitModeWithoutSharedSplit,
+    #[error("a settlement needs a sender")]
+    SettlementNeedsFrom,
+    #[error("a settlement needs one recipient for the full amount")]
+    SettlementNeedsOneRecipient,
+    #[error("sender and recipient must be different people")]
+    SettlementSamePerson,
+    #[error("a settlement cannot have a category")]
+    SettlementHasCategory,
+    #[error("a settlement cannot use a shared split mode")]
+    SettlementHasSplitMode,
 }
 
 impl ValidationError {
@@ -161,10 +175,15 @@ impl ValidationError {
         match self {
             ValidationError::TitleEmpty => TxField::Title,
             ValidationError::AmountNotPositive => TxField::Amount,
+            ValidationError::SettlementNeedsFrom => TxField::Payer,
+            ValidationError::SettlementHasCategory => TxField::Category,
             ValidationError::DuplicatePerson(_)
             | ValidationError::NegativeShare(_)
             | ValidationError::ShareSumMismatch { .. }
-            | ValidationError::SplitModeWithoutSharedSplit => TxField::People,
+            | ValidationError::SplitModeWithoutSharedSplit
+            | ValidationError::SettlementNeedsOneRecipient
+            | ValidationError::SettlementSamePerson
+            | ValidationError::SettlementHasSplitMode => TxField::People,
         }
     }
 }
@@ -202,6 +221,23 @@ impl TxDraft {
         }
         if self.split_mode.is_some() && self.allocations.len() < 2 {
             errors.push(ValidationError::SplitModeWithoutSharedSplit);
+        }
+        if self.kind == TransactionType::Settlement {
+            if self.payer_id.is_none() {
+                errors.push(ValidationError::SettlementNeedsFrom);
+            }
+            if self.allocations.len() != 1 || self.allocations[0].amount != self.amount {
+                errors.push(ValidationError::SettlementNeedsOneRecipient);
+            }
+            if self.allocations.len() == 1 && self.payer_id == Some(self.allocations[0].person_id) {
+                errors.push(ValidationError::SettlementSamePerson);
+            }
+            if self.category_id.is_some() {
+                errors.push(ValidationError::SettlementHasCategory);
+            }
+            if self.split_mode.is_some() {
+                errors.push(ValidationError::SettlementHasSplitMode);
+            }
         }
         if errors.is_empty() {
             Ok(())
@@ -419,6 +455,8 @@ mod tests {
         assert_eq!(tx.signed_amount(), Money::from_cents(100));
         tx.kind = TransactionType::Refund;
         assert_eq!(tx.signed_amount(), Money::from_cents(100));
+        tx.kind = TransactionType::Settlement;
+        assert_eq!(tx.signed_amount(), Money::ZERO);
     }
 
     #[test]
@@ -432,11 +470,96 @@ mod tests {
             TransactionType::Expense,
             TransactionType::Income,
             TransactionType::Refund,
+            TransactionType::Settlement,
         ] {
             assert_eq!(TransactionType::from_code(kind.code()), Some(kind));
         }
         assert_eq!(SplitMode::from_code("custom"), Some(SplitMode::Custom));
         assert_eq!(SplitMode::from_code("x"), None);
+    }
+
+    #[test]
+    fn settlement_draft_validation() {
+        let valid = TxDraft {
+            title: "Payback".into(),
+            amount: Money::from_cents(5_000),
+            date: NaiveDate::from_ymd_opt(2026, 11, 14).unwrap(),
+            kind: TransactionType::Settlement,
+            category_id: None,
+            payer_id: Some(2),
+            description: None,
+            allocations: vec![Allocation {
+                person_id: 1,
+                amount: Money::from_cents(5_000),
+            }],
+            split_mode: None,
+        };
+        assert!(valid.validate().is_ok());
+
+        let missing_from = TxDraft {
+            payer_id: None,
+            ..valid.clone()
+        };
+        let errs = missing_from.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementNeedsFrom));
+        assert_eq!(ValidationError::SettlementNeedsFrom.field(), TxField::Payer);
+
+        let missing_to = TxDraft {
+            allocations: vec![],
+            ..valid.clone()
+        };
+        let errs = missing_to.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementNeedsOneRecipient));
+        assert_eq!(
+            ValidationError::SettlementNeedsOneRecipient.field(),
+            TxField::People
+        );
+
+        let wrong_amount = TxDraft {
+            allocations: vec![Allocation {
+                person_id: 1,
+                amount: Money::from_cents(4_000),
+            }],
+            ..valid.clone()
+        };
+        let errs = wrong_amount.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementNeedsOneRecipient));
+
+        let same_person = TxDraft {
+            allocations: vec![Allocation {
+                person_id: 2,
+                amount: Money::from_cents(5_000),
+            }],
+            ..valid.clone()
+        };
+        let errs = same_person.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementSamePerson));
+        assert_eq!(
+            ValidationError::SettlementSamePerson.field(),
+            TxField::People
+        );
+
+        let with_category = TxDraft {
+            category_id: Some(1),
+            ..valid.clone()
+        };
+        let errs = with_category.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementHasCategory));
+        assert_eq!(
+            ValidationError::SettlementHasCategory.field(),
+            TxField::Category
+        );
+
+        let with_split = TxDraft {
+            split_mode: Some(SplitMode::Even),
+            ..valid
+        };
+        let errs = with_split.validate().unwrap_err();
+        assert!(errs.contains(&ValidationError::SettlementHasSplitMode));
+        assert_eq!(
+            ValidationError::SettlementHasSplitMode.field(),
+            TxField::People
+        );
     }
 
     proptest::proptest! {

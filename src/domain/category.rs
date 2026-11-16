@@ -34,9 +34,12 @@ impl CategoryScope {
         }
     }
 
-    /// Refunds use the expense scope.
+    /// Refunds use the expense scope. Settlements never use categories.
     #[must_use]
     pub fn allows(self, kind: TransactionType) -> bool {
+        if kind == TransactionType::Settlement {
+            return false;
+        }
         matches!(
             (self, kind),
             (CategoryScope::Both, _)
@@ -93,6 +96,17 @@ mod tests {
         assert!(!CategoryScope::Income.allows(TransactionType::Expense));
         assert!(CategoryScope::Both.allows(TransactionType::Income));
         assert!(CategoryScope::Both.allows(TransactionType::Refund));
+    }
+
+    #[test]
+    fn category_scope_never_allows_settlement() {
+        for scope in [
+            CategoryScope::Expense,
+            CategoryScope::Income,
+            CategoryScope::Both,
+        ] {
+            assert!(!scope.allows(TransactionType::Settlement));
+        }
     }
 
     #[test]

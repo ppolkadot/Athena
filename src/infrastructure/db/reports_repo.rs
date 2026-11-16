@@ -31,7 +31,7 @@ const SUMMARY_SELECT: &str = "SELECT
     COALESCE(SUM(CASE t.kind WHEN 'income' THEN t.amount_cents END), 0),
     COALESCE(SUM(CASE t.kind WHEN 'expense' THEN t.amount_cents END), 0),
     COALESCE(SUM(CASE t.kind WHEN 'refund' THEN t.amount_cents END), 0),
-    COUNT(*)
+    COUNT(CASE WHEN t.kind <> 'settlement' THEN 1 END)
     FROM transactions t";
 
 /// # Errors
@@ -77,7 +77,8 @@ pub fn summaries_for_year(
         COALESCE(SUM(CASE t.kind WHEN 'expense' THEN t.amount_cents END), 0),
         COALESCE(SUM(CASE t.kind WHEN 'refund' THEN t.amount_cents END), 0),
         COUNT(*)
-        FROM transactions t WHERE t.date >= ?1 AND t.date < ?2 GROUP BY substr(t.date, 6, 2)";
+        FROM transactions t WHERE t.date >= ?1 AND t.date < ?2 AND t.kind <> 'settlement'
+        GROUP BY substr(t.date, 6, 2)";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(
         params![text(start.first_day()), text(end.first_day())],

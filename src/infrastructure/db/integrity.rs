@@ -12,6 +12,8 @@ pub enum IntegrityIssue {
     AllocationMissingPerson { tx_id: i64 },
     /// A split mode is set but the transaction has fewer than two allocations.
     SplitModeWithoutAllocations { tx_id: i64 },
+    /// A settlement row violates its shape constraints.
+    SettlementShape { tx_id: i64 },
 }
 
 fn ids(conn: &Connection, sql: &str) -> Result<Vec<i64>> {
@@ -49,5 +51,57 @@ pub fn check(conn: &Connection) -> Result<Vec<IntegrityIssue>> {
     )? {
         issues.push(IntegrityIssue::SplitModeWithoutAllocations { tx_id });
     }
+    for tx_id in ids(
+        conn,
+        "SELECT t.id FROM transactions t WHERE t.kind = 'settlement' AND (
+            t.payer_id IS NULL
+            OR t.category_id IS NOT NULL
+            OR t.split_mode IS NOT NULL
+            OR (SELECT COUNT(*) FROM allocations a WHERE a.transaction_id = t.id) <> 1
+            OR EXISTS (
+                SELECT 1 FROM allocations a
+                WHERE a.transaction_id = t.id
+                  AND (a.person_id = t.payer_id OR a.amount_cents <> t.amount_cents)
+            )
+        ) ORDER BY t.id",
+    )? {
+        issues.push(IntegrityIssue::SettlementShape { tx_id });
+    }
     Ok(issues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::db::Db;
+    use crate::shared::test_fixtures::seed_people;
+
+    #[test]
+    fn integrity_flags_settlement_shape() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = seed_people(db.conn());
+        let c = db.conn();
+        c.execute(
+            "INSERT INTO transactions (title, amount_cents, date, kind, category_id, payer_id, split_mode, created_at, updated_at)
+             VALUES ('Bad', 1000, '2026-11-14', 'settlement', NULL, ?1, NULL, '2026-11-14T00:00:00Z', '2026-11-14T00:00:00Z')",
+            [partner],
+        )
+        .unwrap();
+        let tx_id = c.last_insert_rowid();
+        c.execute(
+            "INSERT INTO allocations (transaction_id, person_id, amount_cents) VALUES (?1, ?2, 500)",
+            [tx_id, owner],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO allocations (transaction_id, person_id, amount_cents) VALUES (?1, ?2, 500)",
+            [tx_id, partner],
+        )
+        .unwrap();
+        assert!(
+            check(c)
+                .unwrap()
+                .contains(&IntegrityIssue::SettlementShape { tx_id })
+        );
+    }
 }

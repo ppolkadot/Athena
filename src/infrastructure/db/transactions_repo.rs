@@ -119,12 +119,16 @@ pub fn list(conn: &Connection, filter: &TxFilter) -> Result<Vec<Transaction>> {
         args.push(Value::Integer(category));
     }
     if let Some(person) = filter.person_id {
-        sql.push_str(" AND EXISTS (SELECT 1 FROM allocations a WHERE a.transaction_id = t.id AND a.person_id = ?)");
+        sql.push_str(
+            " AND (EXISTS (SELECT 1 FROM allocations a WHERE a.transaction_id = t.id AND a.person_id = ?)
+             OR (t.kind = 'settlement' AND t.payer_id = ?))",
+        );
+        args.push(Value::Integer(person));
         args.push(Value::Integer(person));
     }
     if filter.shared_only {
         sql.push_str(
-            " AND (SELECT COUNT(*) FROM allocations a WHERE a.transaction_id = t.id) >= 2",
+            " AND t.kind <> 'settlement' AND (SELECT COUNT(*) FROM allocations a WHERE a.transaction_id = t.id) >= 2",
         );
     }
     if let Some(kind) = filter.kind {

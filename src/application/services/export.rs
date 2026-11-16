@@ -242,4 +242,20 @@ mod tests {
             "no temp files are left"
         );
     }
+
+    #[test]
+    fn csv_writes_settlement_kind() {
+        let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
+        crate::shared::test_fixtures::seed_all_kinds(&db);
+        let dir = tempfile::tempdir().unwrap();
+        let en = dir.path().join("en.csv");
+        export_csv(db.conn(), Language::En, ExportScope::All, &en).unwrap();
+        let en_text = std::fs::read_to_string(&en).unwrap();
+        assert!(en_text.contains(";Settlement;"), "{en_text}");
+
+        let pt = dir.path().join("pt.csv");
+        export_csv(db.conn(), Language::PtBr, ExportScope::All, &pt).unwrap();
+        let pt_text = std::fs::read_to_string(&pt).unwrap();
+        assert!(pt_text.contains(";Acerto;"), "{pt_text}");
+    }
 }

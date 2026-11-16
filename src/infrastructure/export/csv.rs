@@ -34,6 +34,7 @@ fn type_label(kind: TransactionType, language: Language) -> &'static str {
         TransactionType::Expense => s.expense,
         TransactionType::Income => s.income,
         TransactionType::Refund => s.refund,
+        TransactionType::Settlement => s.settlement,
     }
 }
 

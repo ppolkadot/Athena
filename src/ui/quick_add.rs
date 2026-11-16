@@ -219,10 +219,35 @@ impl QuickAddState {
         self.payer_auto = false;
     }
 
-    /// Switch between expense, income and refund. `allowed_categories` are the category ids valid
-    /// for the new kind; a chosen category outside them is cleared.
+    /// Choose the recipient for a settlement without altering the payer.
+    pub fn set_recipient(&mut self, recipient: Option<i64>) {
+        self.split = recipient.map_or(SplitChoice::NoOne, SplitChoice::Person);
+    }
+
+    /// Switch between expense, income, refund and settlement. `allowed_categories` are the
+    /// category ids valid for the new kind; a chosen category outside them is cleared.
+    /// Entering settlement clears category and split-mode data while preserving shared fields.
     pub fn set_kind(&mut self, kind: TransactionType, allowed_categories: &[i64]) {
         self.kind = kind;
+        if kind == TransactionType::Settlement {
+            self.category_id = None;
+            self.shared_dirty = false;
+            self.shared_amounts.clear();
+            if self.payer_id.is_none() {
+                self.payer_id = self.person_ids.first().copied();
+            }
+            self.payer_auto = false;
+            let recipient = match self.split {
+                SplitChoice::Person(id) if Some(id) != self.payer_id => Some(id),
+                _ => self
+                    .person_ids
+                    .iter()
+                    .copied()
+                    .find(|id| Some(*id) != self.payer_id),
+            };
+            self.split = recipient.map_or(SplitChoice::NoOne, SplitChoice::Person);
+            return;
+        }
         if self
             .category_id
             .is_some_and(|id| !allowed_categories.contains(&id))
@@ -296,7 +321,13 @@ impl QuickAddState {
         let mut split_mode = None;
         match (self.kind, self.split) {
             (TransactionType::Income, _) => payer_id = None,
-            (_, SplitChoice::NoOne) => {}
+            (TransactionType::Settlement, SplitChoice::Person(id)) => {
+                allocations.push(Allocation {
+                    person_id: id,
+                    amount,
+                });
+            }
+            (TransactionType::Settlement, _) | (_, SplitChoice::NoOne) => {}
             (_, SplitChoice::Person(id)) => allocations.push(Allocation {
                 person_id: id,
                 amount,
@@ -416,6 +447,66 @@ fn person_name(vm: &ViewModel, id: Option<i64>, none: &str) -> String {
         .map_or_else(|| none.to_string(), |p| p.name.clone())
 }
 
+fn show_settlement_people(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    state: &mut QuickAddState,
+    vm: &ViewModel,
+) -> bool {
+    let language = vm.language();
+    let s = strings(language);
+    let people = vm.active_people();
+    let mut edited = false;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.vertical(|ui| {
+            let from_caption =
+                ui.label(RichText::new(s.qa_from).text_style(egui::TextStyle::Small));
+            let from_name = person_name(vm, state.payer_id, s.no_one);
+            let mut from = state.payer_id;
+            let from_box = ComboBox::from_id_salt("quick-add-from")
+                .selected_text(from_name)
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for person in &people {
+                        ui.selectable_value(&mut from, Some(person.id), &person.name);
+                    }
+                });
+            from_box.response.labelled_by(from_caption.id);
+            if from != state.payer_id {
+                state.set_payer(from);
+                edited = true;
+            }
+        });
+
+        ui.vertical(|ui| {
+            let to_caption = ui.label(RichText::new(s.qa_to).text_style(egui::TextStyle::Small));
+            let current_to = match state.split {
+                SplitChoice::Person(id) => Some(id),
+                _ => None,
+            };
+            let to_name = person_name(vm, current_to, s.no_one);
+            let mut to = current_to;
+            let to_box = ComboBox::from_id_salt("quick-add-to")
+                .selected_text(to_name)
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for person in &people {
+                        ui.selectable_value(&mut to, Some(person.id), &person.name);
+                    }
+                });
+            to_box.response.labelled_by(to_caption.id);
+            if to != current_to {
+                state.set_recipient(to);
+                edited = true;
+            }
+        });
+    });
+    show_errors(ui, p, state, vm, FormField::People);
+    ui.add_space(8.0);
+    edited
+}
+
 /// Draw the modal. Returns what the user asked for this frame, if anything.
 #[allow(clippy::too_many_lines)]
 pub fn show(
@@ -500,11 +591,12 @@ pub fn show(
                     });
                     ui.vertical(|ui| {
                         ui.label(RichText::new(s.qa_type).text_style(egui::TextStyle::Small));
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             for kind in [
                                 TransactionType::Expense,
                                 TransactionType::Income,
                                 TransactionType::Refund,
+                                TransactionType::Settlement,
                             ] {
                                 let selected = state.kind == kind;
                                 if ui
@@ -524,38 +616,43 @@ pub fn show(
                 show_errors(ui, &p, state, vm, FormField::Date);
                 ui.add_space(4.0);
 
-                // Category, filtered by type. An archived category already on the entry stays selectable.
-                let category_caption =
-                    ui.label(RichText::new(s.qa_category).text_style(egui::TextStyle::Small));
-                let selected_name = state
-                    .category_id
-                    .and_then(|id| vm.category(id))
-                    .map_or(s.qa_no_category, |c| c.name.as_str());
-                let category_box = ComboBox::from_id_salt("quick-add-category")
-                    .selected_text(selected_name)
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut state.category_id, None, s.qa_no_category);
-                        let mut shown: Vec<_> = vm.active_categories(state.kind);
-                        if let Some(current) = state
-                            .category_id
-                            .and_then(|id| vm.category(id))
-                            .filter(|current| !shown.iter().any(|c| c.id == current.id))
-                        {
-                            shown.push(current);
-                        }
-                        for category in shown {
-                            ui.selectable_value(
-                                &mut state.category_id,
-                                Some(category.id),
-                                &category.name,
-                            );
-                        }
-                    });
-                category_box.response.labelled_by(category_caption.id);
-                ui.add_space(8.0);
+                // Category, filtered by type (hidden for settlements). An archived category already
+                // on the entry stays selectable.
+                if state.kind != TransactionType::Settlement {
+                    let category_caption =
+                        ui.label(RichText::new(s.qa_category).text_style(egui::TextStyle::Small));
+                    let selected_name = state
+                        .category_id
+                        .and_then(|id| vm.category(id))
+                        .map_or(s.qa_no_category, |c| c.name.as_str());
+                    let category_box = ComboBox::from_id_salt("quick-add-category")
+                        .selected_text(selected_name)
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut state.category_id, None, s.qa_no_category);
+                            let mut shown: Vec<_> = vm.active_categories(state.kind);
+                            if let Some(current) = state
+                                .category_id
+                                .and_then(|id| vm.category(id))
+                                .filter(|current| !shown.iter().any(|c| c.id == current.id))
+                            {
+                                shown.push(current);
+                            }
+                            for category in shown {
+                                ui.selectable_value(
+                                    &mut state.category_id,
+                                    Some(category.id),
+                                    &category.name,
+                                );
+                            }
+                        });
+                    category_box.response.labelled_by(category_caption.id);
+                    ui.add_space(8.0);
+                }
 
-                if state.kind != TransactionType::Income {
+                if state.kind == TransactionType::Settlement {
+                    edited |= show_settlement_people(ui, &p, state, vm);
+                } else if state.kind != TransactionType::Income {
                     let people = vm.active_people();
                     // Responsible person: every active person, Shared (two or more people) and No one.
                     ui.label(RichText::new(s.qa_for).text_style(egui::TextStyle::Small));
@@ -650,7 +747,23 @@ pub fn show(
                 state.show_more = more.fully_open();
 
                 // Who is responsible and who pays, visible before saving.
-                if state.kind != TransactionType::Income {
+                if state.kind == TransactionType::Settlement {
+                    let from = person_name(vm, state.payer_id, s.no_one);
+                    let to_id = match state.split {
+                        SplitChoice::Person(id) => Some(id),
+                        _ => None,
+                    };
+                    let to = person_name(vm, to_id, s.no_one);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(
+                            s.qa_settlement_summary
+                                .replace("{from}", &from)
+                                .replace("{to}", &to),
+                        )
+                        .color(p.muted),
+                    );
+                } else if state.kind != TransactionType::Income {
                     let person = match state.split {
                         SplitChoice::Person(id) => person_name(vm, Some(id), s.no_one),
                         SplitChoice::Shared => s.shared.to_string(),
@@ -1282,5 +1395,64 @@ mod tests {
                 "{label} overflows 640 px width: {rect:?}"
             );
         }
+    }
+
+    #[test]
+    fn quick_add_settlement_mode_builds_a_valid_draft() {
+        let people = two_people();
+        let mut state = QuickAddState::new(&people, today(), Language::En);
+        state.amount_input = "80,00".into();
+        state.title = "Ana -> A3".into();
+        state.category_id = Some(1);
+        state.set_kind(TransactionType::Settlement, &[1, 2]);
+        assert_eq!(state.category_id, None);
+
+        // Selecting From = Ana (2), To = A3 (1) yields a valid settlement draft.
+        state.set_payer(Some(2));
+        state.set_recipient(Some(1));
+        let draft = state.to_draft().unwrap();
+        assert_eq!(draft.kind, TransactionType::Settlement);
+        assert_eq!(draft.payer_id, Some(2));
+        assert_eq!(draft.category_id, None);
+        assert_eq!(draft.split_mode, None);
+        assert_eq!(
+            draft.allocations,
+            vec![Allocation {
+                person_id: 1,
+                amount: Money::from_cents(8_000),
+            }]
+        );
+
+        // Same person blocks save with a localized error.
+        state.set_recipient(Some(2));
+        let errs = state.to_draft().unwrap_err();
+        assert!(errs.contains(&QuickAddError::Validation(
+            ValidationError::SettlementSamePerson
+        )));
+        let msg = error_message(&errs[0], Language::En, |_| String::new());
+        assert!(!msg.trim().is_empty());
+        assert_ne!(
+            msg,
+            error_message(&errs[0], Language::PtBr, |_| String::new())
+        );
+    }
+
+    #[test]
+    fn quick_add_kind_switch_keeps_shared_fields() {
+        let people = two_people();
+        let mut state = QuickAddState::new(&people, today(), Language::En);
+        state.title = "Payback".into();
+        state.amount_input = "50,00".into();
+        state.date_text = "2026-11-15".into();
+        state.description = "PIX".into();
+        state.category_id = Some(3);
+        state.set_split(SplitChoice::Shared);
+        state.set_kind(TransactionType::Settlement, &[3]);
+        assert_eq!(state.title, "Payback");
+        assert_eq!(state.amount_input, "50,00");
+        assert_eq!(state.date_text, "2026-11-15");
+        assert_eq!(state.description, "PIX");
+        assert_eq!(state.category_id, None);
+        assert!(state.shared_amounts.is_empty());
     }
 }
