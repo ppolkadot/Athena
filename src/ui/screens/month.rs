@@ -344,8 +344,15 @@ fn rail_row(
         ui.vertical(|ui| {
             ui.add(egui::Label::new(name).truncate())
                 .on_hover_text(name);
-            ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
-                ui.label(RichText::new(amount_str).font(amount_font));
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
+                    ui.scope(|ui| {
+                        ui.set_max_width(avail);
+                        ui.add(
+                            egui::Label::new(RichText::new(amount_str).font(amount_font)).wrap(),
+                        );
+                    });
+                });
             });
         });
     } else {
@@ -1004,6 +1011,18 @@ mod tests {
                 assert!(
                     following.bottom() <= 252.0,
                     "{language:?} {width}px: following row is offscreen: {following:?}"
+                );
+                assert!(
+                    row_rect.width() <= width + 1.0,
+                    "{language:?} {width}px: rail_row width {} exceeded {width}: {row_rect:?}",
+                    row_rect.width()
+                );
+                let amount_label = plain_brl(Money::from_cents(i64::MAX));
+                let amount_rect = harness.get_by_label(&amount_label).rect();
+                assert!(
+                    amount_rect.left() >= row_rect.left() - 1.0
+                        && amount_rect.right() <= row_rect.right() + 1.0,
+                    "{language:?} {width}px: rail amount ({amount_rect:?}) overflowed row bounds ({row_rect:?})"
                 );
             }
         }
