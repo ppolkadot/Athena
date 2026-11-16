@@ -7,7 +7,7 @@
 mod en;
 mod pt_br;
 
-use chrono::{NaiveDate, Weekday};
+use chrono::{Datelike as _, NaiveDate, Weekday};
 
 use crate::domain::date::YearMonth;
 use crate::domain::money::MoneyError;
@@ -187,9 +187,21 @@ strings! {
     toast_profile_saved,
     toast_person_saved,
     toast_person_archived,
+    toast_person_restored,
     toast_category_saved,
     toast_category_archived,
     toast_welcome,
+    settlement_title,
+    settlement_as_of,
+    settlement_all_settled,
+    settlement_owes_you,
+    settlement_you_owe,
+    settlement_owes_other,
+    settlement_record,
+    settlement_restore_to_record,
+    settlement_archived_suffix,
+    filter_missing_payer_until,
+    filter_unassigned_until,
     v_name_required,
     v_partner_name_taken,
     v_title_required,
@@ -220,6 +232,7 @@ pub enum ToastKey {
     ProfileSaved,
     PersonSaved,
     PersonArchived,
+    PersonRestored,
     CategorySaved,
     CategoryArchived,
     Welcome,
@@ -238,6 +251,7 @@ impl ToastKey {
             ToastKey::ProfileSaved => s.toast_profile_saved,
             ToastKey::PersonSaved => s.toast_person_saved,
             ToastKey::PersonArchived => s.toast_person_archived,
+            ToastKey::PersonRestored => s.toast_person_restored,
             ToastKey::CategorySaved => s.toast_category_saved,
             ToastKey::CategoryArchived => s.toast_category_archived,
             ToastKey::Welcome => s.toast_welcome,
@@ -297,10 +311,31 @@ pub fn month_name(language: Language, month: u32) -> &'static str {
         .unwrap_or("")
 }
 
+/// `Nov` / `Fev`.
+#[must_use]
+pub fn month_short(language: Language, month: u32) -> String {
+    month_name(language, month).chars().take(3).collect()
+}
+
 /// `November 2026` / `Novembro 2026`.
 #[must_use]
 pub fn month_label(month: YearMonth, language: Language) -> String {
     format!("{} {}", month_name(language, month.month), month.year)
+}
+
+/// `30 Nov` / `30/11`.
+#[must_use]
+pub fn format_as_of_date(date: NaiveDate, language: Language) -> String {
+    match language {
+        Language::En => format!("{} {}", date.day(), month_short(language, date.month())),
+        Language::PtBr => date.format("%d/%m").to_string(),
+    }
+}
+
+/// `Nov 2026`.
+#[must_use]
+pub fn format_short_month_year(date: NaiveDate, language: Language) -> String {
+    format!("{} {}", month_short(language, date.month()), date.year())
 }
 
 #[must_use]
@@ -374,6 +409,10 @@ pub enum PluralKey {
     EntriesWithoutPayer,
     /// `3 entries`.
     Entries,
+    /// `2 entries without payer`.
+    SettlementUnknownPayer,
+    /// `5 with no one responsible`.
+    SettlementUnassigned,
 }
 
 /// Count-aware copy: both languages distinguish exactly one from every other number.
@@ -383,12 +422,26 @@ pub fn plural(key: PluralKey, n: usize, language: Language) -> String {
     let text = match (key, language, one) {
         (PluralKey::EntriesWithoutPayer, Language::En, true) => "entry has no payer",
         (PluralKey::EntriesWithoutPayer, Language::En, false) => "entries have no payer",
-        (PluralKey::EntriesWithoutPayer, Language::PtBr, true) => "lançamento sem pagador",
-        (PluralKey::EntriesWithoutPayer, Language::PtBr, false) => "lançamentos sem pagador",
+        (
+            PluralKey::EntriesWithoutPayer | PluralKey::SettlementUnknownPayer,
+            Language::PtBr,
+            true,
+        ) => "lançamento sem pagador",
+        (
+            PluralKey::EntriesWithoutPayer | PluralKey::SettlementUnknownPayer,
+            Language::PtBr,
+            false,
+        ) => "lançamentos sem pagador",
         (PluralKey::Entries, Language::En, true) => "entry",
         (PluralKey::Entries, Language::En, false) => "entries",
         (PluralKey::Entries, Language::PtBr, true) => "lançamento",
         (PluralKey::Entries, Language::PtBr, false) => "lançamentos",
+        (PluralKey::SettlementUnknownPayer, Language::En, true) => "entry without payer",
+        (PluralKey::SettlementUnknownPayer, Language::En, false) => "entries without payer",
+        (PluralKey::SettlementUnassigned, Language::En, true) => "entry with no one responsible",
+        (PluralKey::SettlementUnassigned, Language::En, false) => "with no one responsible",
+        (PluralKey::SettlementUnassigned, Language::PtBr, true) => "lançamento sem responsável",
+        (PluralKey::SettlementUnassigned, Language::PtBr, false) => "sem responsável",
     };
     format!("{n} {text}")
 }
@@ -516,6 +569,7 @@ mod tests {
             ProfileSaved,
             PersonSaved,
             PersonArchived,
+            PersonRestored,
             CategorySaved,
             CategoryArchived,
             Welcome,
@@ -529,6 +583,10 @@ mod tests {
         let d = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         assert_eq!(format_date(d, Language::En), "2026-11-11");
         assert_eq!(format_date(d, Language::PtBr), "11/11/2026");
+        let end_nov = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+        assert_eq!(format_as_of_date(end_nov, Language::En), "30 Nov");
+        assert_eq!(format_as_of_date(end_nov, Language::PtBr), "30/11");
+        assert_eq!(format_short_month_year(end_nov, Language::En), "Nov 2026");
         assert_eq!(weekday_short(Language::PtBr, Weekday::Sat), "Sáb");
         assert_eq!(weekday_short(Language::En, Weekday::Mon), "Mon");
     }
@@ -564,7 +622,12 @@ mod tests {
     #[test]
     fn plurals_distinguish_one_from_many_in_both_languages() {
         for language in [Language::En, Language::PtBr] {
-            for key in [PluralKey::EntriesWithoutPayer, PluralKey::Entries] {
+            for key in [
+                PluralKey::EntriesWithoutPayer,
+                PluralKey::Entries,
+                PluralKey::SettlementUnknownPayer,
+                PluralKey::SettlementUnassigned,
+            ] {
                 assert_ne!(
                     plural(key, 1, language),
                     plural(key, 3, language).replace('3', "1")

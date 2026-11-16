@@ -96,10 +96,16 @@ pub fn update(conn: &Connection, person: &Person) -> Result<()> {
 }
 
 /// Archive or restore. The owner cannot be archived (table CHECK).
+/// When restoring (`archived == false`), active name uniqueness is enforced.
 ///
 /// # Errors
-/// Database errors, including the owner rule.
+/// [`AppError::NotFound`] if missing, [`AppError::Validation`] if an active person already uses
+/// this name, or database errors.
 pub fn set_archived(conn: &Connection, id: i64, archived: bool) -> Result<()> {
+    if !archived {
+        let person = get(conn, id)?.ok_or(AppError::NotFound("person"))?;
+        check_name(conn, &person.name, Some(id))?;
+    }
     conn.execute(
         "UPDATE people SET archived = ?1 WHERE id = ?2",
         params![i64::from(archived), id],
@@ -176,5 +182,24 @@ mod tests {
         let old = insert(db.conn(), "Bia", PersonKind::Other).unwrap();
         set_archived(db.conn(), old, true).unwrap();
         assert!(insert(db.conn(), "Bia", PersonKind::Other).is_ok());
+    }
+
+    #[test]
+    fn restoring_person_checks_active_name_uniqueness() {
+        let db = Db::open_in_memory().unwrap();
+        let old = insert(db.conn(), "Bia", PersonKind::Other).unwrap();
+        let carlos = insert(db.conn(), "Carlos", PersonKind::Other).unwrap();
+        set_archived(db.conn(), old, true).unwrap();
+        set_archived(db.conn(), carlos, true).unwrap();
+
+        insert(db.conn(), "Bia", PersonKind::Other).unwrap();
+        assert!(matches!(
+            set_archived(db.conn(), old, false),
+            Err(AppError::Validation(_))
+        ));
+        assert!(get(db.conn(), old).unwrap().unwrap().archived);
+
+        set_archived(db.conn(), carlos, false).unwrap();
+        assert!(!get(db.conn(), carlos).unwrap().unwrap().archived);
     }
 }

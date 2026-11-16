@@ -116,7 +116,12 @@ fn snapshot_populated_month() {
     let mut results = SnapshotResults::new();
     for (language, theme, tag) in variants() {
         let app = AthenaApp::for_test(onboarded_core(language, theme, true));
-        snapshot(&mut results, &format!("month_populated_{tag}"), app, SIZE);
+        snapshot(
+            &mut results,
+            &format!("month_populated_{tag}"),
+            app,
+            egui::Vec2::new(1280.0, 820.0),
+        );
     }
     results.unwrap();
 }

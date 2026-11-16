@@ -1,8 +1,10 @@
 //! Ephemeral UI state: which screen is showing, the selected month and year, filters.
 
+use chrono::NaiveDate;
+
 use super::navigation::Screen;
 use crate::domain::date::YearMonth;
-use crate::domain::transaction::TxFilter;
+use crate::domain::transaction::{SettlementIssue, TxFilter};
 use crate::ui::screens::settings::SettingsState;
 
 #[derive(Debug, Clone)]
@@ -10,7 +12,7 @@ pub struct UiState {
     pub screen: Screen,
     pub month: YearMonth,
     pub calendar_year: i32,
-    /// `filter.month` always equals `Some(month)`.
+    /// `filter.month` equals `Some(month)` unless `filter.issue` is set.
     pub filter: TxFilter,
     /// What is typed in the search box. It reaches `filter.text` after a short pause.
     pub search_input: String,
@@ -61,7 +63,21 @@ impl UiState {
     /// cleared here so the register never looks empty after navigating.
     pub fn set_month(&mut self, month: YearMonth) {
         self.month = month;
+        self.filter.issue = None;
+        self.filter.until = None;
         self.filter.month = Some(month);
+    }
+
+    pub fn set_repair_filter(&mut self, issue: SettlementIssue, as_of: NaiveDate) {
+        self.filter.month = None;
+        self.filter.until = Some(as_of);
+        self.filter.issue = Some(issue);
+    }
+
+    pub fn clear_repair_filter(&mut self) {
+        self.filter.issue = None;
+        self.filter.until = None;
+        self.filter.month = Some(self.month);
     }
 
     /// Record what is typed in the search box; the filter itself waits for a pause.
@@ -118,6 +134,7 @@ impl UiState {
         f.person_id.is_some()
             || f.shared_only
             || f.category_id.is_some()
+            || f.issue.is_some()
             || !f.text.is_empty()
             || !self.search_input.is_empty()
     }
@@ -212,5 +229,91 @@ mod tests {
             YearMonth::new(2026, 11),
             "the month survives"
         );
+    }
+
+    #[test]
+    fn repair_filter_lists_all_months_until_as_of_and_clears() {
+        use crate::domain::money::Money;
+        use crate::domain::transaction::{Allocation, TransactionType};
+        use crate::infrastructure::db::{Db, transactions_repo};
+        use crate::shared::test_fixtures::{date, draft_with, seed_people};
+
+        let nov = YearMonth::new(2026, 11).unwrap();
+        let dec = YearMonth::new(2026, 12).unwrap();
+        let mut ui = UiState::new(nov);
+        assert_eq!(ui.filter.month, Some(nov));
+
+        ui.set_repair_filter(SettlementIssue::UnknownPayer, nov.last_day());
+        assert_eq!(ui.filter.month, None);
+        assert_eq!(ui.filter.until, Some(nov.last_day()));
+        assert_eq!(ui.filter.issue, Some(SettlementIssue::UnknownPayer));
+        assert!(ui.has_filters());
+
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = seed_people(db.conn());
+        let alloc = vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(1_000),
+        }];
+
+        let mut oct_missing = draft_with(alloc.clone());
+        oct_missing.title = "Oct missing".into();
+        oct_missing.date = date(2026, 10, 15);
+        transactions_repo::create(db.conn(), &oct_missing).unwrap();
+
+        let mut nov_missing = draft_with(alloc.clone());
+        nov_missing.title = "Nov missing".into();
+        nov_missing.kind = TransactionType::Refund;
+        nov_missing.date = date(2026, 11, 20);
+        transactions_repo::create(db.conn(), &nov_missing).unwrap();
+
+        let mut dec_missing = draft_with(alloc.clone());
+        dec_missing.title = "Dec missing".into();
+        dec_missing.date = date(2026, 12, 1);
+        transactions_repo::create(db.conn(), &dec_missing).unwrap();
+
+        let mut nov_unassigned = draft_with(vec![]);
+        nov_unassigned.title = "Nov unassigned".into();
+        nov_unassigned.date = date(2026, 11, 10);
+        transactions_repo::create(db.conn(), &nov_unassigned).unwrap();
+
+        let mut nov_complete = draft_with(alloc);
+        nov_complete.title = "Nov complete".into();
+        nov_complete.payer_id = Some(owner);
+        nov_complete.date = date(2026, 11, 12);
+        transactions_repo::create(db.conn(), &nov_complete).unwrap();
+
+        let unknown_titles: Vec<String> = transactions_repo::list(db.conn(), &ui.filter)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(unknown_titles, vec!["Nov missing", "Oct missing"]);
+
+        ui.set_repair_filter(SettlementIssue::Unassigned, nov.last_day());
+        let unassigned_titles: Vec<String> = transactions_repo::list(db.conn(), &ui.filter)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(unassigned_titles, vec!["Nov unassigned"]);
+
+        ui.clear_repair_filter();
+        assert_eq!(ui.filter.month, Some(nov));
+        assert_eq!(ui.filter.until, None);
+        assert_eq!(ui.filter.issue, None);
+        assert!(!ui.has_filters());
+
+        ui.set_repair_filter(SettlementIssue::UnknownPayer, nov.last_day());
+        ui.set_month(dec);
+        assert_eq!(ui.filter.month, Some(dec));
+        assert_eq!(ui.filter.issue, None);
+        assert_eq!(ui.filter.until, None);
+
+        ui.set_repair_filter(SettlementIssue::Unassigned, dec.last_day());
+        ui.clear_filters();
+        assert_eq!(ui.filter.month, Some(dec));
+        assert_eq!(ui.filter.issue, None);
+        assert_eq!(ui.filter.until, None);
     }
 }

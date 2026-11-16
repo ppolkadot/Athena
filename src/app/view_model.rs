@@ -5,13 +5,14 @@ use super::actions::{OperationNotice, RefreshScope};
 use super::navigation::Screen;
 use super::store::Store;
 use super::ui_state::UiState;
-use crate::application::services::reports;
+use crate::application::services::{reports, settlement};
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
 use crate::domain::reports::{CalendarMonthTotal, CategoryTotal, MonthSummary, PersonTotal};
 use crate::domain::settings::{Language, Profile, Theme};
+use crate::domain::settlement::SettlementView;
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
     categories_repo, people_repo, profile_repo, transactions_repo,
@@ -45,6 +46,8 @@ pub struct ViewModel {
     pub calendar: Vec<CalendarMonthTotal>,
     /// Start balance plus all income, expenses and refunds, all time.
     pub balance: Money,
+    /// Cumulative household settlement balances and suggested transfers as of `ui.month`.
+    pub settlement: Option<SettlementView>,
     /// Number of deleted transactions currently in Trash.
     pub trash_count: usize,
     /// Soft-deleted transactions, loaded only when viewing the Trash screen.
@@ -75,6 +78,7 @@ impl ViewModel {
             person_totals: Vec::new(),
             calendar: Vec::new(),
             balance: Money::ZERO,
+            settlement: None,
             trash_count: 0,
             trash: Vec::new(),
             last_operation: None,
@@ -143,10 +147,7 @@ impl ViewModel {
             version: store.data_version(),
             month: ui.month,
             year: ui.calendar_year,
-            filter: TxFilter {
-                month: Some(ui.month),
-                ..ui.filter.clone()
-            },
+            filter: ui.filter.clone(),
             today: self.today,
             screen: ui.screen,
         }
@@ -206,6 +207,7 @@ impl ViewModel {
                     .as_ref()
                     .map_or(Money::ZERO, |p| p.start_balance);
                 self.balance = reports::tracked_balance(conn, start)?;
+                self.settlement = Some(settlement::for_month(conn, ui.month)?);
                 self.trash_count = trash_repo::count(conn)?;
                 self.data_path = store.dirs().db_path.display().to_string();
                 if ui.screen == Screen::Trash {

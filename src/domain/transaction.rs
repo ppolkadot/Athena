@@ -295,6 +295,13 @@ pub fn split_evenly(total: Money, weights: &[u32]) -> Result<Vec<Money>, SplitEr
         .collect())
 }
 
+/// Repair-filter category for rows excluded from settlement math.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SettlementIssue {
+    Unassigned,
+    UnknownPayer,
+}
+
 /// Month filter, text search and person/category/kind filters for the register.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TxFilter {
@@ -304,6 +311,8 @@ pub struct TxFilter {
     pub person_id: Option<i64>,
     pub shared_only: bool,
     pub kind: Option<TransactionType>,
+    pub issue: Option<SettlementIssue>,
+    pub until: Option<NaiveDate>,
 }
 
 #[cfg(test)]

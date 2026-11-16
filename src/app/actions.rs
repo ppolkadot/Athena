@@ -23,6 +23,7 @@ pub enum AppAction {
     /// `id == 0` creates a person; otherwise renames the existing one.
     SavePerson(Person),
     ArchivePerson(i64),
+    RestorePerson(i64),
     /// `id == 0` creates a category; otherwise edits the existing one.
     SaveCategory(Category),
     ArchiveCategory(i64),

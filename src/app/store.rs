@@ -129,6 +129,7 @@ impl Store {
             AppAction::SaveProfile(_)
             | AppAction::SavePerson(_)
             | AppAction::ArchivePerson(_)
+            | AppAction::RestorePerson(_)
             | AppAction::SaveCategory(_)
             | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
         }
@@ -224,6 +225,14 @@ impl Store {
                 Ok(outcome(
                     None,
                     Some(ToastKey::PersonArchived),
+                    RefreshScope::People,
+                ))
+            }
+            AppAction::RestorePerson(id) => {
+                people_repo::set_archived(conn, id, false)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::PersonRestored),
                     RefreshScope::People,
                 ))
             }
@@ -514,5 +523,43 @@ mod tests {
             .with_timezone(&Utc);
         store.run_startup_tasks(today, now_utc);
         assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 2);
+    }
+
+    #[test]
+    fn recorded_settlement_clears_the_balance() {
+        use crate::application::services::settlement;
+        use crate::domain::date::YearMonth;
+        use crate::domain::transaction::{Allocation, TransactionType};
+        use crate::shared::test_fixtures::{date, seed_month, seed_people};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(dir.path().to_path_buf()),
+        );
+        seed_month(store.db());
+        let (owner, partner) = seed_people(store.db().conn());
+        let nov = YearMonth::new(2026, 11).unwrap();
+
+        let before = settlement::for_month(store.db().conn(), nov).unwrap();
+        assert_eq!(before.transfers.len(), 1);
+        assert_eq!(before.transfers[0].from, partner);
+        assert_eq!(before.transfers[0].to, owner);
+        assert_eq!(before.transfers[0].amount, Money::from_cents(2_500));
+
+        let mut payback = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(2_500),
+        }]);
+        payback.title = "Ana → A3".into();
+        payback.kind = TransactionType::Settlement;
+        payback.payer_id = Some(partner);
+        payback.date = date(2026, 11, 20);
+        store.apply(AppAction::SaveTransaction(payback)).unwrap();
+
+        let after = settlement::for_month(store.db().conn(), nov).unwrap();
+        assert!(after.transfers.is_empty());
+        assert_eq!(after.balances.len(), 2);
+        assert!(after.balances.iter().all(|b| b.balance.is_zero()));
     }
 }

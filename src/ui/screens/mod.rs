@@ -7,6 +7,7 @@ use crate::app::navigation::Screen;
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
 use crate::i18n::strings;
+use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::theme::{palette, typography};
 
 pub mod calendar;
@@ -35,6 +36,7 @@ pub enum ScreenEvent {
     OpenMonth(crate::domain::date::YearMonth),
     /// Apply this action; the screen that raised it shows the result.
     Apply(AppAction),
+    Settlement(SettlementEvent),
     OpenDataFolder,
     Export(ExportRequest),
 }
@@ -46,6 +48,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
                 month::MonthEvent::NewTransaction => ScreenEvent::NewTransaction,
                 month::MonthEvent::Edit(id) => ScreenEvent::EditTransaction(id),
                 month::MonthEvent::Delete(id) => ScreenEvent::DeleteTransaction(id),
+                month::MonthEvent::Settlement(ev) => ScreenEvent::Settlement(ev),
             })
             .into_iter()
             .collect(),

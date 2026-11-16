@@ -311,6 +311,7 @@ mod tests {
         days: Vec<DayTotal>,
         cal: Vec<CalendarMonthTotal>,
         balance: Money,
+        settlement: crate::domain::settlement::SettlementView,
         csv_count: usize,
         csv_has_market: bool,
         json_count: usize,
@@ -357,6 +358,8 @@ mod tests {
                 days: day_totals(db.conn(), nov()).unwrap(),
                 cal: year_calendar(db.conn(), 2026).unwrap(),
                 balance: tracked_balance(db.conn(), Money::from_cents(100_000)).unwrap(),
+                settlement: crate::application::services::settlement::for_month(db.conn(), nov())
+                    .unwrap(),
                 csv_count,
                 csv_has_market,
                 json_count,
@@ -394,6 +397,8 @@ mod tests {
         assert!(deleted.days.iter().all(|d| d.date != date(2026, 11, 5)));
         assert_eq!(deleted.cal[10].summary, deleted.summary);
         assert_eq!(deleted.balance, Money::from_cents(122_000));
+        assert!(deleted.settlement.transfers.is_empty());
+        assert_eq!(deleted.settlement.balances.len(), 1);
         assert_eq!(deleted.csv_count, 3);
         assert!(!deleted.csv_has_market);
         assert_eq!(deleted.json_count, 3);
@@ -401,5 +406,29 @@ mod tests {
 
         trash_repo::restore(db.conn(), market_id).unwrap();
         assert_eq!(ReportSnapshot::capture(&db, "restored"), baseline);
+
+        // Soft-deleting a Settlement payback removes it from settlement math until restored.
+        let (owner, partner) = seed_people(db.conn());
+        let mut payback = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(2_500),
+        }]);
+        payback.title = "Payback".into();
+        payback.kind = crate::domain::transaction::TransactionType::Settlement;
+        payback.payer_id = Some(partner);
+        payback.date = date(2026, 11, 20);
+        let settlement_id = transactions_repo::create(db.conn(), &payback).unwrap();
+        let after_payback =
+            crate::application::services::settlement::for_month(db.conn(), nov()).unwrap();
+        assert!(after_payback.transfers.is_empty());
+        assert_eq!(after_payback.balances.len(), 2);
+
+        transactions_repo::delete(db.conn(), settlement_id).unwrap();
+        assert_eq!(ReportSnapshot::capture(&db, "del_settlement"), baseline);
+
+        trash_repo::restore(db.conn(), settlement_id).unwrap();
+        let after_restore =
+            crate::application::services::settlement::for_month(db.conn(), nov()).unwrap();
+        assert!(after_restore.transfers.is_empty());
     }
 }

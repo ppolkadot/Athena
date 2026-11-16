@@ -265,6 +265,7 @@ pub struct SuggestedTransfer { pub from: i64, pub to: i64, pub amount: Money }
 | `CreateBackup` | `None` | `Backups` | writes `manual-…db` |
 | `RestoreBackup(RestoreSource)` | `None` | `All` | §9; notice carries the snapshot path |
 | `ImportProfile(Box<ImportPlan>)` | `None` | `All` | §10; the plan was validated at preview |
+| `RestorePerson(i64)` | `None` | `People` | checks active name uniqueness |
 | existing profile/people/category actions | unchanged | unchanged | |
 
 - `RestoreSource` is `Listed(PathBuf)` (inside `backups_dir`) or `External(PathBuf)` (picked file).
@@ -285,7 +286,7 @@ pub enum OperationKind { BackupCreated, Restored, Imported, TrashPurged }
 ```
 
 - `RefreshScope` gains `Trash` and `Backups`.
-- `ToastKey` gains `TransactionRestored`, `TrashEmptied`, `BackupCreated`, `Restored`, `Imported`.
+- `ToastKey` gains `TransactionRestored`, `TrashEmptied`, `PersonRestored`, `BackupCreated`, `Restored`, `Imported`.
 - `vm.last_operation: Option<OperationNotice>` keeps the latest notice for the Data & backups page for the rest of the session. Across restarts, the `pre-restore-`/`pre-import-` entries in the backups list are the durable record.
 
 ### §8.3 Cache key and fields
@@ -547,3 +548,4 @@ These reserve names and rules. They are not frozen.
 ## §15 Change log
 
 - 2026-11-16 — Created. Froze 1.1 (§4–§13) after D8/D9 and technical decisions T1–T5.
+- 2026-11-16 — Added `RestorePerson(i64)` and `ToastKey::PersonRestored` (§8.1, §8.2) so archived settlement parties can be restored in place (§7.3).

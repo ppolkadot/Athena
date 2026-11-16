@@ -154,6 +154,31 @@ impl QuickAddState {
         }
     }
 
+    #[must_use]
+    pub fn for_settlement(
+        people: &[Person],
+        from: i64,
+        to: i64,
+        amount: Money,
+        today: NaiveDate,
+        title: String,
+        language: Language,
+    ) -> Self {
+        let mut state = Self::new(people, today, language);
+        state.mode = QuickAddMode::Create;
+        state.kind = TransactionType::Settlement;
+        state.payer_id = Some(from);
+        state.payer_auto = false;
+        state.split = SplitChoice::Person(to);
+        state.category_id = None;
+        state.shared_dirty = false;
+        state.shared_amounts.clear();
+        state.amount_input = amount.br_number();
+        state.title = title;
+        state.focus_amount = false;
+        state
+    }
+
     /// Reopen a stored transaction for editing, in the split mode it was saved with. People who
     /// are on the entry but archived stay in the split so the history remains editable.
     #[must_use]

@@ -7,6 +7,7 @@ pub mod migrations;
 pub mod people_repo;
 pub mod profile_repo;
 pub mod reports_repo;
+pub mod settlement_repo;
 pub mod transactions_repo;
 pub mod trash_repo;
 

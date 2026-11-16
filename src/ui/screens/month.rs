@@ -16,8 +16,9 @@ use crate::app::view_model::ViewModel;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::reports::bar_fraction;
-use crate::domain::transaction::Transaction;
-use crate::i18n::{format_date, month_label, strings, weekday_short};
+use crate::domain::transaction::{SettlementIssue, Transaction};
+use crate::i18n::{format_date, format_short_month_year, month_label, strings, weekday_short};
+use crate::ui::components::settlement_card::{self, SettlementEvent};
 use crate::ui::components::summary_card::{self, Tone, plain_brl, signed_brl};
 use crate::ui::components::transaction_row::RowAction;
 use crate::ui::components::{empty_state, transaction_row};
@@ -32,6 +33,7 @@ pub enum MonthEvent {
     NewTransaction,
     Edit(i64),
     Delete(i64),
+    Settlement(SettlementEvent),
 }
 
 /// Newest day first; entries keep their incoming order within a day.
@@ -211,6 +213,20 @@ fn filters(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) {
         if search.changed() {
             state.edit_search(text, now);
         }
+        if let (Some(issue), Some(until)) = (state.filter.issue, state.filter.until) {
+            let month_text = format_short_month_year(until, vm.language());
+            let template = match issue {
+                SettlementIssue::UnknownPayer => s.filter_missing_payer_until,
+                SettlementIssue::Unassigned => s.filter_unassigned_until,
+            };
+            let chip = format!("{} · ✕", template.replace("{month}", &month_text));
+            if ui
+                .add(Button::new(RichText::new(chip).color(p.accent)))
+                .clicked()
+            {
+                state.clear_repair_filter();
+            }
+        }
         if state.has_filters()
             && ui
                 .add(Button::new(RichText::new(s.clear_filters).color(p.accent)).frame(false))
@@ -374,9 +390,19 @@ fn rail_row(
 
 /// Spending by category and by person for the month. These ignore the register filters on
 /// purpose: they describe the whole month, and say so.
-fn rail(ui: &mut egui::Ui, vm: &ViewModel) {
+fn rail(ui: &mut egui::Ui, vm: &ViewModel, event: &mut Option<MonthEvent>) {
     let s = strings(vm.language());
     let p = palette(vm.theme());
+    if vm
+        .settlement
+        .as_ref()
+        .is_some_and(|settlement| settlement.balances.len() >= 2)
+    {
+        if let Some(ev) = settlement_card::show(ui, vm) {
+            *event = Some(MonthEvent::Settlement(ev));
+        }
+        ui.add_space(12.0);
+    }
     Frame::new()
         .fill(p.card)
         .stroke(Stroke::new(1.0, p.border))
@@ -474,11 +500,11 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Mo
             column(ui, width - RAIL_WIDTH - 16.0, &mut |ui| {
                 register(ui, vm, state, &mut event);
             });
-            column(ui, RAIL_WIDTH, &mut |ui| rail(ui, vm));
+            column(ui, RAIL_WIDTH, &mut |ui| rail(ui, vm, &mut event));
         });
     } else {
         register(ui, vm, state, &mut event);
-        rail(ui, vm);
+        rail(ui, vm, &mut event);
     }
     event
 }

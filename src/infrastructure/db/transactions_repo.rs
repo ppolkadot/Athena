@@ -11,13 +11,13 @@ use super::{bad_code, categories_repo, now_rfc3339, people_repo};
 use crate::domain::money::Money;
 use crate::domain::text::fold;
 use crate::domain::transaction::{
-    Allocation, SplitMode, Transaction, TransactionType, TxDraft, TxFilter,
+    Allocation, SettlementIssue, SplitMode, Transaction, TransactionType, TxDraft, TxFilter,
 };
 use crate::shared::error::{AppError, Result};
 
 pub(crate) const COLUMNS: &str = "t.id, t.title, t.amount_cents, t.date, t.kind, t.category_id, t.payer_id, t.description, t.split_mode";
 
-fn date_text(date: NaiveDate) -> String {
+pub(crate) fn date_text(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
@@ -47,16 +47,19 @@ pub(crate) fn from_row(row: &Row<'_>) -> rusqlite::Result<Transaction> {
 }
 
 /// Attach allocations with one query per chunk of ids (not one per row).
-pub(crate) fn load_allocations(conn: &Connection, transactions: &mut [Transaction]) -> Result<()> {
+pub(crate) fn load_allocations_map(
+    conn: &Connection,
+    tx_ids: &[i64],
+) -> Result<HashMap<i64, Vec<Allocation>>> {
     let mut by_tx: HashMap<i64, Vec<Allocation>> = HashMap::new();
-    for chunk in transactions.chunks(500) {
+    for chunk in tx_ids.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(",");
         let sql = format!(
             "SELECT transaction_id, person_id, amount_cents FROM allocations
              WHERE transaction_id IN ({marks}) ORDER BY transaction_id, id"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(chunk.iter().map(|t| t.id)), |r| {
+        let rows = stmt.query_map(params_from_iter(chunk.iter().copied()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 Allocation {
@@ -70,6 +73,12 @@ pub(crate) fn load_allocations(conn: &Connection, transactions: &mut [Transactio
             by_tx.entry(tx_id).or_default().push(allocation);
         }
     }
+    Ok(by_tx)
+}
+
+pub(crate) fn load_allocations(conn: &Connection, transactions: &mut [Transaction]) -> Result<()> {
+    let ids: Vec<i64> = transactions.iter().map(|t| t.id).collect();
+    let mut by_tx = load_allocations_map(conn, &ids)?;
     for tx in transactions {
         tx.allocations = by_tx.remove(&tx.id).unwrap_or_default();
     }
@@ -134,6 +143,23 @@ pub fn list(conn: &Connection, filter: &TxFilter) -> Result<Vec<Transaction>> {
     if let Some(kind) = filter.kind {
         sql.push_str(" AND t.kind = ?");
         args.push(Value::Text(kind.code().to_string()));
+    }
+    if let Some(until) = filter.until {
+        sql.push_str(" AND t.date <= ?");
+        args.push(Value::Text(date_text(until)));
+    }
+    if let Some(issue) = filter.issue {
+        sql.push_str(match issue {
+            SettlementIssue::Unassigned => {
+                " AND t.kind IN ('expense', 'refund')
+                  AND NOT EXISTS (SELECT 1 FROM allocations a WHERE a.transaction_id = t.id)"
+            }
+            SettlementIssue::UnknownPayer => {
+                " AND t.kind IN ('expense', 'refund')
+                  AND t.payer_id IS NULL
+                  AND EXISTS (SELECT 1 FROM allocations a WHERE a.transaction_id = t.id)"
+            }
+        });
     }
     sql.push_str(" ORDER BY t.date DESC, t.id DESC");
     let mut stmt = conn.prepare(&sql)?;
@@ -400,6 +426,7 @@ mod tests {
             person_id: Some(partner),
             shared_only: false,
             kind: None,
+            ..TxFilter::default()
         };
         assert_eq!(list(db.conn(), &filter).unwrap().len(), 1);
         let other_month = TxFilter {

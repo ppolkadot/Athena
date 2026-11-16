@@ -15,11 +15,12 @@ use crate::domain::date::YearMonth;
 use crate::domain::person::Person;
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::TxDraft;
-use crate::i18n::ToastKey;
+use crate::i18n::{ToastKey, strings};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
 use crate::shared::error::Result;
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
+use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::components::toast::{self, Toast, ToastAction};
 use crate::ui::quick_add::{self, QuickAddState};
 use crate::ui::screens::ScreenEvent;
@@ -285,6 +286,44 @@ impl AthenaApp {
                 let (text, ok) = apply_settings_action(&mut self.core, action);
                 self.raise_toast_text(ctx, text);
                 return ok;
+            }
+            ScreenEvent::Settlement(SettlementEvent::Record { from, to, amount }) if idle => {
+                let from_name = self.core.vm.person(from).map_or("", |p| p.name.as_str());
+                let to_name = self.core.vm.person(to).map_or("", |p| p.name.as_str());
+                let title = format!("{from_name} → {to_name}");
+                let people: Vec<_> = self.core.vm.active_people().into_iter().cloned().collect();
+                let today = self.today();
+                self.remember_modal_opener(ctx);
+                self.quick_add = Some(QuickAddState::for_settlement(
+                    &people,
+                    from,
+                    to,
+                    amount,
+                    today,
+                    title,
+                    self.core.vm.language(),
+                ));
+            }
+            ScreenEvent::Settlement(SettlementEvent::RestorePerson(id)) => {
+                match self.core.apply(AppAction::RestorePerson(id)) {
+                    Ok(outcome) => {
+                        let text = outcome
+                            .toast
+                            .map(|key| key.text(self.core.vm.language()).to_string());
+                        self.raise_toast_text(ctx, text);
+                    }
+                    Err(err) => {
+                        tracing::warn!("could not restore person: {err}");
+                        let text = strings(self.core.vm.language())
+                            .settings_save_failed
+                            .to_string();
+                        self.raise_toast_text(ctx, Some(text));
+                        return false;
+                    }
+                }
+            }
+            ScreenEvent::Settlement(SettlementEvent::FilterIssue { issue, as_of }) => {
+                self.core.ui.set_repair_filter(issue, as_of);
             }
             ScreenEvent::OpenDataFolder => open_folder(&self.core.store.dirs().root),
             ScreenEvent::Export(request) => {
@@ -1569,5 +1608,102 @@ mod tests {
         assert!(harness.state().core.vm.trash.is_empty());
         assert_eq!(harness.state().core.vm.trash_count, 0);
         assert!(harness.query_by_label("Trash is empty.").is_some());
+    }
+
+    #[test]
+    fn record_button_prefills_quick_add_without_saving() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        crate::shared::test_fixtures::seed_month(core.store.db());
+        core.vm
+            .reload(&core.store, &core.ui, actions::RefreshScope::All)
+            .unwrap();
+        let before_count = core.vm.transactions.len();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        assert!(harness.query_by_label("Ana owes you R$ 25,00").is_some());
+        harness.get_by_label("Record").click();
+        harness.run_steps(3);
+
+        let app = harness.state();
+        assert_eq!(app.core.vm.transactions.len(), before_count);
+        let qa = app.quick_add.as_ref().expect("quick add should open");
+        assert_eq!(
+            qa.kind,
+            crate::domain::transaction::TransactionType::Settlement
+        );
+        assert_eq!(qa.title, "Ana → A3");
+        assert_eq!(qa.amount_input, "25,00");
+        assert_eq!(qa.date_text, "2026-11-11");
+    }
+
+    #[test]
+    fn archived_party_offers_restore_instead_of_record() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        crate::shared::test_fixtures::seed_month(core.store.db());
+        core.vm
+            .reload(&core.store, &core.ui, actions::RefreshScope::All)
+            .unwrap();
+        let ana_id = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.name == "Ana")
+            .unwrap()
+            .id;
+        core.apply(AppAction::ArchivePerson(ana_id)).unwrap();
+        core.sync().unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_by_label("Ana (archived) owes you R$ 25,00")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Record").is_none());
+        harness.get_by_label("Restore Ana to record this").click();
+        harness.run_steps(3);
+
+        assert!(!harness.state().core.vm.person(ana_id).unwrap().archived);
+        assert!(harness.state().quick_add.is_none());
+        assert!(
+            harness
+                .query_by_label("Restore Ana to record this")
+                .is_none()
+        );
+        assert!(harness.query_by_label("Record").is_some());
     }
 }

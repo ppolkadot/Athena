@@ -73,6 +73,14 @@ pub(super) fn people_card(
                     {
                         ask_archive = true;
                     }
+                    if person.archived
+                        && person.kind != PersonKind::Owner
+                        && ui
+                            .add(Button::new(RichText::new(s.restore).color(p.accent)).frame(false))
+                            .clicked()
+                    {
+                        events.push(ScreenEvent::Apply(AppAction::RestorePerson(person.id)));
+                    }
                     if draft.trim() != person.name
                         && ui
                             .add(Button::new(RichText::new(s.save).color(p.accent)).frame(false))
