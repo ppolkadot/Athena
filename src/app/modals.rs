@@ -198,6 +198,8 @@ pub fn apply_confirmed_outcome(
     action: AppAction,
 ) -> Option<(String, Option<ToastAction>)> {
     let is_delete = matches!(action, AppAction::DeleteTransaction(_));
+    let is_restore = matches!(action, AppAction::RestoreBackup(_));
+    let is_import = matches!(action, AppAction::ImportProfile(_));
     let deleted_title = match &action {
         AppAction::DeleteTransaction(id) => core.store.transaction(*id).ok().map(|tx| tx.title),
         _ => None,
@@ -248,20 +250,49 @@ pub fn apply_confirmed_outcome(
                 .map(ToastAction::Undo);
             Some((text, toast_action))
         }
-        Err(AppError::Restore(err)) => {
-            tracing::warn!("restore failed: {err}");
-            let message = restore_error_message(&err, core.vm.language());
+        Err(err) => record_confirmed_error(core, is_restore, is_import, &err),
+    }
+}
+
+fn record_confirmed_error(
+    core: &mut AppCore,
+    is_restore: bool,
+    is_import: bool,
+    err: &AppError,
+) -> Option<(String, Option<ToastAction>)> {
+    use crate::shared::error::{ImportError, RestoreError};
+
+    let language = core.vm.language();
+    match err {
+        AppError::Restore(restore_err) => {
+            tracing::warn!("restore failed: {restore_err}");
+            let message = restore_error_message(restore_err, language);
             core.ui.settings.restore_error = Some(message.clone());
             Some((message, None))
         }
-        Err(AppError::Import(errs)) => {
+        AppError::Import(errs) => {
             tracing::warn!("import failed: {} error(s)", errs.len());
-            let message = format_import_errors(&errs, core.vm.language());
+            let message = format_import_errors(errs, language);
             core.ui.settings.import_error = Some(message.clone());
             Some((message, None))
         }
-        Err(err) => {
-            tracing::warn!("confirmed action failed: {err}");
+        other if is_restore => {
+            tracing::warn!("restore failed: {other}");
+            let message = restore_error_message(&RestoreError::Failed(other.to_string()), language);
+            core.ui.settings.restore_error = Some(message.clone());
+            Some((message, None))
+        }
+        other if is_import => {
+            tracing::warn!("import failed: {other}");
+            let message = format_import_errors(
+                &[ImportError::VerificationFailed(other.to_string())],
+                language,
+            );
+            core.ui.settings.import_error = Some(message.clone());
+            Some((message, None))
+        }
+        other => {
+            tracing::warn!("confirmed action failed: {other}");
             None
         }
     }
@@ -290,5 +321,30 @@ pub fn apply_settings_action(core: &mut AppCore, action: AppAction) -> (Option<S
             core.ui.settings.error = Some(SettingsError::SaveRejected);
             (None, false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::db::Db;
+
+    #[test]
+    fn untyped_restore_and_import_errors_still_surface_in_toast_and_settings() {
+        let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        let io_err = AppError::Io(std::io::Error::other("disk full"));
+
+        let restore_toast = record_confirmed_error(&mut core, true, false, &io_err);
+        let (msg, _) = restore_toast.expect("restore error must produce toast");
+        assert!(msg.contains("disk full"), "{msg}");
+        assert_eq!(
+            core.ui.settings.restore_error.as_deref(),
+            Some(msg.as_str())
+        );
+
+        let import_toast = record_confirmed_error(&mut core, false, true, &io_err);
+        let (msg, _) = import_toast.expect("import error must produce toast");
+        assert!(msg.contains("disk full"), "{msg}");
+        assert_eq!(core.ui.settings.import_error.as_deref(), Some(msg.as_str()));
     }
 }

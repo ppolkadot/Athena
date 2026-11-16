@@ -42,14 +42,14 @@ type VerifyCheckFn = fn(&Connection) -> Result<()>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct RestoreSteps {
-    pub resolve: fn(&Path, &RestoreSource) -> Result<PathBuf>,
+    pub resolve: fn(&AppDirs, &RestoreSource) -> Result<PathBuf>,
     pub stage: fn(&Path, &Path) -> Result<()>,
     pub validate: fn(&Path, i64) -> Result<()>,
     pub upgrade: fn(&Path) -> Result<()>,
     pub snapshot: fn(&Connection, &AppDirs, DateTime<Utc>) -> Result<PathBuf>,
     pub copy: fn(&mut Db, &Path) -> Result<()>,
     pub verify: fn(&mut Db, &Path, &Path) -> Result<()>,
-    pub cleanup: fn(&AppDirs, &Path, &Path) -> Result<()>,
+    pub cleanup: fn(&AppDirs, &Path, &Path, &Path) -> Result<()>,
 }
 
 impl Default for RestoreSteps {
@@ -89,10 +89,11 @@ pub(crate) fn restore_backup_with_steps(
     now_utc: DateTime<Utc>,
     steps: RestoreSteps,
 ) -> Result<RestoreReceipt> {
-    let resolved = (steps.resolve)(&dirs.db_path, source)?;
+    let resolved = (steps.resolve)(dirs, source)?;
     let live_page_size: i64 = live_db
         .conn()
-        .pragma_query_value(None, "page_size", |r| r.get(0))?;
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
 
     let staged_path = staged_restore_path(dirs, now_utc);
     if let Err(err) = (steps.stage)(&resolved, &staged_path) {
@@ -128,7 +129,10 @@ pub(crate) fn restore_backup_with_steps(
         return Err(err);
     }
 
-    (steps.cleanup)(dirs, &staged_path, &snapshot)?;
+    if let Err(err) = (steps.cleanup)(dirs, &staged_path, &snapshot, &resolved) {
+        tracing::warn!("post-restore cleanup failed: {err}");
+        remove_staged(&staged_path);
+    }
     Ok(RestoreReceipt {
         source: resolved,
         snapshot,
@@ -159,8 +163,9 @@ fn remove_staged(staged_path: &Path) {
     }
 }
 
-/// Step 1: Reject the live database path (canonicalized), non-files, and empty files.
-pub(crate) fn step_resolve(live_db_path: &Path, source: &RestoreSource) -> Result<PathBuf> {
+/// Step 1: Reject the live database path (canonicalized), non-files, empty files, and `Listed`
+/// paths outside `dirs.backups_dir`.
+pub(crate) fn step_resolve(dirs: &AppDirs, source: &RestoreSource) -> Result<PathBuf> {
     let raw = source.path();
     let Ok(meta) = std::fs::symlink_metadata(raw) else {
         return Err(AppError::Restore(RestoreError::NotAthena));
@@ -171,8 +176,17 @@ pub(crate) fn step_resolve(live_db_path: &Path, source: &RestoreSource) -> Resul
     if meta.len() == 0 {
         return Err(AppError::Restore(RestoreError::Corrupt));
     }
-    let resolved = std::fs::canonicalize(raw)?;
-    if let Ok(live_canonical) = std::fs::canonicalize(live_db_path)
+    let resolved = std::fs::canonicalize(raw)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
+    if matches!(source, RestoreSource::Listed(_)) {
+        let Ok(backups_dir) = std::fs::canonicalize(&dirs.backups_dir) else {
+            return Err(AppError::Restore(RestoreError::NotAthena));
+        };
+        if !resolved.starts_with(&backups_dir) {
+            return Err(AppError::Restore(RestoreError::NotAthena));
+        }
+    }
+    if let Ok(live_canonical) = std::fs::canonicalize(&dirs.db_path)
         && live_canonical == resolved
     {
         return Err(AppError::Restore(RestoreError::SameAsLive));
@@ -183,7 +197,8 @@ pub(crate) fn step_resolve(live_db_path: &Path, source: &RestoreSource) -> Resul
 /// Step 2: Open source read-only and copy it with the SQLite backup API into `staging_dir`.
 pub(crate) fn step_stage(source: &Path, staged_path: &Path) -> Result<()> {
     if let Some(parent) = staged_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent)
+            .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     }
     remove_staged(staged_path);
     copy_sqlite_read_only_to_path(source, staged_path)
@@ -192,7 +207,8 @@ pub(crate) fn step_stage(source: &Path, staged_path: &Path) -> Result<()> {
 fn copy_sqlite_read_only_to_path(source: &Path, dest: &Path) -> Result<()> {
     let src = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|_| AppError::Restore(RestoreError::Corrupt))?;
-    let mut target = Connection::open(dest)?;
+    let mut target = Connection::open(dest)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     let backup = rusqlite::backup::Backup::new(&src, &mut target)
         .map_err(|_| AppError::Restore(RestoreError::Corrupt))?;
     if let Err(err) = backup.run_to_completion(256, Duration::ZERO, None) {
@@ -215,15 +231,19 @@ pub(crate) fn step_validate(staged_path: &Path, live_page_size: i64) -> Result<(
 
 /// Step 4: Upgrade the staged copy and verify domain integrity + profile presence.
 pub(crate) fn step_upgrade(staged_path: &Path) -> Result<()> {
-    let mut conn = Connection::open(staged_path)?;
-    register_functions(&conn)?;
-    conn.pragma_update(None, "foreign_keys", true)?;
+    let mut conn = Connection::open(staged_path)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
+    register_functions(&conn)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
+    conn.pragma_update(None, "foreign_keys", true)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     migrations::run_migrations(&mut conn).map_err(|err| match err {
         AppError::SchemaTooNew { found, supported } => {
             AppError::Restore(RestoreError::TooNew { found, supported })
         }
         AppError::Migration(msg) => AppError::Restore(RestoreError::Failed(msg)),
-        other => other,
+        other @ AppError::Restore(_) => other,
+        other => AppError::Restore(RestoreError::Failed(other.to_string())),
     })?;
     verify_live_db(&conn)
 }
@@ -249,7 +269,10 @@ pub(crate) fn step_copy(live_db: &mut Db, staged_path: &Path) -> Result<()> {
             .run_to_completion(256, Duration::ZERO, None)
             .map_err(|err| map_sqlite_backup_err(&err))?;
     }
-    live_db.conn().pragma_update(None, "foreign_keys", true)?;
+    live_db
+        .conn()
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     Ok(())
 }
 
@@ -288,30 +311,39 @@ pub(crate) fn step_verify_with(
     }
 }
 
-/// Step 8: Delete the staged copy and apply `§9.1` retention while protecting `snapshot_path`.
-pub(crate) fn step_cleanup(dirs: &AppDirs, staged_path: &Path, snapshot_path: &Path) -> Result<()> {
+/// Step 8: Delete the staged copy and apply `§9.1` retention while protecting `snapshot_path` and
+/// `source_path`.
+pub(crate) fn step_cleanup(
+    dirs: &AppDirs,
+    staged_path: &Path,
+    snapshot_path: &Path,
+    source_path: &Path,
+) -> Result<()> {
     remove_staged(staged_path);
-    backup::prune(&dirs.backups_dir, Some(snapshot_path))?;
+    backup::prune_protecting(&dirs.backups_dir, &[snapshot_path, source_path])?;
     Ok(())
 }
 
 fn verify_live_db(conn: &Connection) -> Result<()> {
-    let fk_violations: i64 =
-        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+    let fk_violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
             r.get(0)
-        })?;
+        })
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     if fk_violations > 0 {
         return Err(AppError::Restore(RestoreError::Failed(format!(
             "foreign key check found {fk_violations} violation(s)"
         ))));
     }
-    let issues = integrity::check(conn)?;
+    let issues = integrity::check(conn)
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
     if !issues.is_empty() {
         return Err(AppError::Restore(RestoreError::Invalid(issues)));
     }
     match profile_repo::load(conn) {
         Ok(Some(_)) => Ok(()),
-        _ => Err(AppError::Restore(RestoreError::NotAthena)),
+        Ok(None) => Err(AppError::Restore(RestoreError::NotAthena)),
+        Err(err) => Err(AppError::Restore(RestoreError::Failed(err.to_string()))),
     }
 }
 
@@ -607,7 +639,8 @@ mod tests {
                 }
             }
             8 => {
-                s.cleanup = |_, _, _| Err(AppError::Restore(RestoreError::Failed("step 8".into())));
+                s.cleanup =
+                    |_, _, _, _| Err(AppError::Restore(RestoreError::Failed("step 8".into())));
             }
             _ => unreachable!(),
         }
@@ -621,6 +654,10 @@ mod tests {
             let before = canonical_json_bytes(&db);
             let candidate = dirs.root.join("candidate.db");
             make_valid_candidate(&candidate, "Candidate");
+            let expected_candidate = {
+                let cdb = Db::open_read_only(&candidate).unwrap();
+                canonical_json_bytes(&cdb)
+            };
 
             let res = restore_backup_with_steps(
                 &mut db,
@@ -629,7 +666,11 @@ mod tests {
                 now(),
                 injected_steps(step),
             );
-            assert!(res.is_err(), "step {step} injection must fail");
+            if step == 8 {
+                assert!(res.is_ok(), "step 8 cleanup failure must not fail restore");
+            } else {
+                assert!(res.is_err(), "step {step} injection must fail");
+            }
 
             let pre_restore_files: Vec<_> = backup::list(&dirs.backups_dir)
                 .unwrap()
@@ -673,8 +714,58 @@ mod tests {
                     "step 7 must roll back live data to the pre-restore snapshot"
                 );
                 assert_eq!(std::fs::read_dir(&dirs.staging_dir).unwrap().count(), 0);
+            } else {
+                assert_eq!(
+                    canonical_json_bytes(&db),
+                    expected_candidate,
+                    "step 8 must keep restored candidate live"
+                );
+                assert_eq!(std::fs::read_dir(&dirs.staging_dir).unwrap().count(), 0);
             }
         }
+    }
+
+    #[test]
+    fn restore_rejects_listed_source_outside_backups_dir() {
+        let (_dir, dirs, mut db) = seeded_file_env();
+        let outside = dirs.root.join("outside-candidate.db");
+        make_valid_candidate(&outside, "Outside");
+        let err =
+            restore_backup(&mut db, &dirs, &RestoreSource::Listed(outside), now()).unwrap_err();
+        assert!(matches!(err, AppError::Restore(RestoreError::NotAthena)));
+    }
+
+    #[test]
+    fn restore_from_oldest_pre_restore_preserves_source_and_snapshot() {
+        let (_dir, dirs, mut db) = seeded_file_env();
+        let oldest = dirs.backups_dir.join("pre-restore-2026-11-01_00-00-00.db");
+        make_valid_candidate(&oldest, "Oldest Source");
+        for day in 2..=5_u32 {
+            let p = dirs
+                .backups_dir
+                .join(format!("pre-restore-2026-11-{day:02}_00-00-00.db"));
+            make_valid_candidate(&p, &format!("Other {day}"));
+        }
+
+        let receipt = restore_backup(
+            &mut db,
+            &dirs,
+            &RestoreSource::Listed(oldest.clone()),
+            now(),
+        )
+        .unwrap();
+        assert!(
+            oldest.exists(),
+            "the restored source backup must not be pruned during step 8"
+        );
+        assert!(
+            receipt.snapshot.exists(),
+            "the new pre-restore snapshot must exist"
+        );
+        let rows =
+            transactions_repo::list(db.conn(), &crate::domain::transaction::TxFilter::default())
+                .unwrap();
+        assert_eq!(rows[0].title, "Oldest Source");
     }
 
     #[test]

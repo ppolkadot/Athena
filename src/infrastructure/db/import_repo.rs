@@ -17,9 +17,12 @@ use crate::shared::error::{AppError, ImportError, Result};
 /// back the transaction and leaves the database untouched.
 ///
 /// # Errors
-/// [`AppError::Import`] (`VerificationFailed`) or database errors.
+/// [`AppError::Import`] (`VerificationFailed`) when replacement or verification fails.
 pub fn replace(conn: &Connection, plan: &ImportPlan) -> Result<()> {
-    replace_with(conn, plan, |_| Ok(()))
+    replace_with(conn, plan, |_| Ok(())).map_err(|err| match err {
+        other @ AppError::Import(_) => other,
+        other => AppError::Import(vec![ImportError::VerificationFailed(other.to_string())]),
+    })
 }
 
 pub(crate) fn replace_with<F>(

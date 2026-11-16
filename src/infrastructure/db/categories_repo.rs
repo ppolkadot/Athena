@@ -105,6 +105,15 @@ pub fn insert(
 /// As [`insert`].
 pub fn update(conn: &Connection, category: &Category) -> Result<()> {
     let name = check(conn, &category.name, &category.color, Some(category.id))?;
+    if super::transactions_repo::category_has_incompatible_transactions(
+        conn,
+        category.id,
+        category.applies_to,
+    )? {
+        return Err(AppError::Validation(
+            "category scope does not allow existing transactions".into(),
+        ));
+    }
     conn.execute(
         "UPDATE categories SET name = ?1, color = ?2, icon = ?3, applies_to = ?4 WHERE id = ?5",
         params![
@@ -211,5 +220,43 @@ mod tests {
         assert!(back.is_default);
         cat.color = "red".into();
         assert!(update(db.conn(), &cat).is_err());
+    }
+
+    #[test]
+    fn update_blocks_narrowing_scope_when_used_by_transactions() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = crate::shared::test_fixtures::seed_people(db.conn());
+        let mut cat = list(db.conn(), false)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == "Food")
+            .unwrap();
+        let mut draft = crate::shared::test_fixtures::draft_with(vec![]);
+        draft.category_id = Some(cat.id);
+        draft.payer_id = Some(owner);
+        let tx_id =
+            crate::infrastructure::db::transactions_repo::create(db.conn(), &draft).unwrap();
+
+        // Widening Expense -> Both succeeds.
+        cat.applies_to = CategoryScope::Both;
+        update(db.conn(), &cat).unwrap();
+
+        // Narrowing Both -> Income fails while an expense references the category.
+        cat.applies_to = CategoryScope::Income;
+        assert!(matches!(
+            update(db.conn(), &cat),
+            Err(AppError::Validation(_))
+        ));
+
+        // Even when the transaction is in Trash, narrowing must stay blocked.
+        crate::infrastructure::db::transactions_repo::delete(db.conn(), tx_id).unwrap();
+        assert!(matches!(
+            update(db.conn(), &cat),
+            Err(AppError::Validation(_))
+        ));
+
+        // Once purged permanently, narrowing succeeds.
+        crate::infrastructure::db::trash_repo::purge(db.conn(), tx_id).unwrap();
+        update(db.conn(), &cat).unwrap();
     }
 }

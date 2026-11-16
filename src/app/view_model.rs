@@ -280,6 +280,16 @@ impl ViewModel {
         }
     }
 
+    /// Refresh only the backups listing (used after a failed restore or import that already wrote
+    /// a safety snapshot while Settings stays open).
+    ///
+    /// # Errors
+    /// I/O errors listing backups.
+    pub fn refresh_backups(&mut self, store: &Store) -> Result<()> {
+        self.backups = backup::list(&store.dirs().backups_dir)?;
+        Ok(())
+    }
+
     fn sync_calendar_year(&mut self, store: &Store, ui: &UiState, key: LoadKey) -> Result<()> {
         match reports::year_calendar(store.db().conn(), ui.calendar_year) {
             Ok(calendar) => {

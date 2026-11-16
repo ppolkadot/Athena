@@ -101,7 +101,7 @@ pub const STRINGS: Strings = Strings {
     import_preview_format_v2: "Format 2",
     import_preview_timestamp_fallback: "Entry times weren't recorded in this file.",
     import_preview_counts: "Incoming: {in_people} people · {in_categories} categories · {in_transactions} entries\nCurrent: {cur_people} people · {cur_categories} categories · {cur_transactions} entries · {cur_trash} in Trash (will be emptied)",
-    import_preview_consequence: "Replaces everything in Athena, including Trash.",
+    import_preview_consequence: "Replaces everything in Athena, including Trash. JSON files do not include Trash; use a database backup to restore Trash.",
     import_preview_snapshot: "A safety snapshot will be saved in:\n{snapshot_dir}",
     import_errors_more: "{first} (+{more} more)",
     toast_exported: "Exported {count} to {path}",

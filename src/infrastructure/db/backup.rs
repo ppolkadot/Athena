@@ -438,10 +438,20 @@ fn parse_timestamp_with_suffix(rest: &str) -> Option<DateTime<Utc>> {
 /// # Errors
 /// I/O errors.
 pub fn prune(dir: &Path, protected: Option<&Path>) -> Result<usize> {
+    let slice: Vec<&Path> = protected.into_iter().collect();
+    prune_protecting(dir, &slice)
+}
+
+/// Apply `§9.1` retention across all managed prefixes in `dir`, never deleting any path in
+/// `protected` or unrecognized files.
+///
+/// # Errors
+/// I/O errors.
+pub fn prune_protecting(dir: &Path, protected: &[&Path]) -> Result<usize> {
     let mut removed = 0;
-    removed += prune_prefix_protected(dir, "auto-", AUTO_SNAPSHOTS_KEPT, protected)?;
+    removed += prune_prefix_protecting(dir, "auto-", AUTO_SNAPSHOTS_KEPT, protected)?;
     for prefix in ["pre-purge-", "pre-restore-", "pre-import-"] {
-        removed += prune_prefix_protected(dir, prefix, PRE_OPERATION_SNAPSHOTS_KEPT, protected)?;
+        removed += prune_prefix_protecting(dir, prefix, PRE_OPERATION_SNAPSHOTS_KEPT, protected)?;
     }
     Ok(removed)
 }
@@ -474,7 +484,7 @@ pub fn clear_staging(dirs: &AppDirs) -> Result<()> {
 /// # Errors
 /// I/O errors.
 pub fn prune_prefix(dir: &Path, prefix: &str, keep: usize) -> Result<usize> {
-    prune_prefix_protected(dir, prefix, keep, None)
+    prune_prefix_protecting(dir, prefix, keep, &[])
 }
 
 /// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep`, while never
@@ -487,6 +497,21 @@ pub fn prune_prefix_protected(
     prefix: &str,
     keep: usize,
     protected: Option<&Path>,
+) -> Result<usize> {
+    let slice: Vec<&Path> = protected.into_iter().collect();
+    prune_prefix_protecting(dir, prefix, keep, &slice)
+}
+
+/// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep`, while never
+/// deleting any path in `protected`.
+///
+/// # Errors
+/// I/O errors.
+pub fn prune_prefix_protecting(
+    dir: &Path,
+    prefix: &str,
+    keep: usize,
+    protected: &[&Path],
 ) -> Result<usize> {
     let mut names: Vec<String> = std::fs::read_dir(dir)?
         .filter_map(std::result::Result::ok)
@@ -515,20 +540,17 @@ pub fn prune_prefix_protected(
     Ok(removed)
 }
 
-fn is_protected_path(candidate: &Path, protected: Option<&Path>) -> bool {
-    let Some(protected) = protected else {
-        return false;
-    };
-    if candidate == protected {
-        return true;
-    }
-    match (
-        std::fs::canonicalize(candidate),
-        std::fs::canonicalize(protected),
-    ) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+fn is_protected_path(candidate: &Path, protected: &[&Path]) -> bool {
+    let candidate_canon = std::fs::canonicalize(candidate).ok();
+    protected.iter().any(|p| {
+        if candidate == *p {
+            return true;
+        }
+        match (&candidate_canon, std::fs::canonicalize(p).ok()) {
+            (Some(a), Some(b)) => a == &b,
+            _ => false,
+        }
+    })
 }
 
 #[cfg(test)]

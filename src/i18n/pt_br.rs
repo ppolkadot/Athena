@@ -101,7 +101,7 @@ pub const STRINGS: Strings = Strings {
     import_preview_format_v2: "Formato 2",
     import_preview_timestamp_fallback: "Os horários dos lançamentos não foram gravados neste arquivo.",
     import_preview_counts: "Novo: {in_people} pessoas · {in_categories} categorias · {in_transactions} lançamentos\nAtual: {cur_people} pessoas · {cur_categories} categorias · {cur_transactions} lançamentos · {cur_trash} na Lixeira (será esvaziada)",
-    import_preview_consequence: "Substitui tudo no Athena, incluindo a Lixeira.",
+    import_preview_consequence: "Substitui tudo no Athena, incluindo a Lixeira. Arquivos JSON não incluem a Lixeira; use um backup do banco para restaurar a Lixeira.",
     import_preview_snapshot: "Um snapshot de segurança será salvo em:\n{snapshot_dir}",
     import_errors_more: "{first} (+{more} mais)",
     toast_exported: "Exportado: {count} em {path}",

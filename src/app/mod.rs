@@ -106,7 +106,18 @@ impl AppCore {
             action,
             AppAction::RestoreBackup(_) | AppAction::ImportProfile(_)
         );
-        let outcome = self.store.apply(action)?;
+        let outcome = match self.store.apply(action) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                if reset_ui
+                    && self.ui.screen == Screen::Settings
+                    && let Err(list_err) = self.vm.refresh_backups(&self.store)
+                {
+                    tracing::warn!("could not refresh backups after failure: {list_err}");
+                }
+                return Err(err);
+            }
+        };
         self.record_outcome_notice(&outcome);
         if reset_ui {
             self.ui.clear_filters();
@@ -2550,7 +2561,7 @@ mod tests {
         assert!(harness.query_by_label(expected_counts.as_str()).is_some());
         assert!(
             harness
-                .query_by_label("Replaces everything in Athena, including Trash.")
+                .query_by_label("Replaces everything in Athena, including Trash. JSON files do not include Trash; use a database backup to restore Trash.")
                 .is_some()
         );
         let expected_snapshot = format!("A safety snapshot will be saved in:\n{backups_dir}");
@@ -2574,6 +2585,39 @@ mod tests {
         assert!(
             toast_text.starts_with("Imported format1-1.0.2.json. Safety snapshot: pre-import-"),
             "{toast_text}"
+        );
+    }
+
+    #[test]
+    fn failed_import_on_settings_refreshes_backups_list() {
+        let (_dir, mut core) = file_backed_core();
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+        assert!(core.vm.backups.is_empty());
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/format1-1.0.2.json");
+        let mut bad_plan =
+            crate::application::services::import::read_and_validate(&fixture).unwrap();
+        // Force a SQLite constraint / integrity failure after the pre-import snapshot is written.
+        bad_plan
+            .transactions
+            .iter_mut()
+            .find(|t| !t.allocations.is_empty())
+            .expect("fixture has an allocated transaction")
+            .allocations[0]
+            .amount = Money::from_cents(1);
+
+        let err = core
+            .apply(AppAction::ImportProfile(Box::new(bad_plan)))
+            .unwrap_err();
+        assert!(matches!(err, AppError::Import(_)));
+        assert_eq!(core.ui.screen, Screen::Settings);
+        assert_eq!(core.vm.backups.len(), 1);
+        assert_eq!(
+            core.vm.backups[0].kind,
+            crate::infrastructure::db::backup::BackupKind::PreImport
         );
     }
 }

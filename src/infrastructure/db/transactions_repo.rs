@@ -181,6 +181,24 @@ pub fn count_live(conn: &Connection) -> Result<usize> {
     Ok(usize::try_from(n).unwrap_or(0))
 }
 
+pub(crate) fn category_has_incompatible_transactions(
+    conn: &Connection,
+    category_id: i64,
+    applies_to: crate::domain::category::CategoryScope,
+) -> Result<bool> {
+    let mut stmt = conn.prepare("SELECT DISTINCT kind FROM transactions WHERE category_id = ?1")?;
+    let mut rows = stmt.query([category_id])?;
+    while let Some(row) = rows.next()? {
+        let code: String = row.get(0)?;
+        if let Some(kind) = TransactionType::from_code(&code)
+            && !applies_to.allows(kind)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn invalid(message: impl Into<String>) -> AppError {
     AppError::Validation(message.into())
 }

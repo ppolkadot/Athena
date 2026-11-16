@@ -203,7 +203,7 @@ mod tests {
         );
         assert!(
             harness_en
-                .query_by_label("Replaces everything in Athena, including Trash.")
+                .query_by_label("Replaces everything in Athena, including Trash. JSON files do not include Trash; use a database backup to restore Trash.")
                 .is_some()
         );
         assert!(
@@ -244,7 +244,7 @@ mod tests {
         );
         assert!(
             harness_pt
-                .query_by_label("Substitui tudo no Athena, incluindo a Lixeira.")
+                .query_by_label("Substitui tudo no Athena, incluindo a Lixeira. Arquivos JSON não incluem a Lixeira; use um backup do banco para restaurar a Lixeira.")
                 .is_some()
         );
         assert!(
