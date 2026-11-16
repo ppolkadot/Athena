@@ -173,9 +173,9 @@ Databases at schema ≥ 2 carry `application_id = 0x41544E41`. Version-1 files h
 
 ### §6.2 Retention
 
-- Deleted rows older than **30 days** are purged at startup, only after that launch's daily snapshot succeeded or already existed. If the snapshot failed, skip purging and log it.
+- Deleted rows older than **30 days** are purged at startup, only after that launch's daily snapshot is verified as an Athena database AND—whenever expired rows exist—a fresh verified `pre-purge-YYYY-MM-DD_HH-MM-SS.db` snapshot of the current database succeeds. If any snapshot check or creation fails, skip purging and log it.
 - Clock-rollback guard: skip purging when `now < max(deleted_at)`.
-- A forward clock jump may purge early, but the same launch's snapshot holds those rows. The Trash screen states both the 30-day rule and the snapshot fallback.
+- A forward clock jump may purge early, but the launch's verified `pre-purge-` snapshot holds those rows. The Trash screen states both the 30-day rule and the snapshot fallback.
 
 ### §6.3 Undo
 
@@ -324,6 +324,7 @@ New `ViewModel` fields:
 |---|---|---|
 | `auto-YYYY-MM-DD.db` | daily snapshot (existing) | newest 7 |
 | `manual-YYYY-MM-DD_HH-MM-SS.db` | `CreateBackup` | never auto-pruned; the user deletes in Settings |
+| `pre-purge-YYYY-MM-DD_HH-MM-SS.db` | trash retention | newest 5, **except** the one written by an in-progress operation |
 | `pre-restore-YYYY-MM-DD_HH-MM-SS.db` | restore | newest 5, **except** the one written by an in-progress operation |
 | `pre-import-YYYY-MM-DD_HH-MM-SS.db` | import | newest 5, same protection |
 | `pre-migration-vN-…db` | `Db::open` (existing) | never auto-pruned |
@@ -549,3 +550,4 @@ These reserve names and rules. They are not frozen.
 
 - 2026-11-16 — Created. Froze 1.1 (§4–§13) after D8/D9 and technical decisions T1–T5.
 - 2026-11-16 — Added `RestorePerson(i64)` and `ToastKey::PersonRestored` (§8.1, §8.2) so archived settlement parties can be restored in place (§7.3).
+- 2026-11-16 — Added `pre-purge-YYYY-MM-DD_HH-MM-SS.db` verified Athena snapshot guard before automatic trash retention (§6.2, §9.1).

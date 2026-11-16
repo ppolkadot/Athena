@@ -47,16 +47,30 @@ impl Store {
         self.data_version
     }
 
+    /// Interim D-P4 gate: automatic >30d trash purging is paused until Task 8's restore UI lands.
+    pub(crate) const AUTO_TRASH_RETENTION_ENABLED: bool = false;
+
     /// Once per launch: the daily snapshot (a failure is logged, never fatal), Trash 30-day
-    /// retention (skipped if the snapshot failed or if the clock rolled back before `max(deleted_at)`),
-    /// and, in debug builds, an integrity check whose findings are logged as a count only.
+    /// retention (paused until restore UI lands in Task 8; skipped if the snapshot failed or if the
+    /// clock rolled back before `max(deleted_at)`), and, in debug builds, an integrity check whose
+    /// findings are logged as a count only.
     pub fn run_startup_tasks(&self, today: NaiveDate, now_utc: DateTime<Utc>) {
         match backup::daily_snapshot(self.db.conn(), &self.dirs, today) {
             Ok(Some(_)) => {
                 tracing::info!("daily snapshot written");
-                self.run_trash_retention(now_utc);
+                if Self::AUTO_TRASH_RETENTION_ENABLED {
+                    self.run_trash_retention(now_utc);
+                } else {
+                    tracing::debug!("automatic trash retention paused until restore UI lands");
+                }
             }
-            Ok(None) => self.run_trash_retention(now_utc),
+            Ok(None) => {
+                if Self::AUTO_TRASH_RETENTION_ENABLED {
+                    self.run_trash_retention(now_utc);
+                } else {
+                    tracing::debug!("automatic trash retention paused until restore UI lands");
+                }
+            }
             Err(err) => tracing::warn!("daily snapshot failed, skipping trash purge: {err}"),
         }
         if cfg!(debug_assertions) {
@@ -68,7 +82,16 @@ impl Store {
         }
     }
 
-    fn run_trash_retention(&self, now_utc: DateTime<Utc>) {
+    pub(crate) fn run_trash_retention(&self, now_utc: DateTime<Utc>) {
+        self.run_trash_retention_with(now_utc, |conn, dirs, now| {
+            backup::pre_purge_snapshot(conn, dirs, now)
+        });
+    }
+
+    fn run_trash_retention_with<F>(&self, now_utc: DateTime<Utc>, make_snapshot: F)
+    where
+        F: FnOnce(&rusqlite::Connection, &AppDirs, DateTime<Utc>) -> Result<std::path::PathBuf>,
+    {
         let conn = self.db.conn();
         let max_deleted = match trash_repo::max_deleted_at(conn) {
             Ok(Some(stamp)) => stamp,
@@ -90,6 +113,26 @@ impl Store {
             return;
         };
         let cutoff = cutoff_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let eligible = match trash_repo::count_older_than(conn, &cutoff) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(err) => {
+                tracing::warn!("could not count expired trash entries: {err}");
+                return;
+            }
+        };
+        match make_snapshot(conn, &self.dirs, now_utc) {
+            Ok(snapshot_path) => {
+                tracing::info!(
+                    "verified pre-purge snapshot {} before purging {eligible} expired row(s)",
+                    snapshot_path.display()
+                );
+            }
+            Err(err) => {
+                tracing::warn!("pre-purge snapshot failed, skipping trash purge: {err}");
+                return;
+            }
+        }
         match trash_repo::purge_older_than(conn, &cutoff) {
             Ok(0) => {}
             Ok(n) => tracing::info!("purged {n} expired transaction(s) from trash"),
@@ -444,11 +487,15 @@ mod tests {
         let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
 
         let seed = |store: &Store| {
-            let expired =
-                transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+            let (_owner, partner) = seed_people(store.db().conn());
+            let mut expired_draft = draft_with(vec![Allocation {
+                person_id: partner,
+                amount: Money::from_cents(4_200),
+            }]);
+            expired_draft.title = "Expired with alloc".into();
+            let expired = transactions_repo::create(store.db().conn(), &expired_draft).unwrap();
             let recent = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
             store
                 .db()
@@ -475,22 +522,116 @@ mod tests {
         std::fs::write(&blocked_dirs.backups_dir, b"not a dir").unwrap();
         let blocked_store = Store::new(Db::open_in_memory().unwrap(), blocked_dirs);
         seed(&blocked_store);
-        blocked_store.run_startup_tasks(today, now_utc);
+        blocked_store.run_trash_retention(now_utc);
         assert_eq!(trash_repo::count(blocked_store.db().conn()).unwrap(), 2);
 
-        // Snapshot succeeds: >30d row is purged, recent row stays.
+        // Snapshot failure injected directly even when backups_dir is valid: nothing is purged.
+        let fail_dir = tempfile::tempdir().unwrap();
+        let fail_dirs = AppDirs::from_root(fail_dir.path().to_path_buf());
+        fail_dirs.ensure().unwrap();
+        let fail_store = Store::new(Db::open_in_memory().unwrap(), fail_dirs);
+        seed(&fail_store);
+        fail_store.run_trash_retention_with(now_utc, |_, _, _| {
+            Err(AppError::Backup("injected snapshot failure".into()))
+        });
+        assert_eq!(trash_repo::count(fail_store.db().conn()).unwrap(), 2);
+
+        // Pre-purge snapshot succeeds: >30d row is purged, recent row stays, and the
+        // pre-purge snapshot preserves the purged row and its allocations.
         let ok_dir = tempfile::tempdir().unwrap();
         let ok_dirs = AppDirs::from_root(ok_dir.path().to_path_buf());
         let ok_store = Store::new(Db::open_in_memory().unwrap(), ok_dirs.clone());
         let (expired, recent) = seed(&ok_store);
-        ok_store.run_startup_tasks(today, now_utc);
+        ok_store.run_trash_retention(now_utc);
         assert_eq!(trash_repo::count(ok_store.db().conn()).unwrap(), 1);
         assert!(matches!(
             trash_repo::get_deleted(ok_store.db().conn(), expired),
             Err(AppError::NotFound(_))
         ));
         assert!(trash_repo::get_deleted(ok_store.db().conn(), recent).is_ok());
-        assert!(ok_dirs.backups_dir.join("auto-2026-11-16.db").exists());
+
+        let pre_purge = ok_dirs.backups_dir.join("pre-purge-2026-11-16_12-00-00.db");
+        assert!(pre_purge.exists());
+        assert!(backup::is_valid_athena_snapshot(&pre_purge).unwrap());
+        let snap_db = Db::open_read_only(&pre_purge).unwrap();
+        let preserved = trash_repo::get_deleted(snap_db.conn(), expired).unwrap();
+        assert_eq!(preserved.tx.title, "Expired with alloc");
+        assert_eq!(preserved.tx.allocations.len(), 1);
+        assert_eq!(preserved.tx.allocations[0].amount, Money::from_cents(4_200));
+    }
+
+    #[test]
+    fn retention_creates_fresh_pre_purge_snapshot_even_when_same_day_auto_snapshot_is_stale() {
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
+        let (_owner, partner) = seed_people(store.db().conn());
+
+        // Seed an earlier transaction and take today's auto- snapshot BEFORE the expired row
+        // gets its final content/allocation and deletion timestamp.
+        let mut draft = draft_with(vec![]);
+        draft.title = "Old content before edit".into();
+        let tx_id = transactions_repo::create(store.db().conn(), &draft).unwrap();
+        assert!(
+            backup::daily_snapshot(store.db().conn(), &dirs, today)
+                .unwrap()
+                .is_some()
+        );
+
+        // Now update the row with new content + allocation, and mark it expired in trash.
+        let mut updated = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(7_500),
+        }]);
+        updated.title = "Edited before delete".into();
+        transactions_repo::update(store.db().conn(), tx_id, &updated).unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
+                [tx_id],
+            )
+            .unwrap();
+
+        store.run_trash_retention(now_utc);
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 0);
+        let pre_purge = dirs.backups_dir.join("pre-purge-2026-11-16_12-00-00.db");
+        let snap_db = Db::open_read_only(&pre_purge).unwrap();
+        let preserved = trash_repo::get_deleted(snap_db.conn(), tx_id).unwrap();
+        assert_eq!(preserved.tx.title, "Edited before delete");
+        assert_eq!(preserved.tx.allocations.len(), 1);
+        assert_eq!(preserved.tx.allocations[0].amount, Money::from_cents(7_500));
+    }
+
+    #[test]
+    fn startup_pauses_auto_purge_until_restore_ui_lands() {
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
+        let expired = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
+                [expired],
+            )
+            .unwrap();
+
+        store.run_startup_tasks(today, now_utc);
+        assert!(dirs.backups_dir.join("auto-2026-11-16.db").exists());
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 1);
     }
 
     #[test]
@@ -517,12 +658,67 @@ mod tests {
             )
             .unwrap();
 
-        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
         let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        store.run_startup_tasks(today, now_utc);
+        store.run_trash_retention(now_utc);
         assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 2);
+    }
+
+    #[test]
+    fn retention_skips_purge_when_existing_daily_snapshot_is_untrusted() {
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+
+        for case in ["empty", "corrupt", "foreign_sqlite", "directory"] {
+            let dir = tempfile::tempdir().unwrap();
+            let dirs = AppDirs::from_root(dir.path().to_path_buf());
+            dirs.ensure().unwrap();
+            let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
+            let expired =
+                transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+            store
+                .db()
+                .conn()
+                .execute(
+                    "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
+                    [expired],
+                )
+                .unwrap();
+
+            let snap = dirs.backups_dir.join("auto-2026-11-16.db");
+            match case {
+                "empty" => std::fs::write(&snap, b"").unwrap(),
+                "corrupt" => std::fs::write(&snap, b"broken").unwrap(),
+                "foreign_sqlite" => {
+                    let conn = rusqlite::Connection::open(&snap).unwrap();
+                    conn.execute_batch("CREATE TABLE other (x INTEGER);")
+                        .unwrap();
+                }
+                "directory" => std::fs::create_dir_all(&snap).unwrap(),
+                _ => unreachable!(),
+            }
+
+            assert!(
+                backup::daily_snapshot(store.db().conn(), &dirs, today).is_err(),
+                "daily_snapshot must fail closed on {case}"
+            );
+            store.run_startup_tasks(today, now_utc);
+            assert_eq!(
+                trash_repo::count(store.db().conn()).unwrap(),
+                1,
+                "expired row must survive when auto snapshot is {case}"
+            );
+            match case {
+                "empty" => assert_eq!(std::fs::read(&snap).unwrap(), b""),
+                "corrupt" => assert_eq!(std::fs::read(&snap).unwrap(), b"broken"),
+                "foreign_sqlite" => assert!(!backup::is_valid_athena_snapshot(&snap).unwrap()),
+                "directory" => assert!(snap.is_dir()),
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]

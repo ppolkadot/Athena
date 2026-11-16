@@ -107,6 +107,19 @@ pub fn max_deleted_at(conn: &Connection) -> Result<Option<String>> {
     Ok(max)
 }
 
+/// Count trashed rows whose `deleted_at` is strictly older than `cutoff_utc` (UTC RFC 3339).
+///
+/// # Errors
+/// Database errors.
+pub fn count_older_than(conn: &Connection, cutoff_utc: &str) -> Result<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+        [cutoff_utc],
+        |r| r.get(0),
+    )?;
+    Ok(usize::try_from(n).unwrap_or(0))
+}
+
 /// Hard-delete trashed rows whose `deleted_at` is strictly older than `cutoff_utc` (UTC RFC 3339).
 ///
 /// # Errors
