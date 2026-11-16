@@ -55,6 +55,9 @@ impl Store {
     /// clock rolled back before `max(deleted_at)`), and, in debug builds, an integrity check whose
     /// findings are logged as a count only.
     pub fn run_startup_tasks(&self, today: NaiveDate, now_utc: DateTime<Utc>) {
+        if let Err(err) = backup::clear_staging(&self.dirs) {
+            tracing::warn!("could not clear staging folder: {err}");
+        }
         match backup::daily_snapshot(self.db.conn(), &self.dirs, today) {
             Ok(Some(_)) => {
                 tracing::info!("daily snapshot written");
@@ -157,6 +160,19 @@ impl Store {
     }
 
     fn run(&mut self, action: AppAction) -> Result<ActionOutcome> {
+        if action == AppAction::CreateBackup {
+            let file = backup::create_manual(self.db.conn(), &self.dirs, Utc::now())?;
+            return Ok(ActionOutcome {
+                inverse: None,
+                toast: Some(ToastKey::BackupCreated),
+                refresh: RefreshScope::Backups,
+                notice: Some(OperationNotice {
+                    kind: OperationKind::BackupCreated,
+                    snapshot: Some(file.path),
+                    source: None,
+                }),
+            });
+        }
         let conn = self.db.conn();
         match action {
             AppAction::CompleteOnboarding(result) => {
@@ -175,6 +191,7 @@ impl Store {
             | AppAction::RestorePerson(_)
             | AppAction::SaveCategory(_)
             | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
+            AppAction::CreateBackup => unreachable!(),
         }
     }
 
@@ -757,5 +774,33 @@ mod tests {
         assert!(after.transfers.is_empty());
         assert_eq!(after.balances.len(), 2);
         assert!(after.balances.iter().all(|b| b.balance.is_zero()));
+    }
+
+    #[test]
+    fn staging_is_cleared_at_startup_and_only_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        std::fs::write(dirs.staging_dir.join("leftover.db"), b"stale").unwrap();
+        std::fs::create_dir_all(dirs.staging_dir.join("nested")).unwrap();
+        std::fs::write(dirs.staging_dir.join("nested/file.tmp"), b"stale").unwrap();
+
+        let keep_backup = dirs.backups_dir.join("manual-2026-11-15_10-00-00.db");
+        std::fs::write(&keep_backup, b"keep").unwrap();
+        let keep_export = dirs.exports_dir.join("export.json");
+        std::fs::write(&keep_export, b"keep").unwrap();
+
+        let store = Store::new(Db::open(&dirs.db_path).unwrap(), dirs.clone());
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.run_startup_tasks(today, now_utc);
+
+        assert!(dirs.staging_dir.is_dir());
+        assert_eq!(std::fs::read_dir(&dirs.staging_dir).unwrap().count(), 0);
+        assert!(keep_backup.exists());
+        assert!(keep_export.exists());
+        assert!(dirs.db_path.exists());
     }
 }

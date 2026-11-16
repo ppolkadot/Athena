@@ -16,6 +16,7 @@ pub struct AppDirs {
     pub log_dir: PathBuf,
     pub exports_dir: PathBuf,
     pub backups_dir: PathBuf,
+    pub staging_dir: PathBuf,
 }
 
 impl AppDirs {
@@ -26,6 +27,7 @@ impl AppDirs {
             log_dir: root.join("logs"),
             exports_dir: root.join("exports"),
             backups_dir: root.join("backups"),
+            staging_dir: root.join("staging"),
             root,
         }
     }
@@ -60,6 +62,7 @@ impl AppDirs {
             &self.log_dir,
             &self.exports_dir,
             &self.backups_dir,
+            &self.staging_dir,
         ] {
             std::fs::create_dir_all(dir)?;
         }
@@ -94,6 +97,7 @@ mod tests {
         assert_eq!(dirs.log_dir, PathBuf::from(r"C:\tmp\Athena\logs"));
         assert_eq!(dirs.exports_dir, PathBuf::from(r"C:\tmp\Athena\exports"));
         assert_eq!(dirs.backups_dir, PathBuf::from(r"C:\tmp\Athena\backups"));
+        assert_eq!(dirs.staging_dir, PathBuf::from(r"C:\tmp\Athena\staging"));
     }
 
     #[test]
@@ -116,6 +120,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = AppDirs::from_root(tmp.path().join("Athena"));
         dirs.ensure().unwrap();
-        assert!(dirs.log_dir.is_dir() && dirs.exports_dir.is_dir() && dirs.backups_dir.is_dir());
+        assert!(
+            dirs.log_dir.is_dir()
+                && dirs.exports_dir.is_dir()
+                && dirs.backups_dir.is_dir()
+                && dirs.staging_dir.is_dir()
+        );
     }
 }

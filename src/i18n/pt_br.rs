@@ -157,6 +157,7 @@ pub const STRINGS: Strings = Strings {
     toast_person_restored: "Pessoa restaurada.",
     toast_category_saved: "Categoria salva.",
     toast_category_archived: "Categoria arquivada.",
+    toast_backup_created: "Backup salvo.",
     toast_welcome: "Bem-vindo ao Athena.",
     toast_undo_failed: "Não foi possível desfazer essa alteração.",
     settlement_title: "Acertos",

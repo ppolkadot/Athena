@@ -191,6 +191,7 @@ strings! {
     toast_person_restored,
     toast_category_saved,
     toast_category_archived,
+    toast_backup_created,
     toast_welcome,
     toast_undo_failed,
     settlement_title,
@@ -242,6 +243,7 @@ pub enum ToastKey {
     PersonRestored,
     CategorySaved,
     CategoryArchived,
+    BackupCreated,
     Welcome,
     UndoFailed,
 }
@@ -262,6 +264,7 @@ impl ToastKey {
             ToastKey::PersonRestored => s.toast_person_restored,
             ToastKey::CategorySaved => s.toast_category_saved,
             ToastKey::CategoryArchived => s.toast_category_archived,
+            ToastKey::BackupCreated => s.toast_backup_created,
             ToastKey::Welcome => s.toast_welcome,
             ToastKey::UndoFailed => s.toast_undo_failed,
         }

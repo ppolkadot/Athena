@@ -27,6 +27,7 @@ pub enum AppAction {
     /// `id == 0` creates a category; otherwise edits the existing one.
     SaveCategory(Category),
     ArchiveCategory(i64),
+    CreateBackup,
 }
 
 /// What the view model must reload after an action.

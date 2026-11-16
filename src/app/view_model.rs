@@ -15,6 +15,7 @@ use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::settlement::SettlementView;
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
+    backup::{self, BackupFile},
     categories_repo, people_repo, profile_repo, transactions_repo,
     trash_repo::{self, TrashItem},
 };
@@ -56,6 +57,8 @@ pub struct ViewModel {
     pub trash_count: usize,
     /// Soft-deleted transactions, loaded only when viewing the Trash screen.
     pub trash: Vec<TrashItem>,
+    /// Managed `.db` snapshots in `backups_dir`, loaded only when viewing Settings.
+    pub backups: Vec<BackupFile>,
     /// Most recent backup/restore/import/purge operation notice in this session.
     pub last_operation: Option<OperationNotice>,
     /// Where the database file lives, for the settings screen.
@@ -88,6 +91,7 @@ impl ViewModel {
             refresh_failed: false,
             trash_count: 0,
             trash: Vec::new(),
+            backups: Vec::new(),
             last_operation: None,
             data_path: String::new(),
             today: chrono::Local::now().date_naive(),
@@ -218,6 +222,7 @@ impl ViewModel {
     ) -> Result<()> {
         let filter_changed = prev.filter != key.filter;
         let enter_trash = ui.screen == Screen::Trash && prev.screen != Screen::Trash;
+        let enter_settings = ui.screen == Screen::Settings && prev.screen != Screen::Settings;
         let conn = store.db().conn();
         let staged: Result<_> = (|| {
             let transactions = if filter_changed {
@@ -230,11 +235,16 @@ impl ViewModel {
             } else {
                 None
             };
-            Ok((transactions, trash))
+            let backups = if enter_settings {
+                Some(backup::list(&store.dirs().backups_dir)?)
+            } else {
+                None
+            };
+            Ok((transactions, trash, backups))
         })();
 
         match staged {
-            Ok((transactions, trash)) => {
+            Ok((transactions, trash, backups)) => {
                 if let Some(txs) = transactions {
                     self.transactions = txs;
                 }
@@ -246,6 +256,13 @@ impl ViewModel {
                     }
                 } else {
                     self.trash.clear();
+                }
+                if ui.screen == Screen::Settings {
+                    if let Some(items) = backups {
+                        self.backups = items;
+                    }
+                } else {
+                    self.backups.clear();
                 }
                 self.loaded = Some(key);
                 self.failed_load_key = None;
@@ -335,7 +352,13 @@ impl ViewModel {
                     self.record_trash_load();
                 }
             }
-            RefreshScope::Backups => {}
+            RefreshScope::Backups => {
+                self.backups = if ui.screen == Screen::Settings {
+                    backup::list(&store.dirs().backups_dir)?
+                } else {
+                    Vec::new()
+                };
+            }
             RefreshScope::Month | RefreshScope::Calendar | RefreshScope::All => {
                 let profile = profile_repo::load(conn)?;
                 let all_people = people_repo::list(conn, true)?;
@@ -353,6 +376,11 @@ impl ViewModel {
                     (trash_repo::list(conn)?, true)
                 } else {
                     (Vec::new(), false)
+                };
+                let backups = if ui.screen == Screen::Settings {
+                    backup::list(&store.dirs().backups_dir)?
+                } else {
+                    Vec::new()
                 };
                 let (settlement, settlement_unavailable) =
                     match settlement::for_month(conn, ui.month) {
@@ -381,6 +409,7 @@ impl ViewModel {
                 self.trash_count = trash_count;
                 self.data_path = data_path;
                 self.trash = trash;
+                self.backups = backups;
                 if trash_loaded {
                     self.record_trash_load();
                 }
@@ -815,5 +844,48 @@ mod tests {
         assert_eq!(vm.transactions.len(), 1);
         assert!(vm.settlement.is_some());
         assert_eq!(vm.trash_loads, 1);
+    }
+
+    #[test]
+    fn create_backup_action_refreshes_backups_scope() {
+        use crate::app::AppCore;
+        use crate::app::actions::{AppAction, OperationKind};
+        use crate::i18n::ToastKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let mut core = AppCore::new(Db::open(&dirs.db_path).unwrap(), dirs).unwrap();
+
+        // Off-screen: backups list stays unloaded on Month screen.
+        assert!(core.vm.backups.is_empty());
+
+        // Switching to Settings loads existing backups.
+        let outcome = core.apply(AppAction::CreateBackup).unwrap();
+        assert_eq!(outcome.toast, Some(ToastKey::BackupCreated));
+        let notice = outcome
+            .notice
+            .expect("CreateBackup records OperationNotice");
+        assert_eq!(notice.kind, OperationKind::BackupCreated);
+        let snap_path = notice.snapshot.expect("snapshot path recorded");
+        assert!(snap_path.exists());
+        assert_eq!(
+            core.vm.last_operation.as_ref().map(|n| n.kind),
+            Some(OperationKind::BackupCreated)
+        );
+        // Still on Month screen: backups list only loads on Screen::Settings.
+        assert!(core.vm.backups.is_empty());
+
+        core.set_screen(Screen::Settings);
+        assert!(core.sync().unwrap());
+        // Startup creates 1 daily auto snapshot, plus the 1 manual backup above.
+        assert_eq!(core.vm.backups.len(), 2);
+        assert!(core.vm.backups.iter().any(|b| b.path == snap_path));
+
+        // Creating another backup while on Settings refreshes vm.backups directly via RefreshScope::Backups.
+        let outcome2 = core.apply(AppAction::CreateBackup).unwrap();
+        let snap2 = outcome2.notice.and_then(|n| n.snapshot).unwrap();
+        assert_eq!(core.vm.backups.len(), 3);
+        assert!(core.vm.backups.iter().any(|b| b.path == snap2));
     }
 }
