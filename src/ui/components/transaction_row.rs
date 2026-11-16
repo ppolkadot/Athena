@@ -1,4 +1,7 @@
 //! One register row: type badge (icon and label), title, category, people and the signed amount.
+//!
+//! Right-aligned content inside a vertical layout must sit in `ui.horizontal`; a bare
+//! `right_to_left` layout takes all remaining height.
 
 use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};
 
@@ -573,11 +576,18 @@ mod tests {
                     .with_size(Vec2::new(width + 16.0, 260.0))
                     .with_context_setup(crate::ui::theme::typography::install_test_fonts)
                     .build_ui_state(
-                        |ui, row_rect: &mut egui::Rect| {
+                        |ui, (row_rect, max_row_h): &mut (egui::Rect, f32)| {
                             ui.ctx()
                                 .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
                             crate::ui::theme::apply(ui.ctx(), vm.theme());
                             ui.set_style(ui.ctx().global_style());
+                            let interact_y = ui.spacing().interact_size.y;
+                            let spacing_y = ui.spacing().item_spacing.y;
+                            let amount_line_h =
+                                ui.fonts_mut(|f| f.row_height(&typography::money_font()));
+                            // Bound: 3 interactive rows + 2 wrapped amount lines + vertical spacing/frame margins, plus 15% margin.
+                            *max_row_h =
+                                (3.0 * interact_y + 2.0 * amount_line_h + 6.0 * spacing_y) * 1.15;
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
@@ -585,14 +595,15 @@ mod tests {
                                     ui.label("Following transaction");
                                 });
                         },
-                        egui::Rect::NOTHING,
+                        (egui::Rect::NOTHING, 0.0_f32),
                     );
                 harness.run_steps(3);
 
-                let row = *harness.state();
+                let (row, max_row_h) = *harness.state();
                 assert!(
-                    row.height() <= 220.0,
-                    "{language:?} {width}px {cents} cents: row consumed viewport: {row:?}"
+                    row.height() <= max_row_h,
+                    "{language:?} {width}px {cents} cents: row height {} exceeded bound {max_row_h}: {row:?}",
+                    row.height()
                 );
                 let following = harness.get_by_label("Following transaction").rect();
                 assert!(following.top() >= row.bottom());

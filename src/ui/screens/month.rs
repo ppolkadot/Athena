@@ -942,4 +942,70 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn rail_rows_stay_compact_in_a_scrolling_rail() {
+        use crate::domain::settings::{Language, Theme};
+        use egui_kittest::kittest::Queryable;
+
+        for language in [Language::En, Language::PtBr] {
+            let _ = language;
+            for width in [120.0_f32, 200.0_f32] {
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(Vec2::new(width + 16.0, 260.0))
+                    .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+                    .build_ui_state(
+                        |ui, (row_rect, max_h): &mut (egui::Rect, f32)| {
+                            ui.ctx()
+                                .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                            crate::ui::theme::apply(ui.ctx(), Theme::Dark);
+                            ui.set_style(ui.ctx().global_style());
+                            let p = palette(Theme::Dark);
+                            let body_font = ui.style().text_styles[&egui::TextStyle::Body].clone();
+                            let money_font = typography::money_font();
+                            let line_h = ui.fonts_mut(|f| {
+                                f.row_height(&body_font).max(f.row_height(&money_font))
+                            });
+                            let spacing_y = ui.spacing().item_spacing.y;
+                            let interact_y = ui.spacing().interact_size.y;
+                            *max_h = 2.0 * interact_y + 2.0 * line_h + 6.0 + 3.0 * spacing_y;
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_max_width(width);
+                                    *row_rect = ui
+                                        .scope(|ui| {
+                                            rail_row(
+                                                ui,
+                                                &p,
+                                                LONG_CAT,
+                                                Money::from_cents(i64::MAX),
+                                                0.5,
+                                                p.accent,
+                                            );
+                                        })
+                                        .response
+                                        .rect;
+                                    ui.label("Following row");
+                                });
+                        },
+                        (egui::Rect::NOTHING, 0.0_f32),
+                    );
+                harness.run_steps(3);
+
+                let (row_rect, max_h) = *harness.state();
+                assert!(
+                    row_rect.height() <= max_h,
+                    "{language:?} {width}px: rail_row height {} exceeded bound {max_h}: {row_rect:?}",
+                    row_rect.height()
+                );
+                let following = harness.get_by_label("Following row").rect();
+                assert!(following.top() >= row_rect.bottom());
+                assert!(
+                    following.bottom() <= 252.0,
+                    "{language:?} {width}px: following row is offscreen: {following:?}"
+                );
+            }
+        }
+    }
 }
