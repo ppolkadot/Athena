@@ -7,6 +7,7 @@ use chrono::NaiveDate;
 use eframe::egui::{self, Align, Button, ComboBox, Id, Key, Layout, Modifiers, RichText};
 
 use crate::app::view_model::ViewModel;
+use crate::domain::date::YearMonth;
 use crate::domain::money::{Money, MoneyError};
 use crate::domain::person::Person;
 use crate::domain::settings::Language;
@@ -14,7 +15,7 @@ use crate::domain::transaction::{
     Allocation, SplitMode, Transaction, TransactionType, TxDraft, ValidationError, split_evenly,
 };
 use crate::i18n::{
-    date_example, format_date, kind_label, money_error_message, parse_date, strings,
+    date_example, format_date, kind_label, money_error_message, month_label, parse_date, strings,
     validation_message,
 };
 use crate::ui::components::money_input;
@@ -121,6 +122,8 @@ pub struct QuickAddState {
     pub focus_date: bool,
     /// While true the payer follows the responsible person.
     payer_auto: bool,
+    /// Set when recording a settlement while viewing a different month than `today`'s month.
+    pub settlement_month_mismatch: Option<YearMonth>,
     person_ids: Vec<i64>,
     language: Language,
 }
@@ -149,6 +152,7 @@ impl QuickAddState {
             focus_title: false,
             focus_date: false,
             payer_auto: true,
+            settlement_month_mismatch: None,
             person_ids: people.iter().map(|p| p.id).collect(),
             language,
         }
@@ -177,6 +181,16 @@ impl QuickAddState {
         state.title = title;
         state.focus_amount = false;
         state
+    }
+
+    /// Record a non-blocking date warning when opened via Settlement Record from a month other
+    /// than `today`'s month (D-P3 Option C).
+    #[must_use]
+    pub fn with_viewed_month_warning(mut self, viewed: YearMonth, today: NaiveDate) -> Self {
+        if viewed != YearMonth::from_date(today) {
+            self.settlement_month_mismatch = Some(viewed);
+        }
+        self
     }
 
     /// Reopen a stored transaction for editing, in the split mode it was saved with. People who
@@ -273,6 +287,7 @@ impl QuickAddState {
             self.split = recipient.map_or(SplitChoice::NoOne, SplitChoice::Person);
             return;
         }
+        self.settlement_month_mismatch = None;
         if self
             .category_id
             .is_some_and(|id| !allowed_categories.contains(&id))
@@ -433,6 +448,7 @@ impl QuickAddState {
         self.category_id = None;
         self.show_more = false;
         self.errors.clear();
+        self.settlement_month_mismatch = None;
         self.shared_dirty = false;
         self.shared_amounts.clear();
         self.focus_amount = true;
@@ -639,6 +655,15 @@ pub fn show(
                     });
                 });
                 show_errors(ui, &p, state, vm, FormField::Date);
+                if state.kind == TransactionType::Settlement
+                    && let Some(viewed) = state.settlement_month_mismatch
+                {
+                    let text = s
+                        .qa_settlement_month_mismatch
+                        .replace("{viewed}", &month_label(viewed, language))
+                        .replace("{today}", &format_date(vm.today, language));
+                    ui.add(egui::Label::new(RichText::new(text).color(p.warning)).wrap());
+                }
                 ui.add_space(4.0);
 
                 // Category, filtered by type (hidden for settlements). An archived category already

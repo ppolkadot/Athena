@@ -296,15 +296,18 @@ impl AthenaApp {
                 let people: Vec<_> = self.core.vm.active_people().into_iter().cloned().collect();
                 let today = self.today();
                 self.remember_modal_opener(ctx);
-                self.quick_add = Some(QuickAddState::for_settlement(
-                    &people,
-                    from,
-                    to,
-                    amount,
-                    today,
-                    title,
-                    self.core.vm.language(),
-                ));
+                self.quick_add = Some(
+                    QuickAddState::for_settlement(
+                        &people,
+                        from,
+                        to,
+                        amount,
+                        today,
+                        title,
+                        self.core.vm.language(),
+                    )
+                    .with_viewed_month_warning(self.core.ui.month, today),
+                );
             }
             ScreenEvent::Settlement(SettlementEvent::RestorePerson(id)) => {
                 match self.core.apply(AppAction::RestorePerson(id)) {
@@ -1866,5 +1869,92 @@ mod tests {
         assert!(app.core.ui.filter.text.is_empty());
         assert!(app.core.ui.search_input.is_empty());
         assert!(harness.query_by_label("Orphan Receipt").is_some());
+    }
+
+    #[test]
+    fn record_settlement_from_other_month_keeps_today_and_shows_mismatch_warning() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(Some("Ana"));
+        // Seed an expense in October 2026 so October's settlement card has a balance to record,
+        // while today is pinned to 2026-11-11.
+        let ana_id = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.name == "Ana")
+            .unwrap()
+            .id;
+        let owner_id = core.owner().unwrap().id;
+        let mut oct_expense = draft_with(vec![Allocation {
+            person_id: ana_id,
+            amount: Money::from_cents(4_000),
+        }]);
+        oct_expense.title = "October Dinner".into();
+        oct_expense.payer_id = Some(owner_id);
+        oct_expense.date = crate::shared::test_fixtures::date(2026, 10, 10);
+        core.create_transaction(oct_expense).unwrap();
+        core.set_month(YearMonth::new(2026, 10).unwrap()).unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        harness.get_by_label("Record").click();
+        harness.run_steps(3);
+
+        {
+            let app = harness.state();
+            let qa = app.quick_add.as_ref().expect("quick add should open");
+            assert_eq!(qa.date_text, "2026-11-11");
+            assert_eq!(
+                qa.settlement_month_mismatch,
+                Some(YearMonth::new(2026, 10).unwrap())
+            );
+        }
+        assert!(
+            harness
+                .query_by_label(
+                    "Viewing October 2026; this settlement will be dated 2026-11-11 (today)."
+                )
+                .is_some()
+        );
+
+        // Saving keeps date = 2026-11-11 (today) cleanly without blocking.
+        harness.get_by_label("Save").click();
+        harness.run_steps(4);
+
+        let app = harness.state();
+        let qa = app
+            .quick_add
+            .as_ref()
+            .expect("create mode keeps quick add open after save");
+        assert!(qa.title.is_empty());
+        assert_eq!(qa.settlement_month_mismatch, None);
+        let stored = crate::infrastructure::db::transactions_repo::list(
+            app.core.store.db().conn(),
+            &crate::domain::transaction::TxFilter::default(),
+        )
+        .unwrap();
+        let settlement = stored
+            .iter()
+            .find(|tx| tx.kind == TransactionType::Settlement)
+            .expect("settlement should be saved");
+        assert_eq!(
+            settlement.date,
+            crate::shared::test_fixtures::date(2026, 11, 11)
+        );
     }
 }

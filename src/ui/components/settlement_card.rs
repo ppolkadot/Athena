@@ -213,11 +213,29 @@ pub fn should_show(vm: &ViewModel) -> bool {
         || vm
             .settlement
             .as_ref()
-            .is_some_and(|s| s.balances.len() >= 2)
+            .is_some_and(|s| s.balances.len() >= 2 || s.excluded.any())
 }
 
-/// Render the settlement card. Returns `None` without drawing anything when unavailable is false
-/// and fewer than two participants have non-zero settlement activity.
+fn show_unavailable(ui: &mut egui::Ui, vm: &ViewModel, max_w: f32) {
+    let s = strings(vm.language());
+    let p = palette(vm.theme());
+    ui.scope(|ui| {
+        ui.set_max_width(max_w);
+        ui.add(
+            Label::new(
+                RichText::new(s.settlement_title)
+                    .text_style(typography::section())
+                    .strong(),
+            )
+            .wrap(),
+        );
+        ui.add_space(6.0);
+        ui.add(Label::new(RichText::new(s.settlement_unavailable).color(p.warning)).wrap());
+    });
+}
+
+/// Render the settlement card. Returns `None` without drawing anything when unavailable is false,
+/// fewer than two participants have non-zero settlement activity, and no exclusions exist.
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Option<SettlementEvent> {
     if !should_show(vm) {
         return None;
@@ -240,21 +258,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Option<SettlementEvent> {
             ui.set_max_width(max_w);
 
             if vm.settlement_unavailable {
-                ui.scope(|ui| {
-                    ui.set_max_width(max_w);
-                    ui.add(
-                        Label::new(
-                            RichText::new(s.settlement_title)
-                                .text_style(typography::section())
-                                .strong(),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(6.0);
-                    ui.add(
-                        Label::new(RichText::new(s.settlement_unavailable).color(p.warning)).wrap(),
-                    );
-                });
+                show_unavailable(ui, vm, max_w);
                 return;
             }
 
@@ -286,7 +290,14 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Option<SettlementEvent> {
             });
             ui.add_space(8.0);
 
-            if settlement.transfers.is_empty() {
+            if settlement.balances.len() < 2 {
+                ui.scope(|ui| {
+                    ui.set_max_width(max_w);
+                    ui.add(
+                        Label::new(RichText::new(s.settlement_no_balances).color(p.muted)).wrap(),
+                    );
+                });
+            } else if settlement.transfers.is_empty() {
                 ui.scope(|ui| {
                     ui.set_max_width(max_w);
                     ui.add(
@@ -539,5 +550,103 @@ mod tests {
             assert!(harness.query_by_label(expected_title).is_some());
             assert!(harness.query_by_label(expected_msg).is_some());
         }
+    }
+
+    #[test]
+    fn rail_shows_settlement_card_for_single_participant_when_exclusions_exist() {
+        use crate::domain::transaction::SettlementIssue;
+        use egui_kittest::kittest::Queryable;
+
+        let as_of = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+        let mut vm = ViewModel::new(Language::En);
+        vm.all_people = vec![crate::shared::test_fixtures::person(
+            1,
+            "A3",
+            PersonKind::Owner,
+        )];
+        vm.profile = Some(Profile {
+            start_balance: Money::ZERO,
+            theme: Theme::Dark,
+            language: Language::En,
+            onboarding_complete: true,
+        });
+        vm.settlement = Some(SettlementView {
+            as_of,
+            balances: vec![PersonBalance {
+                person_id: 1,
+                paid: Money::from_cents(1_000),
+                owed: Money::from_cents(1_000),
+                balance: Money::ZERO,
+            }],
+            transfers: vec![],
+            excluded: ExclusionCounts {
+                unassigned: 1,
+                unknown_payer: 0,
+                invalid: 0,
+            },
+        });
+
+        assert!(should_show(&vm));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(320.0, 300.0))
+            .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, (vm, emitted): &mut (ViewModel, Option<SettlementEvent>)| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    crate::ui::theme::apply(ui.ctx(), Theme::Dark);
+                    ui.set_style(ui.ctx().global_style());
+                    if let Some(ev) = show(ui, vm) {
+                        *emitted = Some(ev);
+                    }
+                },
+                (vm, None),
+            );
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Settlement").is_some());
+        assert!(harness.query_by_label("As of 30 Nov").is_some());
+        harness
+            .get_by_label("1 entry with no one responsible")
+            .click();
+        harness.run_steps(2);
+        assert_eq!(
+            harness.state().1,
+            Some(SettlementEvent::FilterIssue {
+                issue: SettlementIssue::Unassigned,
+                as_of,
+            })
+        );
+    }
+
+    #[test]
+    fn rail_hides_settlement_card_when_fewer_than_two_participants_and_no_exclusions_or_error() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+        let mut vm = ViewModel::new(Language::En);
+        vm.settlement = Some(SettlementView {
+            as_of,
+            balances: vec![PersonBalance {
+                person_id: 1,
+                paid: Money::from_cents(1_000),
+                owed: Money::from_cents(1_000),
+                balance: Money::ZERO,
+            }],
+            transfers: vec![],
+            excluded: ExclusionCounts::default(),
+        });
+        assert!(!should_show(&vm));
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(320.0, 200.0))
+            .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, (vm, drew): &mut (ViewModel, bool)| {
+                    if show(ui, vm).is_some() {
+                        *drew = true;
+                    }
+                },
+                (vm, false),
+            );
+        harness.run_steps(2);
+        assert!(!harness.state().1);
     }
 }

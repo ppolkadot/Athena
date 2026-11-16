@@ -241,12 +241,12 @@ pub struct SuggestedTransfer { pub from: i64, pub to: i64, pub amount: Money }
 | owner not a party | "Ana owes Bia R$ 80,00" | "Ana deve R$ 80,00 a Bia" |
 | all settled | "All settled up as of 30 Nov" | "Tudo acertado até 30/11" |
 
-  More than one transfer renders as a list. Fewer than two participants hides the card.
+  More than one transfer renders as a list. The card shows whenever `vm.settlement_unavailable` is true or when `vm.settlement` has at least two participants or any exclusions (`excluded.any()`); when fewer than two participants exist with exclusions, it renders a muted status line (`settlement_no_balances`) above the exclusion repair links instead of fake transfers.
 - Archived parties get an "(archived)" suffix. Their transfer offers "Restore Ana to record this" instead of **Record**, because new rows may not reference archived people.
 
 ### §7.4 Recording and repair
 
-- **Record** opens Quick Add in Settlement mode prefilled with from, to, amount, `date = vm.today`, and title "Ana → Bia" (editable). It never saves automatically.
+- **Record** opens Quick Add in Settlement mode prefilled with from, to, amount, `date = vm.today`, and title "Ana → Bia" (editable). It never saves automatically and never auto-backdates; when the viewed month differs from `today`'s month, Quick Add displays a non-blocking warning noting the viewed month and that the settlement will be dated `today`.
 - **Repair filter:** `TxFilter` gains `issue: Option<SettlementIssue>` (`UnknownPayer | Unassigned`) and `until: Option<NaiveDate>`. When `issue` is set, `month` is `None` and `until == Some(as_of)`. The register then lists matching live expense/refund rows across all months up to `as_of`, under a visible chip ("Missing payer · until Nov 2026 · ✕").
 - Clearing the chip restores `month == Some(ui.month)`. The `UiState` invariant becomes: *`filter.month == Some(month)` unless `filter.issue` is set.*
 
@@ -469,7 +469,8 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - fields: From (payer), To, Amount, Date, Title, Description
   - category and split controls are hidden, and their values cleared when the mode is entered
   - switching kinds with unsaved changes keeps the shared fields (title, amount, date, description)
-- **Month:** the settlement card sits in the rail. It shows the sentence or transfers, an "as of" date, a **Record** button per transfer, and a coverage line when exclusions exist: "2 entries without payer · 5 with no one responsible", where each count opens its repair filter.
+  - when opened via **Record** while viewing a month other than `today`'s month, shows a non-blocking warning stating the viewed month and that the settlement will be dated `today`
+- **Month:** the settlement card sits in the rail. It shows the sentence or transfers (or `settlement_unavailable` / `settlement_no_balances` when applicable), an "as of" date, a **Record** button per transfer, and a coverage line when exclusions exist: "2 entries without payer · 5 with no one responsible", where each count opens its repair filter.
 - **Trash screen:**
   - header explaining the 30-day rule and that daily backups keep removed items
   - rows: deleted date, transaction date, title, amount, kind
@@ -556,3 +557,4 @@ These reserve names and rules. They are not frozen.
 - 2026-11-16 — Added `RestorePerson(i64)` and `ToastKey::PersonRestored` (§8.1, §8.2) so archived settlement parties can be restored in place (§7.3).
 - 2026-11-16 — Added `pre-purge-YYYY-MM-DD_HH-MM-SS.db` verified Athena snapshot guard before automatic trash retention (§6.2, §9.1).
 - 2026-11-16 — Froze atomic `ViewModel::reload` staging, `settlement_unavailable` / `refresh_failed` state with same-key retry suppression, and `AppCore::apply` committed outcome preservation (§8.2, §8.3).
+- 2026-11-16 — Updated settlement card visibility (`balances.len() >= 2 || excluded.any() || settlement_unavailable`, §7.3, §12) and added non-blocking Quick Add viewed-month date warning on `Record` (§7.4, §12).

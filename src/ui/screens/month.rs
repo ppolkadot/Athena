@@ -1049,4 +1049,33 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn month_rail_shows_settlement_card_with_single_participant_exclusions() {
+        use egui_kittest::kittest::Queryable;
+
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = crate::shared::test_fixtures::seed_people(db.conn());
+        let mut unassigned = crate::shared::test_fixtures::draft_with(vec![]);
+        unassigned.title = "Single participant unassigned".into();
+        unassigned.payer_id = Some(owner);
+        crate::infrastructure::db::transactions_repo::create(db.conn(), &unassigned).unwrap();
+
+        let core = AppCore::empty_for_test(db);
+        let mut harness = harness(&core);
+        harness.run_steps(3);
+
+        assert!(harness.query_by_label("Settlement").is_some());
+        harness
+            .get_by_label("1 entry with no one responsible")
+            .click();
+        harness.run_steps(2);
+        assert_eq!(
+            harness.state().2,
+            Some(MonthEvent::Settlement(SettlementEvent::FilterIssue {
+                issue: SettlementIssue::Unassigned,
+                as_of: YearMonth::new(2026, 11).unwrap().last_day(),
+            }))
+        );
+    }
 }
