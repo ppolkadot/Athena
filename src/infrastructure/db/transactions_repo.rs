@@ -172,6 +172,15 @@ pub fn list(conn: &Connection, filter: &TxFilter) -> Result<Vec<Transaction>> {
     Ok(rows)
 }
 
+/// Count all live (non-trashed) transactions.
+///
+/// # Errors
+/// Database errors.
+pub fn count_live(conn: &Connection) -> Result<usize> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM live_transactions", [], |r| r.get(0))?;
+    Ok(usize::try_from(n).unwrap_or(0))
+}
+
 fn invalid(message: impl Into<String>) -> AppError {
     AppError::Validation(message.into())
 }

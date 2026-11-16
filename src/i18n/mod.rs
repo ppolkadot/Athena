@@ -128,6 +128,17 @@ strings! {
     export_csv_month,
     export_csv_all,
     export_hint,
+    import_ellipsis,
+    import_preview_title,
+    import_preview_confirm,
+    import_preview_meta,
+    import_preview_format_v1,
+    import_preview_format_v2,
+    import_preview_timestamp_fallback,
+    import_preview_counts,
+    import_preview_consequence,
+    import_preview_snapshot,
+    import_errors_more,
     toast_exported,
     toast_export_failed,
     backups_title,
@@ -273,6 +284,8 @@ strings! {
     toast_backup_created,
     toast_restored,
     toast_restored_named,
+    toast_imported,
+    toast_imported_named,
     toast_welcome,
     toast_undo_failed,
     settlement_title,
@@ -326,6 +339,7 @@ pub enum ToastKey {
     CategoryArchived,
     BackupCreated,
     Restored,
+    Imported,
     Welcome,
     UndoFailed,
 }
@@ -348,6 +362,7 @@ impl ToastKey {
             ToastKey::CategoryArchived => s.toast_category_archived,
             ToastKey::BackupCreated => s.toast_backup_created,
             ToastKey::Restored => s.toast_restored,
+            ToastKey::Imported => s.toast_imported,
             ToastKey::Welcome => s.toast_welcome,
             ToastKey::UndoFailed => s.toast_undo_failed,
         }
@@ -772,6 +787,30 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
     }
 }
 
+/// Render up to 5 localized import errors as a multi-line summary, collapsing extra lines with
+/// `import_errors_more`.
+#[must_use]
+pub fn format_import_errors(errors: &[ImportError], language: Language) -> String {
+    const LIMIT: usize = 5;
+    if errors.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = errors
+        .iter()
+        .take(LIMIT)
+        .map(|err| import_error_message(err, language))
+        .collect();
+    let joined = lines.join("\n");
+    if errors.len() > LIMIT {
+        strings(language)
+            .import_errors_more
+            .replace("{first}", &joined)
+            .replace("{more}", &(errors.len() - LIMIT).to_string())
+    } else {
+        joined
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -850,6 +889,7 @@ mod tests {
             CategoryArchived,
             BackupCreated,
             Restored,
+            Imported,
             Welcome,
             UndoFailed,
         ] {

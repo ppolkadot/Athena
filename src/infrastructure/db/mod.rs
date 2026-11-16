@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod categories_repo;
+pub mod import_repo;
 pub mod integrity;
 pub mod migrations;
 pub mod people_repo;

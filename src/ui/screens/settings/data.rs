@@ -67,7 +67,14 @@ pub(super) fn data_card(
             if ui.button(s.export_csv_all).clicked() {
                 events.push(ScreenEvent::Export(ExportRequest::Csv(ExportScope::All)));
             }
+            if ui.button(s.import_ellipsis).clicked() {
+                events.push(ScreenEvent::PickImportFile);
+            }
         });
+        if let Some(err) = &ui_state.settings.import_error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(err).color(p.negative));
+        }
     });
 }
 

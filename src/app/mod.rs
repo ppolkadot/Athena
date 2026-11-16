@@ -15,11 +15,12 @@ use crate::domain::date::YearMonth;
 use crate::domain::person::Person;
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::TxDraft;
-use crate::i18n::{ToastKey, strings};
+use crate::i18n::{ToastKey, format_import_errors, strings};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
-use crate::shared::error::Result;
+use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
+use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
 use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::components::toast::{self, Toast, ToastAction};
 use crate::ui::quick_add::{self, QuickAddState};
@@ -29,11 +30,13 @@ use crate::ui::{shell, theme};
 
 use self::actions::{ActionOutcome, AppAction, RestoreSource};
 pub use self::files::run_export;
-use self::files::{now_rfc3339, open_folder, pick_export_path, pick_restore_path};
+use self::files::{
+    now_rfc3339, open_folder, pick_export_path, pick_import_path, pick_restore_path,
+};
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
-    delete_confirmation, empty_trash_confirmation, handle_quick_add, purge_confirmation,
-    restore_confirmation,
+    delete_confirmation, empty_trash_confirmation, handle_quick_add, import_preview_dialog,
+    purge_confirmation, restore_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -99,7 +102,10 @@ impl AppCore {
     /// # Errors
     /// Whatever the action fails with; nothing changes in that case.
     pub fn apply(&mut self, action: AppAction) -> Result<ActionOutcome> {
-        let reset_ui = matches!(action, AppAction::RestoreBackup(_));
+        let reset_ui = matches!(
+            action,
+            AppAction::RestoreBackup(_) | AppAction::ImportProfile(_)
+        );
         let outcome = self.store.apply(action)?;
         self.record_outcome_notice(&outcome);
         if reset_ui {
@@ -212,6 +218,7 @@ pub struct AthenaApp {
     onboarding: OnboardingState,
     quick_add: Option<QuickAddState>,
     confirm: Option<ConfirmDialog>,
+    import_preview: Option<ImportPreviewDialog>,
     toast: Option<Toast>,
     /// Widget that opened the active modal, so Esc/Cancel can restore focus to it.
     modal_opener: Option<egui::Id>,
@@ -234,6 +241,7 @@ impl AthenaApp {
             onboarding,
             quick_add: None,
             confirm: None,
+            import_preview: None,
             toast: None,
             modal_opener: None,
             pending_focus_restore: None,
@@ -254,7 +262,8 @@ impl AthenaApp {
 
     /// Act on what a screen asked for. Returns `false` when an applied action was refused.
     fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
-        let idle = self.quick_add.is_none() && self.confirm.is_none();
+        let idle =
+            self.quick_add.is_none() && self.confirm.is_none() && self.import_preview.is_none();
         match event {
             ScreenEvent::NewTransaction if self.quick_add.is_none() => {
                 self.remember_modal_opener(ctx);
@@ -328,6 +337,12 @@ impl AthenaApp {
                     ));
                 }
             }
+            ScreenEvent::PickImportFile if idle => {
+                self.core.ui.settings.import_error = None;
+                if let Some(path) = pick_import_path(&self.core) {
+                    self.open_import_preview(ctx, &path);
+                }
+            }
             ScreenEvent::RetryRefresh => {
                 self.core.vm.clear_refresh_failure();
                 if let Err(err) = self.core.sync() {
@@ -337,6 +352,26 @@ impl AthenaApp {
             _ => {}
         }
         true
+    }
+
+    pub(crate) fn open_import_preview(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        self.core.ui.settings.import_error = None;
+        match crate::application::services::import::read_and_validate(path) {
+            Ok(plan) => {
+                self.remember_modal_opener(ctx);
+                self.import_preview = Some(import_preview_dialog(&self.core, plan));
+            }
+            Err(AppError::Import(errs)) => {
+                let message = format_import_errors(&errs, self.core.vm.language());
+                self.core.ui.settings.import_error = Some(message.clone());
+                self.raise_toast_text(ctx, Some(message));
+            }
+            Err(err) => {
+                let message = err.to_string();
+                self.core.ui.settings.import_error = Some(message.clone());
+                self.raise_toast_text(ctx, Some(message));
+            }
+        }
     }
 
     fn handle_settlement_event(
@@ -406,6 +441,7 @@ impl AthenaApp {
             core,
             quick_add: None,
             confirm: None,
+            import_preview: None,
             toast: None,
             modal_opener: None,
             pending_focus_restore: None,
@@ -513,7 +549,7 @@ impl AthenaApp {
             return;
         }
         let ctx = ui.ctx().clone();
-        if self.quick_add.is_none() && self.confirm.is_none() {
+        if self.quick_add.is_none() && self.confirm.is_none() && self.import_preview.is_none() {
             if self.pending_focus_restore.is_some() {
                 if ctx.memory(|m| m.top_modal_layer().is_none()) {
                     if let Some(id) = self.pending_focus_restore.take() {
@@ -638,6 +674,34 @@ impl AthenaApp {
                     self.restore_modal_opener(ctx);
                 }
                 None => self.confirm = Some(dialog),
+            }
+        }
+        self.handle_import_preview_modal(ctx);
+    }
+
+    fn handle_import_preview_modal(&mut self, ctx: &egui::Context) {
+        if let Some(dialog) = self.import_preview.take() {
+            match import_preview::show(ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
+            {
+                Some(ImportPreviewChoice::Confirmed(plan)) => {
+                    let before_version = self.core.store.data_version();
+                    let toast =
+                        apply_confirmed_outcome(&mut self.core, AppAction::ImportProfile(plan));
+                    let imported_ok = self.core.store.data_version() != before_version;
+                    if imported_ok {
+                        self.toast = None;
+                    }
+                    self.raise_confirmed_toast(ctx, toast);
+                    if imported_ok {
+                        self.modal_opener = None;
+                    } else {
+                        self.restore_modal_opener(ctx);
+                    }
+                }
+                Some(ImportPreviewChoice::Cancelled) => {
+                    self.restore_modal_opener(ctx);
+                }
+                None => self.import_preview = Some(dialog),
             }
         }
     }
@@ -2344,6 +2408,172 @@ mod tests {
         assert_eq!(
             app.core.ui.settings.page,
             crate::ui::screens::settings::SettingsPage::Data
+        );
+    }
+
+    #[test]
+    fn import_success_resets_ui_and_names_snapshot() {
+        let (_dir, mut core) = file_backed_core();
+        let mut live = draft_with(vec![]);
+        live.title = "Existing Live".into();
+        core.create_transaction(live).unwrap();
+
+        let mut trashed = draft_with(vec![]);
+        trashed.title = "Existing Trashed".into();
+        core.create_transaction(trashed).unwrap();
+        let trashed_id = core
+            .vm
+            .transactions
+            .iter()
+            .find(|t| t.title == "Existing Trashed")
+            .unwrap()
+            .id;
+        core.apply(AppAction::DeleteTransaction(trashed_id))
+            .unwrap();
+        assert_eq!(core.vm.trash_count, 1);
+
+        core.ui.filter_shared();
+        core.ui.edit_search("Existing".into(), 1.0);
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/format1-1.0.2.json");
+        let plan = crate::application::services::import::read_and_validate(&fixture).unwrap();
+        let outcome = core
+            .apply(AppAction::ImportProfile(Box::new(plan)))
+            .unwrap();
+        let snapshot_path = outcome.notice.unwrap().snapshot.unwrap();
+        let snap_name = snapshot_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(snap_name.starts_with("pre-import-"), "{snap_name}");
+        assert!(snapshot_path.exists());
+
+        assert_eq!(core.ui.screen, Screen::Month);
+        assert!(!core.ui.has_filters());
+        assert_eq!(
+            core.ui.settings.page,
+            crate::ui::screens::settings::SettingsPage::General
+        );
+        assert_eq!(core.vm.trash_count, 0);
+        assert_eq!(core.vm.transactions.len(), 3);
+        let notice = core.vm.last_operation.as_ref().expect("import notice");
+        assert_eq!(notice.kind, crate::app::actions::OperationKind::Imported);
+        assert_eq!(notice.source.as_deref(), Some("format1-1.0.2.json"));
+        assert_eq!(notice.snapshot.as_ref(), Some(&snapshot_path));
+    }
+
+    #[test]
+    fn data_page_import_preview_confirms_and_reports_invalid_files() {
+        use egui_kittest::kittest::Queryable;
+
+        let (dir, mut core) = file_backed_core();
+        let mut live = draft_with(vec![]);
+        live.title = "Keep Until Import".into();
+        core.create_transaction(live).unwrap();
+
+        let mut trashed = draft_with(vec![]);
+        trashed.title = "To Be Emptied".into();
+        core.create_transaction(trashed).unwrap();
+        let trashed_id = core
+            .vm
+            .transactions
+            .iter()
+            .find(|t| t.title == "To Be Emptied")
+            .unwrap()
+            .id;
+        core.apply(AppAction::DeleteTransaction(trashed_id))
+            .unwrap();
+
+        let bad_path = dir.path().join("bad.json");
+        std::fs::write(&bad_path, "{ not valid json").unwrap();
+
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+        let backups_dir = core.vm.backups_dir.clone();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 900.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Import…").is_some());
+
+        let ctx = harness.ctx.clone();
+        harness.state_mut().open_import_preview(&ctx, &bad_path);
+        harness.run_steps(3);
+
+        let err_msg = harness
+            .state()
+            .core
+            .ui
+            .settings
+            .import_error
+            .clone()
+            .expect("invalid file sets import_error");
+        assert!(harness.state().import_preview.is_none());
+        assert_eq!(harness.query_all_by_label(err_msg.as_str()).count(), 2);
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/format1-1.0.2.json");
+        harness.state_mut().open_import_preview(&ctx, &fixture);
+        harness.run_steps(3);
+
+        assert!(harness.state().core.ui.settings.import_error.is_none());
+        assert!(harness.state().import_preview.is_some());
+        assert!(harness.query_by_label("Import profile?").is_some());
+        assert!(
+            harness
+                .query_by_label("Entry times weren't recorded in this file.")
+                .is_some()
+        );
+        let cur_cats = harness.state().core.vm.all_categories.len();
+        assert!(cur_cats > 0);
+        let expected_counts = format!(
+            "Incoming: 2 people · 2 categories · 3 entries\nCurrent: 2 people · {cur_cats} categories · 1 entries · 1 in Trash (will be emptied)"
+        );
+        assert!(harness.query_by_label(expected_counts.as_str()).is_some());
+        assert!(
+            harness
+                .query_by_label("Replaces everything in Athena, including Trash.")
+                .is_some()
+        );
+        let expected_snapshot = format!("A safety snapshot will be saved in:\n{backups_dir}");
+        assert!(harness.query_by_label(expected_snapshot.as_str()).is_some());
+
+        harness.get_by_label("Import").click();
+        harness.run_steps(4);
+
+        let app = harness.state();
+        assert!(app.import_preview.is_none());
+        assert_eq!(app.core.ui.screen, Screen::Month);
+        assert_eq!(app.core.vm.transactions.len(), 3);
+        assert_eq!(app.core.vm.trash_count, 0);
+        assert_eq!(app.core.vm.owner_name(), Some("Owner"));
+        let toast_text = app
+            .toast
+            .as_ref()
+            .expect("import toast should appear")
+            .text
+            .as_str();
+        assert!(
+            toast_text.starts_with("Imported format1-1.0.2.json. Safety snapshot: pre-import-"),
+            "{toast_text}"
         );
     }
 }

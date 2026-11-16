@@ -41,6 +41,7 @@ pub enum ScreenEvent {
     Export(ExportRequest),
     RequestRestoreListed(crate::infrastructure::db::backup::BackupFile),
     PickRestoreFile,
+    PickImportFile,
     RetryRefresh,
 }
 

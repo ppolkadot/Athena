@@ -295,6 +295,20 @@ pub fn pre_purge_snapshot(
     Ok(path)
 }
 
+/// Write and verify a fresh `pre-import-YYYY-MM-DD_HH-MM-SS.db` snapshot of `conn` before an
+/// import replaces the database. Call [`prune`] after the replacement succeeds so a failed import
+/// preserves older snapshots.
+///
+/// # Errors
+/// [`AppError::Backup`], SQLite, or I/O errors if the snapshot cannot be written or verified.
+pub fn pre_import_snapshot(
+    conn: &Connection,
+    dirs: &AppDirs,
+    now_utc: DateTime<Utc>,
+) -> Result<PathBuf> {
+    pre_operation_snapshot(conn, dirs, "pre-import-", now_utc)
+}
+
 pub(crate) fn pre_operation_snapshot(
     conn: &Connection,
     dirs: &AppDirs,

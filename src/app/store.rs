@@ -4,15 +4,16 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 use super::actions::{ActionOutcome, AppAction, OperationKind, OperationNotice, RefreshScope};
+use crate::application::services::import::ImportPlan;
 use crate::application::services::onboarding;
 use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::{
-    Db, backup, categories_repo, integrity, people_repo, profile_repo, restore, transactions_repo,
-    trash_repo,
+    Db, backup, categories_repo, import_repo, integrity, people_repo, profile_repo, restore,
+    transactions_repo, trash_repo,
 };
-use crate::shared::error::Result;
+use crate::shared::error::{AppError, ImportError, Result};
 
 #[derive(Debug)]
 pub struct Store {
@@ -187,6 +188,11 @@ impl Store {
                     }),
                 });
             }
+            AppAction::ImportProfile(plan) => {
+                return self.run_import_with(&plan, Utc::now(), |conn, dirs, now| {
+                    backup::pre_import_snapshot(conn, dirs, now)
+                });
+            }
             _ => {}
         }
         let conn = self.db.conn();
@@ -207,8 +213,37 @@ impl Store {
             | AppAction::RestorePerson(_)
             | AppAction::SaveCategory(_)
             | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
-            AppAction::CreateBackup | AppAction::RestoreBackup(_) => unreachable!(),
+            AppAction::CreateBackup | AppAction::RestoreBackup(_) | AppAction::ImportProfile(_) => {
+                unreachable!()
+            }
         }
+    }
+
+    pub(crate) fn run_import_with<F>(
+        &mut self,
+        plan: &ImportPlan,
+        now_utc: DateTime<Utc>,
+        make_snapshot: F,
+    ) -> Result<ActionOutcome>
+    where
+        F: FnOnce(&rusqlite::Connection, &AppDirs, DateTime<Utc>) -> Result<std::path::PathBuf>,
+    {
+        let snapshot = make_snapshot(self.db.conn(), &self.dirs, now_utc)
+            .map_err(|err| AppError::Import(vec![ImportError::SnapshotFailed(err.to_string())]))?;
+        import_repo::replace(self.db.conn(), plan)?;
+        if let Err(err) = backup::prune(&self.dirs.backups_dir, Some(&snapshot)) {
+            tracing::warn!("could not prune backups after import: {err}");
+        }
+        Ok(ActionOutcome {
+            inverse: None,
+            toast: Some(ToastKey::Imported),
+            refresh: RefreshScope::All,
+            notice: Some(OperationNotice {
+                kind: OperationKind::Imported,
+                snapshot: Some(snapshot),
+                source: Some(plan.source_name.clone()),
+            }),
+        })
     }
 
     fn run_transaction_action(
@@ -852,5 +887,132 @@ mod tests {
         assert!(keep_backup.exists());
         assert!(keep_export.exists());
         assert!(dirs.db_path.exists());
+    }
+
+    fn import_plan_fixture() -> ImportPlan {
+        use crate::domain::category::{Category, CategoryScope};
+        use crate::domain::person::{Person, PersonKind};
+        use crate::domain::settings::{Language, Profile, Theme};
+        ImportPlan {
+            source_name: "imported.json".into(),
+            format_version: 2,
+            app_version: "1.1.0".into(),
+            exported_at: "2026-11-15T12:00:00Z".into(),
+            used_timestamp_fallback: false,
+            profile: Profile {
+                start_balance: Money::from_cents(77_700),
+                theme: Theme::Light,
+                language: Language::PtBr,
+                onboarding_complete: true,
+            },
+            people: vec![Person {
+                id: 5,
+                name: "Marina".into(),
+                kind: PersonKind::Owner,
+                archived: false,
+                created_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            categories: vec![Category {
+                id: 8,
+                name: "ImportedCat".into(),
+                color: "#4FC3F7".into(),
+                icon: None,
+                applies_to: CategoryScope::Expense,
+                is_default: false,
+                archived: false,
+                created_at: "2026-11-01T00:00:00Z".into(),
+            }],
+            transactions: vec![],
+        }
+    }
+
+    #[test]
+    fn import_writes_pre_import_snapshot_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let mut store = Store::new(Db::open(&dirs.db_path).unwrap(), dirs.clone());
+        let (owner, _) = seed_people(store.db().conn());
+        let mut existing = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(2_500),
+        }]);
+        existing.title = "Before Import".into();
+        transactions_repo::create(store.db().conn(), &existing).unwrap();
+
+        let plan = import_plan_fixture();
+        let outcome = store
+            .apply(AppAction::ImportProfile(Box::new(plan)))
+            .unwrap();
+        assert_eq!(outcome.toast, Some(ToastKey::Imported));
+        assert_eq!(outcome.refresh, RefreshScope::All);
+        let notice = outcome.notice.unwrap();
+        assert_eq!(notice.kind, OperationKind::Imported);
+        assert_eq!(notice.source.as_deref(), Some("imported.json"));
+        let snapshot = notice.snapshot.unwrap();
+        assert!(
+            snapshot
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pre-import-")
+        );
+        assert!(backup::is_valid_athena_snapshot(&snapshot).unwrap());
+
+        // The safety snapshot captures the pre-import database contents.
+        let snap_db = Db::open_read_only(&snapshot).unwrap();
+        let snap_txs = transactions_repo::list(
+            snap_db.conn(),
+            &crate::domain::transaction::TxFilter::default(),
+        )
+        .unwrap();
+        assert_eq!(snap_txs.len(), 1);
+        assert_eq!(snap_txs[0].title, "Before Import");
+
+        // Live database now holds the imported data.
+        assert_eq!(
+            people_repo::owner(store.db().conn()).unwrap().unwrap().name,
+            "Marina"
+        );
+    }
+
+    #[test]
+    fn snapshot_failure_aborts_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let mut store = Store::new(Db::open(&dirs.db_path).unwrap(), dirs.clone());
+        let (owner, _) = seed_people(store.db().conn());
+        let mut existing = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(1_200),
+        }]);
+        existing.title = "Keep Intact".into();
+        transactions_repo::create(store.db().conn(), &existing).unwrap();
+        let version_before = store.data_version();
+
+        let plan = import_plan_fixture();
+        let err = store
+            .run_import_with(&plan, Utc::now(), |_, _, _| {
+                Err(AppError::Backup("disk full".into()))
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Import(ref errs)
+                if matches!(errs.as_slice(), [ImportError::SnapshotFailed(_)])
+        ));
+        assert_eq!(store.data_version(), version_before);
+        let txs = transactions_repo::list(
+            store.db().conn(),
+            &crate::domain::transaction::TxFilter::default(),
+        )
+        .unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].title, "Keep Intact");
+        assert_eq!(
+            people_repo::owner(store.db().conn()).unwrap().unwrap().name,
+            "A3"
+        );
     }
 }

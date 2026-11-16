@@ -77,6 +77,7 @@ pub struct SettingsState {
     pub confirm_archive_category: Option<i64>,
     pub error: Option<SettingsError>,
     pub restore_error: Option<String>,
+    pub import_error: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -97,6 +98,7 @@ impl Default for SettingsState {
             confirm_archive_category: None,
             error: None,
             restore_error: None,
+            import_error: None,
         }
     }
 }

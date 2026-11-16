@@ -46,6 +46,14 @@ pub(crate) fn pick_restore_path(core: &AppCore) -> Option<PathBuf> {
         .pick_file()
 }
 
+/// Ask which JSON export file to import, starting in the exports folder. `None` when cancelled.
+pub(crate) fn pick_import_path(core: &AppCore) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_directory(&core.store.dirs().exports_dir)
+        .add_filter("JSON", &["json"])
+        .pick_file()
+}
+
 pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

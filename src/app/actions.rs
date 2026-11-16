@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::application::services::import::ImportPlan;
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
@@ -31,6 +32,7 @@ pub enum AppAction {
     ArchiveCategory(i64),
     CreateBackup,
     RestoreBackup(RestoreSource),
+    ImportProfile(Box<ImportPlan>),
 }
 
 /// What the view model must reload after an action.

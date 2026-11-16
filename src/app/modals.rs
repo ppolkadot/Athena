@@ -2,10 +2,14 @@
 
 use chrono::{DateTime, Local, Utc};
 
-use crate::i18n::{PluralKey, ToastKey, format_date, plural, restore_error_message, strings};
-use crate::infrastructure::db::restore::RestoreSource;
+use crate::application::services::import::ImportPlan;
+use crate::i18n::{
+    PluralKey, ToastKey, format_date, format_import_errors, plural, restore_error_message, strings,
+};
+use crate::infrastructure::db::{restore::RestoreSource, transactions_repo, trash_repo};
 use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::ConfirmDialog;
+use crate::ui::components::import_preview::ImportPreviewDialog;
 use crate::ui::components::toast::ToastAction;
 use crate::ui::quick_add::{QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
 use crate::ui::screens::settings::SettingsError;
@@ -164,8 +168,31 @@ pub fn restore_confirmation(
     }
 }
 
+/// Build the import preview modal comparing the validated `plan` against the current database
+/// counts (including Trash that will be emptied).
+#[must_use]
+pub fn import_preview_dialog(core: &AppCore, plan: ImportPlan) -> ImportPreviewDialog {
+    let conn = core.store.db().conn();
+    let current_transactions = transactions_repo::count_live(conn).unwrap_or(0);
+    let current_trash = trash_repo::count(conn).unwrap_or(core.vm.trash_count);
+    let snapshot_dir = if core.vm.backups_dir.is_empty() {
+        core.store.dirs().backups_dir.display().to_string()
+    } else {
+        core.vm.backups_dir.clone()
+    };
+    ImportPreviewDialog {
+        plan: Box::new(plan),
+        current_people: core.vm.all_people.len(),
+        current_categories: core.vm.all_categories.len(),
+        current_transactions,
+        current_trash,
+        snapshot_dir,
+    }
+}
+
 /// Apply an action the user confirmed, returning its toast text and an optional undo action
-/// (offered for `DeleteTransaction` only). Restore failures surface a localized error message.
+/// (offered for `DeleteTransaction` only). Restore and import failures surface localized error
+/// messages.
 pub fn apply_confirmed_outcome(
     core: &mut AppCore,
     action: AppAction,
@@ -197,6 +224,21 @@ pub fn apply_confirmed_outcome(
                         .toast_restored_named
                         .replace("{snapshot}", &snap_name),
                 )
+            } else if let Some(notice) = &outcome.notice
+                && notice.kind == OperationKind::Imported
+                && let Some(snapshot) = &notice.snapshot
+            {
+                let snap_name = snapshot.file_name().map_or_else(
+                    || snapshot.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                let src_name = notice.source.as_deref().unwrap_or("");
+                Some(
+                    strings(language)
+                        .toast_imported_named
+                        .replace("{source}", src_name)
+                        .replace("{snapshot}", &snap_name),
+                )
             } else {
                 outcome.toast.map(|key| key.text(language).to_string())
             }?;
@@ -210,6 +252,12 @@ pub fn apply_confirmed_outcome(
             tracing::warn!("restore failed: {err}");
             let message = restore_error_message(&err, core.vm.language());
             core.ui.settings.restore_error = Some(message.clone());
+            Some((message, None))
+        }
+        Err(AppError::Import(errs)) => {
+            tracing::warn!("import failed: {} error(s)", errs.len());
+            let message = format_import_errors(&errs, core.vm.language());
+            core.ui.settings.import_error = Some(message.clone());
             Some((message, None))
         }
         Err(err) => {
