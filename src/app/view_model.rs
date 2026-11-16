@@ -13,7 +13,9 @@ use crate::domain::person::{Person, PersonKind};
 use crate::domain::reports::{CalendarMonthTotal, CategoryTotal, MonthSummary, PersonTotal};
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
-use crate::infrastructure::db::{categories_repo, people_repo, profile_repo, transactions_repo};
+use crate::infrastructure::db::{
+    categories_repo, people_repo, profile_repo, transactions_repo, trash_repo,
+};
 use crate::shared::error::Result;
 
 /// What the cached data was loaded for. A different key means the cache is stale.
@@ -180,6 +182,7 @@ impl ViewModel {
             RefreshScope::People => self.all_people = people_repo::list(conn, true)?,
             RefreshScope::Categories => self.all_categories = categories_repo::list(conn, true)?,
             RefreshScope::Trash => {
+                self.trash_count = trash_repo::count(conn)?;
                 self.load_trash_screen_stub();
             }
             RefreshScope::Backups => {}
@@ -198,6 +201,7 @@ impl ViewModel {
                     .as_ref()
                     .map_or(Money::ZERO, |p| p.start_balance);
                 self.balance = reports::tracked_balance(conn, start)?;
+                self.trash_count = trash_repo::count(conn)?;
                 self.data_path = store.dirs().db_path.display().to_string();
                 if ui.screen == Screen::Trash {
                     self.load_trash_screen_stub();

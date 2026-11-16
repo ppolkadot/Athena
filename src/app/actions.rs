@@ -16,6 +16,9 @@ pub enum AppAction {
     SaveTransaction(TxDraft),
     UpdateTransaction(i64, TxDraft),
     DeleteTransaction(i64),
+    RestoreTransaction(i64),
+    PurgeTransaction(i64),
+    EmptyTrash,
     SaveProfile(Profile),
     /// `id == 0` creates a person; otherwise renames the existing one.
     SavePerson(Person),

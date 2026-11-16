@@ -300,4 +300,106 @@ mod tests {
         .unwrap();
         assert_eq!(by_recipient.len(), 3);
     }
+
+    #[derive(Debug, PartialEq)]
+    struct ReportSnapshot {
+        txs: Vec<crate::domain::transaction::Transaction>,
+        search_len: usize,
+        summary: MonthSummary,
+        cats: Vec<CategoryTotal>,
+        people: Vec<PersonTotal>,
+        days: Vec<DayTotal>,
+        cal: Vec<CalendarMonthTotal>,
+        balance: Money,
+        csv_count: usize,
+        csv_has_market: bool,
+        json_count: usize,
+        json_titles: Vec<String>,
+    }
+
+    impl ReportSnapshot {
+        fn capture(db: &Db, tag: &str) -> Self {
+            use crate::application::services::export::{export_csv, export_json};
+            use crate::domain::export::ExportScope;
+            use crate::domain::settings::Language;
+            use crate::domain::transaction::TxFilter;
+            use crate::infrastructure::export::json::ProfileDocument;
+            use crate::shared::test_fixtures::profile;
+
+            let dir = tempfile::tempdir().unwrap();
+            let csv_path = dir.path().join(format!("{tag}.csv"));
+            let csv_count = export_csv(db.conn(), Language::En, ExportScope::All, &csv_path)
+                .unwrap()
+                .record_count;
+            let csv_has_market = std::fs::read_to_string(&csv_path)
+                .unwrap()
+                .contains("Market");
+            let json_path = dir.path().join(format!("{tag}.json"));
+            let json_count = export_json(db.conn(), &profile(), "2026-11-12T10:00:00Z", &json_path)
+                .unwrap()
+                .record_count;
+            let doc: ProfileDocument =
+                serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+            Self {
+                txs: transactions_repo::list(db.conn(), &TxFilter::default()).unwrap(),
+                search_len: transactions_repo::list(
+                    db.conn(),
+                    &TxFilter {
+                        text: "Market".into(),
+                        ..TxFilter::default()
+                    },
+                )
+                .unwrap()
+                .len(),
+                summary: month_summary(db.conn(), nov()).unwrap(),
+                cats: category_totals(db.conn(), nov()).unwrap(),
+                people: person_totals(db.conn(), nov()).unwrap(),
+                days: day_totals(db.conn(), nov()).unwrap(),
+                cal: year_calendar(db.conn(), 2026).unwrap(),
+                balance: tracked_balance(db.conn(), Money::from_cents(100_000)).unwrap(),
+                csv_count,
+                csv_has_market,
+                json_count,
+                json_titles: doc.transactions.into_iter().map(|t| t.title).collect(),
+            }
+        }
+    }
+
+    #[test]
+    fn deleted_rows_vanish_everywhere() {
+        use crate::infrastructure::db::trash_repo;
+
+        let db = Db::open_in_memory().unwrap();
+        seed_month(&db);
+        let baseline = ReportSnapshot::capture(&db, "base");
+        let market_id = baseline
+            .txs
+            .iter()
+            .find(|t| t.title == "Market")
+            .unwrap()
+            .id;
+
+        transactions_repo::delete(db.conn(), market_id).unwrap();
+        let deleted = ReportSnapshot::capture(&db, "del");
+        assert_eq!(deleted.txs.len(), 3);
+        assert_eq!(deleted.search_len, 0);
+        assert_eq!(deleted.summary.expenses, Money::from_cents(10_000));
+        assert_eq!(deleted.summary.count, 3);
+        let food = seeded_category(db.conn(), "Food");
+        assert!(deleted.cats.iter().all(|c| c.category_id != Some(food)));
+        assert_eq!(
+            deleted.people.iter().map(|p| p.net.cents()).sum::<i64>(),
+            8_000
+        );
+        assert!(deleted.days.iter().all(|d| d.date != date(2026, 11, 5)));
+        assert_eq!(deleted.cal[10].summary, deleted.summary);
+        assert_eq!(deleted.balance, Money::from_cents(122_000));
+        assert_eq!(deleted.csv_count, 3);
+        assert!(!deleted.csv_has_market);
+        assert_eq!(deleted.json_count, 3);
+        assert!(deleted.json_titles.iter().all(|t| t != "Market"));
+
+        trash_repo::restore(db.conn(), market_id).unwrap();
+        assert_eq!(ReportSnapshot::capture(&db, "restored"), baseline);
+    }
 }

@@ -3,13 +3,14 @@
 
 use chrono::NaiveDate;
 
-use super::actions::{ActionOutcome, AppAction, RefreshScope};
+use super::actions::{ActionOutcome, AppAction, OperationKind, OperationNotice, RefreshScope};
 use crate::application::services::onboarding;
 use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::{
     Db, backup, categories_repo, integrity, people_repo, profile_repo, transactions_repo,
+    trash_repo,
 };
 use crate::shared::error::Result;
 
@@ -81,40 +82,97 @@ impl Store {
 
     fn run(&mut self, action: AppAction) -> Result<ActionOutcome> {
         let conn = self.db.conn();
-        let (inverse, toast, refresh) = match action {
+        match action {
             AppAction::CompleteOnboarding(result) => {
                 onboarding::complete(conn, &result)?;
-                (None, Some(ToastKey::Welcome), RefreshScope::All)
+                Ok(outcome(None, Some(ToastKey::Welcome), RefreshScope::All))
             }
+            AppAction::SaveTransaction(_)
+            | AppAction::UpdateTransaction(_, _)
+            | AppAction::DeleteTransaction(_)
+            | AppAction::RestoreTransaction(_)
+            | AppAction::PurgeTransaction(_)
+            | AppAction::EmptyTrash => Self::run_transaction_action(conn, action),
+            AppAction::SaveProfile(_)
+            | AppAction::SavePerson(_)
+            | AppAction::ArchivePerson(_)
+            | AppAction::SaveCategory(_)
+            | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
+        }
+    }
+
+    fn run_transaction_action(
+        conn: &rusqlite::Connection,
+        action: AppAction,
+    ) -> Result<ActionOutcome> {
+        match action {
             AppAction::SaveTransaction(draft) => {
                 let id = transactions_repo::create(conn, &draft)?;
-                (
+                Ok(outcome(
                     Some(AppAction::DeleteTransaction(id)),
                     Some(ToastKey::TransactionSaved),
                     RefreshScope::Month,
-                )
+                ))
             }
             AppAction::UpdateTransaction(id, draft) => {
                 let previous = transactions_repo::get(conn, id)?.to_draft();
                 transactions_repo::update(conn, id, &draft)?;
-                (
+                Ok(outcome(
                     Some(AppAction::UpdateTransaction(id, previous)),
                     Some(ToastKey::TransactionUpdated),
                     RefreshScope::Month,
-                )
+                ))
             }
             AppAction::DeleteTransaction(id) => {
-                // 1.0 deletes for good, so there is nothing to undo; 1.1 returns `RestoreTransaction`.
                 transactions_repo::delete(conn, id)?;
-                (
-                    None,
+                Ok(outcome(
+                    Some(AppAction::RestoreTransaction(id)),
                     Some(ToastKey::TransactionDeleted),
                     RefreshScope::Month,
-                )
+                ))
             }
+            AppAction::RestoreTransaction(id) => {
+                trash_repo::restore(conn, id)?;
+                Ok(outcome(
+                    Some(AppAction::DeleteTransaction(id)),
+                    Some(ToastKey::TransactionRestored),
+                    RefreshScope::Month,
+                ))
+            }
+            AppAction::PurgeTransaction(id) => {
+                trash_repo::purge(conn, id)?;
+                Ok(ActionOutcome {
+                    inverse: None,
+                    toast: None,
+                    refresh: RefreshScope::Trash,
+                    notice: Some(trash_purged_notice()),
+                })
+            }
+            AppAction::EmptyTrash => {
+                trash_repo::empty(conn)?;
+                Ok(ActionOutcome {
+                    inverse: None,
+                    toast: Some(ToastKey::TrashEmptied),
+                    refresh: RefreshScope::Trash,
+                    notice: Some(trash_purged_notice()),
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_settings_action(
+        conn: &rusqlite::Connection,
+        action: AppAction,
+    ) -> Result<ActionOutcome> {
+        match action {
             AppAction::SaveProfile(profile) => {
                 profile_repo::save(conn, &profile)?;
-                (None, Some(ToastKey::ProfileSaved), RefreshScope::All)
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::ProfileSaved),
+                    RefreshScope::All,
+                ))
             }
             AppAction::SavePerson(person) => {
                 if person.id == 0 {
@@ -122,11 +180,19 @@ impl Store {
                 } else {
                     people_repo::update(conn, &person)?;
                 }
-                (None, Some(ToastKey::PersonSaved), RefreshScope::People)
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::PersonSaved),
+                    RefreshScope::People,
+                ))
             }
             AppAction::ArchivePerson(id) => {
                 people_repo::set_archived(conn, id, true)?;
-                (None, Some(ToastKey::PersonArchived), RefreshScope::People)
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::PersonArchived),
+                    RefreshScope::People,
+                ))
             }
             AppAction::SaveCategory(category) => {
                 if category.id == 0 {
@@ -140,27 +206,43 @@ impl Store {
                 } else {
                     categories_repo::update(conn, &category)?;
                 }
-                (
+                Ok(outcome(
                     None,
                     Some(ToastKey::CategorySaved),
                     RefreshScope::Categories,
-                )
+                ))
             }
             AppAction::ArchiveCategory(id) => {
                 categories_repo::set_archived(conn, id, true)?;
-                (
+                Ok(outcome(
                     None,
                     Some(ToastKey::CategoryArchived),
                     RefreshScope::Categories,
-                )
+                ))
             }
-        };
-        Ok(ActionOutcome {
-            inverse,
-            toast,
-            refresh,
-            notice: None,
-        })
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn outcome(
+    inverse: Option<AppAction>,
+    toast: Option<ToastKey>,
+    refresh: RefreshScope,
+) -> ActionOutcome {
+    ActionOutcome {
+        inverse,
+        toast,
+        refresh,
+        notice: None,
+    }
+}
+
+fn trash_purged_notice() -> OperationNotice {
+    OperationNotice {
+        kind: OperationKind::TrashPurged,
+        snapshot: None,
+        source: None,
     }
 }
 
@@ -222,10 +304,15 @@ mod tests {
     }
 
     #[test]
-    fn hard_delete_has_no_inverse_in_1_0() {
+    fn delete_is_soft_and_restorable() {
         let mut store = store();
+        let (owner, _) = seed_people(store.db().conn());
+        let allocs = vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(100),
+        }];
         store
-            .apply(AppAction::SaveTransaction(draft_with(vec![])))
+            .apply(AppAction::SaveTransaction(draft_with(allocs.clone())))
             .unwrap();
         let id = transactions_repo::list(
             store.db().conn(),
@@ -233,13 +320,18 @@ mod tests {
         )
         .unwrap()[0]
             .id;
-        assert_eq!(
-            store
-                .apply(AppAction::DeleteTransaction(id))
-                .unwrap()
-                .inverse,
-            None
-        );
+        let deleted = store.apply(AppAction::DeleteTransaction(id)).unwrap();
+        assert_eq!(deleted.inverse, Some(AppAction::RestoreTransaction(id)));
+        assert_eq!(deleted.toast, Some(ToastKey::TransactionDeleted));
+        assert!(matches!(store.transaction(id), Err(AppError::NotFound(_))));
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 1);
+
+        let restored = store.apply(deleted.inverse.unwrap()).unwrap();
+        assert_eq!(restored.inverse, Some(AppAction::DeleteTransaction(id)));
+        assert_eq!(restored.toast, Some(ToastKey::TransactionRestored));
+        let tx = store.transaction(id).unwrap();
+        assert_eq!(tx.allocations, allocs);
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 0);
     }
 
     #[test]

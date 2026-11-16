@@ -15,13 +15,13 @@ use crate::domain::transaction::{
 };
 use crate::shared::error::{AppError, Result};
 
-const COLUMNS: &str = "t.id, t.title, t.amount_cents, t.date, t.kind, t.category_id, t.payer_id, t.description, t.split_mode";
+pub(crate) const COLUMNS: &str = "t.id, t.title, t.amount_cents, t.date, t.kind, t.category_id, t.payer_id, t.description, t.split_mode";
 
 fn date_text(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
-fn from_row(row: &Row<'_>) -> rusqlite::Result<Transaction> {
+pub(crate) fn from_row(row: &Row<'_>) -> rusqlite::Result<Transaction> {
     let date: String = row.get(3)?;
     let kind: String = row.get(4)?;
     let split: Option<String> = row.get(8)?;
@@ -47,7 +47,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Transaction> {
 }
 
 /// Attach allocations with one query per chunk of ids (not one per row).
-fn load_allocations(conn: &Connection, transactions: &mut [Transaction]) -> Result<()> {
+pub(crate) fn load_allocations(conn: &Connection, transactions: &mut [Transaction]) -> Result<()> {
     let mut by_tx: HashMap<i64, Vec<Allocation>> = HashMap::new();
     for chunk in transactions.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(",");
@@ -77,9 +77,9 @@ fn load_allocations(conn: &Connection, transactions: &mut [Transaction]) -> Resu
 }
 
 /// # Errors
-/// [`AppError::NotFound`] when no such transaction exists.
+/// [`AppError::NotFound`] when no such live transaction exists.
 pub fn get(conn: &Connection, id: i64) -> Result<Transaction> {
-    let sql = format!("SELECT {COLUMNS} FROM transactions t WHERE t.id = ?1");
+    let sql = format!("SELECT {COLUMNS} FROM live_transactions t WHERE t.id = ?1");
     let found = conn.query_row(&sql, [id], from_row).optional()?;
     let mut tx = found.ok_or(AppError::NotFound("transaction"))?;
     load_allocations(conn, std::slice::from_mut(&mut tx))?;
@@ -97,7 +97,7 @@ fn escape_like(text: &str) -> String {
 /// # Errors
 /// Database errors.
 pub fn list(conn: &Connection, filter: &TxFilter) -> Result<Vec<Transaction>> {
-    let mut sql = format!("SELECT {COLUMNS} FROM transactions t WHERE 1 = 1");
+    let mut sql = format!("SELECT {COLUMNS} FROM live_transactions t WHERE 1 = 1");
     let mut args: Vec<Value> = Vec::new();
     if let Some(month) = filter.month {
         let (start, end) = month.bounds();
@@ -224,7 +224,7 @@ pub fn save_with_allocations(conn: &Connection, id: Option<i64>, draft: &TxDraft
     let tx_id = if let Some(id) = id {
         tx.execute(
             "UPDATE transactions SET title = ?1, amount_cents = ?2, date = ?3, kind = ?4, category_id = ?5,
-                payer_id = ?6, description = ?7, split_mode = ?8, updated_at = ?9 WHERE id = ?10",
+                payer_id = ?6, description = ?7, split_mode = ?8, updated_at = ?9 WHERE id = ?10 AND deleted_at IS NULL",
             params![
                 title,
                 draft.amount.cents(),
@@ -280,13 +280,17 @@ pub fn update(conn: &Connection, id: i64, draft: &TxDraft) -> Result<()> {
     save_with_allocations(conn, Some(id), draft).map(|_| ())
 }
 
-/// Hard delete (1.0). Allocations cascade.
+/// Soft-delete a live transaction (`deleted_at` = now UTC RFC 3339, leaving `updated_at` alone).
 ///
 /// # Errors
-/// [`AppError::NotFound`] when no such transaction exists.
+/// [`AppError::NotFound`] when no such live transaction exists.
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
-    let removed = conn.execute("DELETE FROM transactions WHERE id = ?1", [id])?;
-    if removed == 0 {
+    let deleted_at = now_rfc3339();
+    let updated = conn.execute(
+        "UPDATE transactions SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![deleted_at, id],
+    )?;
+    if updated == 0 {
         return Err(AppError::NotFound("transaction"));
     }
     Ok(())
@@ -329,19 +333,57 @@ mod tests {
     }
 
     #[test]
-    fn delete_cascades_allocations() {
+    fn soft_delete_hides_transaction_and_keeps_allocations() {
         let db = Db::open_in_memory().unwrap();
         let (owner, _) = seed_people(db.conn());
         let id = create(db.conn(), &draft_with(vec![alloc(owner, 100)])).unwrap();
+        let updated_before: String = db
+            .conn()
+            .query_row(
+                "SELECT updated_at FROM transactions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
         delete(db.conn(), id).unwrap();
+        let (deleted_at, updated_after): (Option<String>, String) = db
+            .conn()
+            .query_row(
+                "SELECT deleted_at, updated_at FROM transactions WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(deleted_at.is_some());
+        assert_eq!(updated_after, updated_before);
         let n: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM allocations", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM allocations WHERE transaction_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(n, 0);
+        assert_eq!(n, 1, "allocations remain for restore");
         assert!(matches!(delete(db.conn(), id), Err(AppError::NotFound(_))));
         assert!(matches!(get(db.conn(), id), Err(AppError::NotFound(_))));
         assert_consistent(&db);
+    }
+
+    #[test]
+    fn update_and_delete_of_deleted_row_are_not_found() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let draft = draft_with(vec![alloc(owner, 100)]);
+        let id = create(db.conn(), &draft).unwrap();
+        delete(db.conn(), id).unwrap();
+        let mut edited = draft;
+        edited.title = "Edited".into();
+        assert!(matches!(
+            update(db.conn(), id, &edited),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(delete(db.conn(), id), Err(AppError::NotFound(_))));
     }
 
     #[test]

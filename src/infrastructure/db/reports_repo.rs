@@ -32,7 +32,7 @@ const SUMMARY_SELECT: &str = "SELECT
     COALESCE(SUM(CASE t.kind WHEN 'expense' THEN t.amount_cents END), 0),
     COALESCE(SUM(CASE t.kind WHEN 'refund' THEN t.amount_cents END), 0),
     COUNT(CASE WHEN t.kind <> 'settlement' THEN 1 END)
-    FROM transactions t";
+    FROM live_transactions t";
 
 /// # Errors
 /// Database errors.
@@ -77,7 +77,7 @@ pub fn summaries_for_year(
         COALESCE(SUM(CASE t.kind WHEN 'expense' THEN t.amount_cents END), 0),
         COALESCE(SUM(CASE t.kind WHEN 'refund' THEN t.amount_cents END), 0),
         COUNT(*)
-        FROM transactions t WHERE t.date >= ?1 AND t.date < ?2 AND t.kind <> 'settlement'
+        FROM live_transactions t WHERE t.date >= ?1 AND t.date < ?2 AND t.kind <> 'settlement'
         GROUP BY substr(t.date, 6, 2)";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(
@@ -113,7 +113,7 @@ pub fn summaries_for_year(
 pub fn category_totals(conn: &Connection, month: YearMonth) -> Result<Vec<CategoryTotal>> {
     let (start, end) = month.bounds();
     let sql = format!(
-        "SELECT t.category_id, SUM({SPEND_SIGN}) AS net FROM transactions t
+        "SELECT t.category_id, SUM({SPEND_SIGN}) AS net FROM live_transactions t
          WHERE t.date >= ?1 AND t.date < ?2 AND t.kind IN ('expense', 'refund')
          GROUP BY t.category_id ORDER BY net DESC, t.category_id"
     );
@@ -138,7 +138,7 @@ pub fn person_totals(conn: &Connection, month: YearMonth) -> Result<Vec<PersonTo
     let (start, end) = month.bounds();
     let sql = "SELECT a.person_id,
             SUM(CASE t.kind WHEN 'expense' THEN a.amount_cents WHEN 'refund' THEN -a.amount_cents END) AS net
-        FROM allocations a JOIN transactions t ON t.id = a.transaction_id
+        FROM allocations a JOIN live_transactions t ON t.id = a.transaction_id
         WHERE t.date >= ?1 AND t.date < ?2 AND t.kind IN ('expense', 'refund')
         GROUP BY a.person_id ORDER BY net DESC, a.person_id";
     let mut stmt = conn.prepare(sql)?;
@@ -160,7 +160,7 @@ pub fn person_totals(conn: &Connection, month: YearMonth) -> Result<Vec<PersonTo
 pub fn day_totals(conn: &Connection, month: YearMonth) -> Result<Vec<DayTotal>> {
     let (start, end) = month.bounds();
     let sql = format!(
-        "SELECT t.date, SUM({SPEND_SIGN}) FROM transactions t
+        "SELECT t.date, SUM({SPEND_SIGN}) FROM live_transactions t
          WHERE t.date >= ?1 AND t.date < ?2 AND t.kind IN ('expense', 'refund')
          GROUP BY t.date ORDER BY t.date"
     );

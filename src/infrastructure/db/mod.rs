@@ -8,6 +8,7 @@ pub mod people_repo;
 pub mod profile_repo;
 pub mod reports_repo;
 pub mod transactions_repo;
+pub mod trash_repo;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -464,15 +465,22 @@ mod tests {
     fn upgrade_v1_preserves_rows_allocations_and_ids() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("athena.db");
-        let expected_txs;
+        let mut expected_txs;
         {
             let v1 = Db::open_with(&path, &MIGRATIONS[..1]).unwrap();
             crate::shared::test_fixtures::seed_mixed(&v1);
-            expected_txs = transactions_repo::list(
-                v1.conn(),
-                &crate::domain::transaction::TxFilter::default(),
-            )
-            .unwrap();
+            // Schema v1 predates `live_transactions` (added in 0003), so read `transactions` directly.
+            let sql = format!(
+                "SELECT {} FROM transactions t ORDER BY t.date DESC, t.id DESC",
+                transactions_repo::COLUMNS
+            );
+            let mut stmt = v1.conn().prepare(&sql).unwrap();
+            expected_txs = stmt
+                .query_map([], transactions_repo::from_row)
+                .unwrap()
+                .map(std::result::Result::unwrap)
+                .collect::<Vec<_>>();
+            transactions_repo::load_allocations(v1.conn(), &mut expected_txs).unwrap();
         }
         let upgraded = Db::open(&path).unwrap();
         assert_eq!(version(upgraded.conn()), latest_version());

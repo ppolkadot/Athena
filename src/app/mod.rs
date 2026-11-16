@@ -20,7 +20,7 @@ use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
 use crate::shared::error::Result;
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
-use crate::ui::components::toast::{self, Toast};
+use crate::ui::components::toast::{self, Toast, ToastAction};
 use crate::ui::quick_add::{self, QuickAddState};
 use crate::ui::screens::ScreenEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
@@ -30,8 +30,8 @@ use self::actions::{ActionOutcome, AppAction};
 pub use self::files::run_export;
 use self::files::{now_rfc3339, open_folder, pick_export_path};
 pub use self::modals::{
-    ModalAfter, apply_confirmed, apply_settings_action, begin_edit, delete_confirmation,
-    handle_quick_add,
+    ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
+    delete_confirmation, handle_quick_add,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -319,6 +319,23 @@ impl AthenaApp {
             ctx.request_repaint();
         }
     }
+
+    fn raise_confirmed_toast(
+        &mut self,
+        ctx: &egui::Context,
+        toast: Option<(String, Option<ToastAction>)>,
+    ) {
+        if let Some((text, action)) = toast {
+            self.toast = Some(Toast::pending(text).with_action(action));
+            ctx.request_repaint();
+        }
+    }
+
+    fn apply_undo(&mut self, action: AppAction) {
+        if let Err(err) = self.core.apply(action) {
+            tracing::warn!("undo action failed: {err}");
+        }
+    }
 }
 
 impl eframe::App for AthenaApp {
@@ -366,6 +383,16 @@ impl AthenaApp {
                     self.core.set_screen(screen);
                 }
             }
+            let text_focused = ctx
+                .memory(egui::Memory::focused)
+                .is_some_and(|id| egui::text_edit::TextEditState::load(&ctx, id).is_some());
+            if !text_focused
+                && self.toast.as_ref().is_some_and(|t| t.action.is_some())
+                && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z))
+                && let Some(ToastAction::Undo(action)) = self.toast.take().and_then(|t| t.action)
+            {
+                self.apply_undo(action);
+            }
         }
         let output = shell::show(ui, &self.core.vm, &mut self.core.ui);
         if let Some(screen) = output.navigate {
@@ -396,14 +423,21 @@ impl AthenaApp {
             match confirm_dialog::show(&ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
             {
                 Some(ConfirmChoice::Confirmed(action)) => {
-                    let text = apply_confirmed(&mut self.core, action);
-                    self.raise_toast_text(&ctx, text);
+                    let toast = apply_confirmed_outcome(&mut self.core, action);
+                    self.raise_confirmed_toast(&ctx, toast);
                 }
                 Some(ConfirmChoice::Cancelled) => {}
                 None => self.confirm = Some(dialog),
             }
         }
-        toast::show(&ctx, &mut self.toast, self.core.vm.theme());
+        if let Some(undo_action) = toast::show(
+            &ctx,
+            &mut self.toast,
+            self.core.vm.theme(),
+            self.core.vm.language(),
+        ) {
+            self.apply_undo(undo_action);
+        }
     }
 }
 
@@ -1162,6 +1196,7 @@ mod tests {
         };
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1280.0, 900.0))
+            .with_step_dt(0.05)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {
                     ui.ctx()
@@ -1207,6 +1242,91 @@ mod tests {
         harness.key_press_modifiers(ctrl, Key::Num1);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Month);
+    }
+
+    #[test]
+    fn undo_toast_restores_and_clears() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        let mut draft = draft_with(vec![]);
+        draft.title = "Coffee".into();
+        core.create_transaction(draft).unwrap();
+
+        let app = AthenaApp {
+            core,
+            applied_theme: Theme::Dark,
+            onboarding: OnboardingState::new(Language::En),
+            quick_add: None,
+            confirm: None,
+            toast: None,
+            pinned_today: Some(crate::shared::test_fixtures::today()),
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 900.0))
+            .with_step_dt(0.05)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                app,
+            );
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.vm.transactions.len(), 1);
+
+        // Delete from register and confirm -> Undo toast appears.
+        harness.get_by_label("Delete Coffee").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete").click();
+        harness.run_steps(4);
+        assert!(harness.state().core.vm.transactions.is_empty());
+        assert_eq!(harness.state().core.vm.trash_count, 1);
+        assert!(harness.query_by_label("Undo").is_some());
+
+        // Click Undo on the toast -> row returns and toast is gone.
+        harness.get_by_label("Undo").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.transactions.len(), 1);
+        assert_eq!(harness.state().core.vm.transactions[0].title, "Coffee");
+        assert_eq!(harness.state().core.vm.trash_count, 0);
+        assert!(harness.state().toast.is_none());
+
+        // Delete again -> Ctrl+Z is blocked while a TextEdit has focus, and works otherwise.
+        harness.get_by_label("Delete Coffee").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete").click();
+        harness.run_steps(4);
+        assert!(harness.state().core.vm.transactions.is_empty());
+
+        harness
+            .get_all_by_role(egui::Role::TextInput)
+            .next()
+            .unwrap()
+            .focus();
+        harness.run_steps(2);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run_steps(3);
+        assert!(
+            harness.state().core.vm.transactions.is_empty(),
+            "Ctrl+Z does not steal focus from a text box"
+        );
+        assert!(harness.state().toast.is_some());
+
+        harness.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        harness.run_steps(2);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.transactions.len(), 1);
+        assert!(harness.state().toast.is_none());
     }
 
     #[test]

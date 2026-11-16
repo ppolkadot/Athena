@@ -3,6 +3,7 @@
 use crate::i18n::{ToastKey, strings};
 use crate::shared::error::Result;
 use crate::ui::components::confirm_dialog::ConfirmDialog;
+use crate::ui::components::toast::ToastAction;
 use crate::ui::quick_add::{QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
 use crate::ui::screens::settings::SettingsError;
 
@@ -80,9 +81,13 @@ pub fn delete_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
     })
 }
 
-/// Apply an action the user confirmed. Returns the toast text, which names a deleted entry.
-/// A failure is logged and shows nothing.
-pub fn apply_confirmed(core: &mut AppCore, action: AppAction) -> Option<String> {
+/// Apply an action the user confirmed, returning its toast text and an optional undo action
+/// (offered for `DeleteTransaction` only). A failure is logged and shows nothing.
+pub fn apply_confirmed_outcome(
+    core: &mut AppCore,
+    action: AppAction,
+) -> Option<(String, Option<ToastAction>)> {
+    let is_delete = matches!(action, AppAction::DeleteTransaction(_));
     let deleted_title = match &action {
         AppAction::DeleteTransaction(id) => core.store.transaction(*id).ok().map(|tx| tx.title),
         _ => None,
@@ -90,20 +95,31 @@ pub fn apply_confirmed(core: &mut AppCore, action: AppAction) -> Option<String> 
     match core.apply(action) {
         Ok(outcome) => {
             let language = core.vm.language();
-            match deleted_title {
+            let text = match deleted_title {
                 Some(title) => Some(
                     strings(language)
                         .toast_deleted_named
                         .replace("{title}", &title),
                 ),
                 None => outcome.toast.map(|key| key.text(language).to_string()),
-            }
+            }?;
+            let toast_action = is_delete
+                .then_some(outcome.inverse)
+                .flatten()
+                .map(ToastAction::Undo);
+            Some((text, toast_action))
         }
         Err(err) => {
             tracing::warn!("confirmed action failed: {err}");
             None
         }
     }
+}
+
+/// Apply an action the user confirmed. Returns the toast text, which names a deleted entry.
+/// A failure is logged and shows nothing.
+pub fn apply_confirmed(core: &mut AppCore, action: AppAction) -> Option<String> {
+    apply_confirmed_outcome(core, action).map(|(text, _)| text)
 }
 
 /// Apply an action raised on the settings screen. Success drops the screen's unsaved edits so it
