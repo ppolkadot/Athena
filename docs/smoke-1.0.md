@@ -93,6 +93,8 @@ Checks against these final hashes:
 - [ ] Real `200%` Windows DPI scaling window check on `98294141062842FB75D1844B1614D28658F67ED1CEA97A40282D6D8B4467D218`: not run in a live scaled desktop session (automated `640x410` logical scale layout test passed).
 - [ ] Clean Windows machine check (no Rust installed): no separate clean machine available in this session; remains untested.
 
+**Disposition (2026-11-16):** `1.0.2` changes are merged on `main`, and the final `1.0.2` artifact hashes above passed automated and packaging checks. By explicit user approval, the `v1.0.2` git tag and the remaining unchecked manual `1.0.2` smoke items above were waived and superseded by the `1.1.0` release verification (`smoke-1.1.md`).
+
 ## First run and persistence
 - [x] First run onboarding: skip partner, valid balance, finish. The "Welcome" toast appears.
   (Entered a partner and a negative balance instead of skipping; the Skip path is covered by tests.)

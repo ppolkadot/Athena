@@ -1,0 +1,21 @@
+use athena::{app::{store::Store, ui_state::UiState}, domain::{date::YearMonth, transaction::SettlementIssue}, infrastructure::{config::AppDirs, db::{Db, backup, trash_repo}}};
+#[test]
+fn corrupt_existing_snapshot_still_allows_purge() {
+ let root = tempfile::tempdir().unwrap();
+ let dirs = AppDirs::from_root(root.path().to_path_buf()); dirs.ensure().unwrap();
+ let db = Db::open_in_memory().unwrap();
+ db.conn().execute_batch("INSERT INTO transactions(title,amount_cents,date,kind,created_at,updated_at,deleted_at) VALUES('lost',100,'2026-09-01','expense','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z');").unwrap();
+ let day = chrono::NaiveDate::from_ymd_opt(2026,11,16).unwrap();
+ let path = dirs.backups_dir.join("auto-2026-11-16.db"); std::fs::write(&path,b"corrupt").unwrap();
+ assert!(backup::integrity_ok(&path).is_err());
+ let store=Store::new(db,dirs);
+ assert_eq!(trash_repo::count(store.db().conn()).unwrap(),1);
+ store.run_startup_tasks(day,day.and_hms_opt(12,0,0).unwrap().and_utc());
+ assert_eq!(trash_repo::count(store.db().conn()).unwrap(),0, "BUG reproduced: purged despite unusable backup");
+}
+#[test]
+fn repair_unassigned_preserves_impossible_shared_filter() {
+ let month=YearMonth::new(2026,11).unwrap(); let mut ui=UiState::new(month);
+ ui.filter_shared(); ui.set_repair_filter(SettlementIssue::Unassigned,month.last_day());
+ assert!(ui.filter.shared_only, "BUG reproduced: requires >=2 allocations and zero allocations simultaneously");
+}

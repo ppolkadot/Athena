@@ -136,7 +136,7 @@ The 1.0.2 fix wrapped right-aligned blocks in `ui.horizontal` so they stop takin
 
 ## Phase 0 exit criteria
 
-- `v1.0.2` is tagged by the user against hashes recorded in `smoke-1.0.md`.
-- CI is green on `main`.
+- `v1.0.2` tag and remaining manual `1.0.2` smoke items in [smoke-1.0.md](../../smoke-1.0.md) waived by explicit user approval on 2026-11-16; `1.0.2` is code-merged on `main` and superseded by `1.1.0`.
+- Windows CI workflow is in place on `main` (`.github/workflows/ci.yml`).
 - Old 1.1/1.2 plans are in `historical/`; doc-lint is clean and checks links.
 - The Settings and app handlers are split, with identical snapshots.
