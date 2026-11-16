@@ -12,6 +12,7 @@ Capture the repository review as one brief per version, including correctness fi
 - [1.0.2: contrast and foundation follow-up](2026-11-13-athena-1.0.2-revision-brief.md)
 - [1.1.0: reliable daily workflows and Apple/Onyx design](2026-11-13-athena-1.1.0-revision-brief.md)
 - [1.2.0: goals and trustworthy closing snapshots](2026-11-13-athena-1.2.0-revision-brief.md)
+- [2026-11-16 readiness and native appearance review](2026-11-16-athena-readiness-and-appearance-review.md)
 
 The original [1.0.0 plan](../plans/2026-11-11-athena-1.0.0.md) remains historical baseline documentation. The existing 1.0.1, 1.1.0, and 1.2.0 implementation plans link to these briefs and distinguish shipped history from required revisions. Older task snippets still need reconciliation; a reference to this brief alone does not make them executable.
 
@@ -48,7 +49,15 @@ Current source is evidence of implementation, not proof that every release check
 
 **User choice:** put remaining contrast and foundation corrections in 1.0.2, preserving the published 1.0.1 tag. Base 1.1 on the completed 1.0.2 foundation. The separate 1.0.2 brief carries that work rather than rewriting shipped history.
 
-No product questions remain open from this review. Exact material rendering, icon assets, and visual compositions still require normal implementation-time design validation; this is not approval of an unseen mockup or a measured performance claim.
+### D6 — Wallpaper scope (confirmed during the later appearance review)
+
+**User choice:** GIF backgrounds apply across all main screens, rather than only Month. Share one shell-level wallpaper runtime across Month, Calendar, Settings, Trash, and later Goals. Preserve readable financial surfaces, offline behavior, and accessible motion/transparency fallbacks. Detailed budgets and storage controls are recommendations in the linked review, not previously approved visual compositions.
+
+### D7 — Native implementation constraint
+
+**User instruction:** use the pasted WebGL/CSS as an effect reference while retaining Rust as the main language. Do not migrate Athena to Tauri or Electron. A native egui/wgpu implementation is the proposed technical route; no visual parity or performance result has yet been demonstrated.
+
+No product questions remain open from the original D1–D5 review. The later appearance review records D6–D7 and recommends customization defaults, media storage behavior, and engineering budgets for the next planning pass. Exact material rendering, icon assets, and visual compositions still require normal implementation-time design validation; this is not approval of an unseen mockup or a measured performance claim.
 
 ## Technical corrections that do not require a product choice
 

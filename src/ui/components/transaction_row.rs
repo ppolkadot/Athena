@@ -263,15 +263,20 @@ fn draw_narrow_header(
             layout.amount_color,
             layout.p.muted,
         );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            draw_row_actions(ui, layout.s, tx, layout.p, action);
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                draw_row_actions(ui, layout.s, tx, layout.p, action);
+            });
         });
     }
 
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.scope(|ui| {
-            ui.set_max_width(row_w);
-            draw_row_amount(ui, &layout.amount_str, layout.amount_color);
+    // Bound the cross-axis before centering, rather than consuming the scroll area's height.
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.scope(|ui| {
+                ui.set_max_width(row_w);
+                draw_row_amount(ui, &layout.amount_str, layout.amount_color);
+            });
         });
     });
 }
@@ -321,8 +326,10 @@ fn draw_narrow_details(
             layout.p.muted,
         );
     });
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        person_pill::show_bounded(ui, theme, &layout.people_str, row_w);
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            person_pill::show_bounded(ui, theme, &layout.people_str, row_w);
+        });
     });
 }
 
@@ -509,6 +516,92 @@ mod tests {
             amount: Money::ZERO,
         });
         assert_eq!(people_label(&tx, &vm), "Ana · A3");
+    }
+
+    #[test]
+    fn narrow_fallback_rows_stay_compact_in_a_scrolling_register() {
+        use crate::domain::category::Category;
+        use egui_kittest::kittest::Queryable;
+
+        for language in [Language::En, Language::PtBr] {
+            for (width, cents, long_names) in [
+                (372.0, 123_456_789, true),
+                (372.0, i64::MAX, false),
+                (140.0, 123_456_789, true),
+            ] {
+                let mut vm = ViewModel::new(language);
+                vm.all_people = vec![
+                    person(
+                        1,
+                        if long_names {
+                            "Alexandre Fernandes de Albuquerque"
+                        } else {
+                            "A3"
+                        },
+                        PersonKind::Owner,
+                    ),
+                    person(
+                        2,
+                        if long_names {
+                            "Maria Aparecida de Albuquerque"
+                        } else {
+                            "Ana"
+                        },
+                        PersonKind::Partner,
+                    ),
+                ];
+                vm.all_categories = vec![Category {
+                    id: 1,
+                    name: "Compras".into(),
+                    ..Category::default()
+                }];
+                let mut tx = tx_on(2026, 11, 14);
+                tx.title = "Compra parcelada com descrição longa".into();
+                tx.category_id = Some(1);
+                tx.amount = Money::from_cents(cents);
+                tx.allocations = vec![
+                    Allocation {
+                        person_id: 1,
+                        amount: Money::from_cents(cents / 2),
+                    },
+                    Allocation {
+                        person_id: 2,
+                        amount: Money::from_cents(cents - cents / 2),
+                    },
+                ];
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(Vec2::new(width + 16.0, 260.0))
+                    .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+                    .build_ui_state(
+                        |ui, row_rect: &mut egui::Rect| {
+                            ui.ctx()
+                                .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                            crate::ui::theme::apply(ui.ctx(), vm.theme());
+                            ui.set_style(ui.ctx().global_style());
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    *row_rect = ui.scope(|ui| show(ui, &vm, &tx)).response.rect;
+                                    ui.label("Following transaction");
+                                });
+                        },
+                        egui::Rect::NOTHING,
+                    );
+                harness.run_steps(3);
+
+                let row = *harness.state();
+                assert!(
+                    row.height() <= 220.0,
+                    "{language:?} {width}px {cents} cents: row consumed viewport: {row:?}"
+                );
+                let following = harness.get_by_label("Following transaction").rect();
+                assert!(following.top() >= row.bottom());
+                assert!(
+                    following.bottom() <= 252.0,
+                    "{language:?} {width}px: following row is offscreen: {following:?}"
+                );
+            }
+        }
     }
 
     #[test]

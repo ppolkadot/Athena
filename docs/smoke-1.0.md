@@ -56,20 +56,22 @@ Current release artifact SHA-256 (rebuilt after Semibold/Bold font update and ca
 - `Athena-1.0.1-setup.exe`: `3561C6B478DF022249C46602044D08AD45C6F4BB8B10F9976E9EF2D3C310AB25`
 
 ## 1.0.2 verification notes (2026-11-14)
-- Automated suite on `1.0.2`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` (264 unit tests + 1 `design_assets` test + 5 `fonts` tests), `cargo build --release --locked`, `docs/superpowers/doc-lint.sh`, and Inno Setup 6.7.3 compilation of `installer/athena.iss` all passed after final edits.
+- Automated suite on `1.0.2`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` (265 unit tests + 1 `design_assets` test + 5 `fonts` tests), `cargo build --release --locked`, `docs/superpowers/doc-lint.sh`, and Inno Setup 6.7.3 compilation of `installer/athena.iss` all passed after the fallback-height fix.
 - Contrast & selection verification: automated WCAG AA >= 4.5:1 checks passed across `bg`, `panel`, `card`, and `card_hover` in both Dark and Light themes (`#3F55C6` accent, `#147D52` positive, `#B83247` negative, `#7A5B00` warning; selection fill alpha `36`), and all 10 regenerated PNGs in `src/ui/snapshots/` were visually inspected.
 - Font asset normalization: `tools/fonts/build.py` now sets `OS/2.usWeightClass = 700` on `AthenaPolaris-Bold.otf` (keeping distinct Bold glyph outlines and `macStyle = 1`), verified in `tests/fonts.rs` (`Weight::Normal/Medium/SemiBold/Bold`, `TABULAR` derived from `Semibold`).
 - Adaptive layout checks: tested `month`, `transaction_row`, and `quick_add` layouts headlessly at `1100x760`, minimum window (`760x560`), `200%`-scale logical viewport (`640x410` / `372 px` row), and `280 px` ultra-narrow row in English and Portuguese with long titles/categories, multi-person long names, and `i64::MAX` cents (`−R$ 92.233.720.368.547.758,07`).
+- Scrolling-register regression: reproduced fallback rows consuming the viewport height, then bounded all three standalone right-aligned fallbacks with horizontal rows. The regression test verifies compact height and a visible following row at `372 px` (long names and maximum amounts) and `140 px` in both languages. Independent headless probes confirmed row heights of `136 px`, `136 px`, and `212 px`, respectively.
 - Packaging and same-machine launch checks:
   - [x] `target\release\athena.exe` FileVersion and ProductVersion are both `1.0.2`.
-  - [x] `Athena-1.0.2-setup.exe` silently installed to an isolated temp directory, placed byte-identical `athena.exe` and `licenses\Salted-Flutters-Polaris\LICENSE.txt`, launched cleanly, and silently uninstalled (`exit 0`, directory removed).
-  - [x] Isolated portable release launch (`athena.portable`) created `data\athena.db`, `data\backups\auto-2026-11-14.db`, and `data\logs\athena.log.2026-11-14` logging `athena 1.0.2 starting` with no errors or panics.
+  - [x] Before the fallback-height fix: `Athena-1.0.2-setup.exe` silently installed to an isolated temp directory, placed byte-identical `athena.exe` and `licenses\Salted-Flutters-Polaris\LICENSE.txt`, launched cleanly, and silently uninstalled (`exit 0`, directory removed).
+  - [x] Before the fallback-height fix: isolated portable release launch (`athena.portable`) created `data\athena.db`, `data\backups\auto-2026-11-14.db`, and `data\logs\athena.log.2026-11-14` logging `athena 1.0.2 starting` with no errors or panics.
+  - [ ] Installer and portable launch checks have not been repeated for the rebuilt artifacts below.
   - [ ] Live interactive multi-screen UI walk-through, real `200%` Windows DPI scaling window check, and clean Windows machine testing remain untested for `1.0.2`.
 
-1.0.2 release artifact SHA-256:
+1.0.2 release artifact SHA-256 after the fallback-height fix:
 
-- `athena.exe` (17,915,392 bytes): `F534930E5BA585FBCC814BED67DEEFC3DE154DBBAB81E13CBD93BE18E9010E57`
-- `Athena-1.0.2-setup.exe` (7,497,155 bytes): `6AA2C92BAB0CD1658264CD6E7FCB9AECC655B58E4DF21ACF22F02D951EF20B19`
+- `athena.exe` (17,915,904 bytes): `9D870D1092CD7BE288C499316D23949F00A11BDEA3FA576C43A34E3EE995BEDD`
+- `Athena-1.0.2-setup.exe` (7,499,213 bytes): `EF7D70D031CADC6A7336D744D00BF5208DB8DD47B05C004B2AC86FE1EE354A9F`
 - `assets/fonts/LICENSE.txt`: `931886D07182110715CCEE3504A076B59929503E4EBACADBE0DA789184850A61`
 
 ## First run and persistence
