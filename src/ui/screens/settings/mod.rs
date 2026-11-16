@@ -1,26 +1,36 @@
 //! Settings: profile, people, categories, data location and version. Edits become `AppAction`s
 //! for the app to apply; language and theme changes take effect immediately.
 
+mod categories;
+mod data;
+mod general;
+mod people;
+
 use std::collections::HashMap;
 
-use eframe::egui::{
-    self, Align, Button, ComboBox, CornerRadius, Frame, Margin, RichText, Sense, Stroke, TextEdit,
-    Vec2,
-};
+use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Stroke, TextEdit, Vec2};
 
 use crate::app::actions::AppAction;
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
 use crate::domain::category::{Category, CategoryScope, DEFAULT_CATEGORY_COLOR};
-use crate::domain::export::ExportScope;
 use crate::domain::money::MoneyError;
 use crate::domain::person::{Person, PersonKind};
-use crate::domain::settings::{Language, Profile, Theme};
-use crate::i18n::month_label;
+use crate::domain::settings::{Language, Profile};
 use crate::i18n::{money_error_message, strings};
-use crate::ui::components::money_input;
-use crate::ui::screens::{ExportRequest, ScreenEvent};
+use crate::ui::screens::ScreenEvent;
 use crate::ui::theme::{Palette, palette, parse_hex, typography};
+
+/// Sub-pages for Settings. The page selector arrives in 1.1; until then `show` renders all
+/// cards in one scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsPage {
+    #[default]
+    General,
+    People,
+    Categories,
+    Data,
+}
 
 /// Why a settings form cannot be saved. Rendered through i18n so it follows the language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,7 +260,12 @@ impl SettingsState {
     }
 }
 
-fn card(ui: &mut egui::Ui, p: &Palette, title: &str, content: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn card(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    title: &str,
+    content: impl FnOnce(&mut egui::Ui),
+) {
     Frame::new()
         .fill(p.card)
         .stroke(Stroke::new(1.0, p.border))
@@ -269,7 +284,7 @@ fn card(ui: &mut egui::Ui, p: &Palette, title: &str, content: impl FnOnce(&mut e
     ui.add_space(12.0);
 }
 
-fn labeled_edit(ui: &mut egui::Ui, label: &str, value: &mut String) -> egui::Response {
+pub(super) fn labeled_edit(ui: &mut egui::Ui, label: &str, value: &mut String) -> egui::Response {
     let caption = ui.label(RichText::new(label).text_style(egui::TextStyle::Small));
     let response = ui.add(
         TextEdit::singleline(value)
@@ -277,398 +292,6 @@ fn labeled_edit(ui: &mut egui::Ui, label: &str, value: &mut String) -> egui::Res
             .margin(Vec2::new(12.0, 10.0)),
     );
     response.labelled_by(caption.id)
-}
-
-fn kind_label(kind: PersonKind, language: Language) -> &'static str {
-    let s = strings(language);
-    match kind {
-        PersonKind::Owner => s.person_owner,
-        PersonKind::Partner => s.onb_summary_partner,
-        PersonKind::Other => s.person_other,
-    }
-}
-
-fn scope_label(scope: CategoryScope, language: Language) -> &'static str {
-    let s = strings(language);
-    match scope {
-        CategoryScope::Expense => s.expenses,
-        CategoryScope::Income => s.income_total,
-        CategoryScope::Both => s.scope_both,
-    }
-}
-
-fn scope_combo(
-    ui: &mut egui::Ui,
-    salt: &str,
-    language: Language,
-    scope: &mut CategoryScope,
-    name: &str,
-) {
-    let combo = ComboBox::from_id_salt(salt)
-        .selected_text(scope_label(*scope, language))
-        .width(130.0)
-        .show_ui(ui, |ui| {
-            for option in [
-                CategoryScope::Expense,
-                CategoryScope::Income,
-                CategoryScope::Both,
-            ] {
-                ui.selectable_value(scope, option, scope_label(option, language));
-            }
-        });
-    combo
-        .response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, name));
-}
-
-fn swatch(ui: &mut egui::Ui, color: &str, fallback: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), 7.0, parse_hex(color).unwrap_or(fallback));
-}
-
-fn profile_card(
-    ui: &mut egui::Ui,
-    vm: &ViewModel,
-    ui_state: &mut UiState,
-    events: &mut Vec<ScreenEvent>,
-) {
-    let s = strings(vm.language());
-    let p = palette(vm.theme());
-    let settings = &mut ui_state.settings;
-    card(ui, &p, s.settings_profile, |ui| {
-        labeled_edit(ui, s.onb_your_name, &mut settings.owner_name);
-        ui.add_space(4.0);
-        labeled_edit(ui, s.onb_partner_name, &mut settings.partner_name);
-        ui.add_space(4.0);
-        money_input::show(
-            ui,
-            vm.theme(),
-            vm.language(),
-            s.onb_balance_title,
-            &mut settings.balance_input,
-            false,
-        );
-        ui.add_space(4.0);
-        if ui
-            .add_sized(
-                [120.0, 36.0],
-                Button::new(RichText::new(s.save).color(p.bg).strong()).fill(p.accent),
-            )
-            .clicked()
-        {
-            match settings.profile_actions(vm) {
-                Ok(actions) => {
-                    settings.error = None;
-                    events.extend(actions.into_iter().map(ScreenEvent::Apply));
-                }
-                Err(e) => settings.error = Some(e),
-            }
-        }
-        if let Some(error) = settings.error {
-            ui.label(RichText::new(error_message(error, vm.language())).color(p.negative));
-        }
-        ui.add_space(12.0);
-
-        let Some(profile) = vm.profile.as_ref() else {
-            return;
-        };
-        ui.label(
-            RichText::new(s.theme)
-                .text_style(egui::TextStyle::Small)
-                .color(p.muted),
-        );
-        ui.horizontal(|ui| {
-            for (theme, label) in [(Theme::Dark, s.dark), (Theme::Light, s.light)] {
-                if ui.selectable_label(profile.theme == theme, label).clicked()
-                    && profile.theme != theme
-                {
-                    events.push(ScreenEvent::Apply(AppAction::SaveProfile(Profile {
-                        theme,
-                        ..profile.clone()
-                    })));
-                }
-            }
-        });
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(s.language)
-                .text_style(egui::TextStyle::Small)
-                .color(p.muted),
-        );
-        ui.horizontal(|ui| {
-            for (language, label) in [(Language::En, s.english), (Language::PtBr, s.portuguese)] {
-                if ui
-                    .selectable_label(profile.language == language, label)
-                    .clicked()
-                    && profile.language != language
-                {
-                    events.push(ScreenEvent::Apply(AppAction::SaveProfile(Profile {
-                        language,
-                        ..profile.clone()
-                    })));
-                }
-            }
-        });
-    });
-}
-
-#[allow(clippy::too_many_lines)] // one card of plain layout code
-fn people_card(
-    ui: &mut egui::Ui,
-    vm: &ViewModel,
-    ui_state: &mut UiState,
-    events: &mut Vec<ScreenEvent>,
-) {
-    let s = strings(vm.language());
-    let p = palette(vm.theme());
-    let settings = &mut ui_state.settings;
-    card(ui, &p, s.settings_people, |ui| {
-        for person in &vm.all_people {
-            let mut draft = settings
-                .person_drafts
-                .get(&person.id)
-                .cloned()
-                .unwrap_or_else(|| person.name.clone());
-            let (mut ask_archive, mut save) = (false, false);
-            ui.horizontal(|ui| {
-                let edit = ui.add(
-                    TextEdit::singleline(&mut draft)
-                        .desired_width(220.0)
-                        .margin(Vec2::new(12.0, 10.0)),
-                );
-                edit.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, &person.name)
-                });
-                ui.label(
-                    RichText::new(kind_label(person.kind, vm.language()))
-                        .text_style(egui::TextStyle::Small)
-                        .color(p.muted),
-                );
-                if person.archived {
-                    ui.label(
-                        RichText::new(s.archived_tag)
-                            .text_style(egui::TextStyle::Small)
-                            .color(p.warning),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if !person.archived
-                        && person.kind != PersonKind::Owner
-                        && ui
-                            .add(
-                                Button::new(RichText::new(s.archive).color(p.negative))
-                                    .frame(false),
-                            )
-                            .clicked()
-                    {
-                        ask_archive = true;
-                    }
-                    if draft.trim() != person.name
-                        && ui
-                            .add(Button::new(RichText::new(s.save).color(p.accent)).frame(false))
-                            .clicked()
-                    {
-                        save = true;
-                    }
-                });
-            });
-            settings.person_drafts.insert(person.id, draft);
-            if ask_archive {
-                settings.confirm_archive_person = Some(person.id);
-            }
-            if save {
-                match settings.person_rename_action(vm, person.id) {
-                    Ok(Some(action)) => events.push(ScreenEvent::Apply(action)),
-                    Ok(None) => {}
-                    Err(e) => settings.error = Some(e),
-                }
-            }
-            if settings.confirm_archive_person == Some(person.id) {
-                ui.label(
-                    RichText::new(s.archive_person_body.replace("{name}", &person.name))
-                        .color(p.muted),
-                );
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            Button::new(RichText::new(s.archive).color(p.bg).strong())
-                                .fill(p.negative),
-                        )
-                        .clicked()
-                    {
-                        events.push(ScreenEvent::Apply(AppAction::ArchivePerson(person.id)));
-                    }
-                    if ui.button(s.cancel).clicked() {
-                        settings.confirm_archive_person = None;
-                    }
-                });
-            }
-        }
-        ui.add_space(8.0);
-        let caption = ui.label(RichText::new(s.people_add).text_style(egui::TextStyle::Small));
-        ui.horizontal(|ui| {
-            let field = ui.add(
-                TextEdit::singleline(&mut settings.new_person)
-                    .desired_width(220.0)
-                    .margin(Vec2::new(12.0, 10.0)),
-            );
-            field.labelled_by(caption.id);
-            if ui.button(s.add).clicked() {
-                match settings.add_person_action() {
-                    Ok(action) => events.push(ScreenEvent::Apply(action)),
-                    Err(e) => settings.error = Some(e),
-                }
-            }
-        });
-    });
-}
-
-#[allow(clippy::too_many_lines)] // one card of plain layout code
-fn categories_card(
-    ui: &mut egui::Ui,
-    vm: &ViewModel,
-    ui_state: &mut UiState,
-    events: &mut Vec<ScreenEvent>,
-) {
-    let s = strings(vm.language());
-    let p = palette(vm.theme());
-    let settings = &mut ui_state.settings;
-    card(ui, &p, s.settings_categories, |ui| {
-        for category in &vm.all_categories {
-            let mut draft = settings
-                .category_drafts
-                .get(&category.id)
-                .cloned()
-                .unwrap_or_else(|| CategoryDraft {
-                    name: category.name.clone(),
-                    color: category.color.clone(),
-                    scope: category.applies_to,
-                });
-            let (mut ask_archive, mut save) = (false, false);
-            ui.horizontal(|ui| {
-                swatch(ui, &draft.color, p.muted);
-                let name = ui.add(
-                    TextEdit::singleline(&mut draft.name)
-                        .desired_width(180.0)
-                        .margin(Vec2::new(12.0, 10.0)),
-                );
-                name.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, &category.name)
-                });
-                scope_combo(
-                    ui,
-                    &format!("category-scope-{}", category.id),
-                    vm.language(),
-                    &mut draft.scope,
-                    &category.name,
-                );
-                let color = ui.add(
-                    TextEdit::singleline(&mut draft.color)
-                        .desired_width(90.0)
-                        .font(typography::money_font())
-                        .margin(Vec2::new(8.0, 10.0)),
-                );
-                color.widget_info(|| {
-                    let name = format!("{} {}", s.color_label, category.name);
-                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, &name)
-                });
-                if category.archived {
-                    ui.label(
-                        RichText::new(s.archived_tag)
-                            .text_style(egui::TextStyle::Small)
-                            .color(p.warning),
-                    );
-                }
-                let changed = draft.name.trim() != category.name
-                    || draft.color.trim().to_uppercase() != category.color.to_uppercase()
-                    || draft.scope != category.applies_to;
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if !category.archived
-                        && ui
-                            .add(
-                                Button::new(RichText::new(s.archive).color(p.negative))
-                                    .frame(false),
-                            )
-                            .clicked()
-                    {
-                        ask_archive = true;
-                    }
-                    if changed
-                        && ui
-                            .add(Button::new(RichText::new(s.save).color(p.accent)).frame(false))
-                            .clicked()
-                    {
-                        save = true;
-                    }
-                });
-            });
-            settings.category_drafts.insert(category.id, draft);
-            if ask_archive {
-                settings.confirm_archive_category = Some(category.id);
-            }
-            if save {
-                match settings.category_save_action(vm, category.id) {
-                    Ok(Some(action)) => events.push(ScreenEvent::Apply(action)),
-                    Ok(None) => {}
-                    Err(e) => settings.error = Some(e),
-                }
-            }
-            if settings.confirm_archive_category == Some(category.id) {
-                ui.label(
-                    RichText::new(s.archive_category_body.replace("{name}", &category.name))
-                        .color(p.muted),
-                );
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            Button::new(RichText::new(s.archive).color(p.bg).strong())
-                                .fill(p.negative),
-                        )
-                        .clicked()
-                    {
-                        events.push(ScreenEvent::Apply(AppAction::ArchiveCategory(category.id)));
-                    }
-                    if ui.button(s.cancel).clicked() {
-                        settings.confirm_archive_category = None;
-                    }
-                });
-            }
-        }
-        ui.add_space(8.0);
-        let caption = ui.label(RichText::new(s.categories_add).text_style(egui::TextStyle::Small));
-        ui.horizontal(|ui| {
-            swatch(ui, &settings.category_color, p.muted);
-            let field = ui.add(
-                TextEdit::singleline(&mut settings.new_category)
-                    .desired_width(180.0)
-                    .margin(Vec2::new(12.0, 10.0)),
-            );
-            field.labelled_by(caption.id);
-            scope_combo(
-                ui,
-                "new-category-scope",
-                vm.language(),
-                &mut settings.category_scope,
-                s.categories_add,
-            );
-            let color = ui.add(
-                TextEdit::singleline(&mut settings.category_color)
-                    .desired_width(90.0)
-                    .font(typography::money_font())
-                    .margin(Vec2::new(8.0, 10.0)),
-            );
-            color.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::TextInput, true, s.color_label)
-            });
-            if ui.button(s.add).clicked() {
-                match settings.add_category_action() {
-                    Ok(action) => events.push(ScreenEvent::Apply(action)),
-                    Err(e) => settings.error = Some(e),
-                }
-            }
-        });
-    });
 }
 
 /// Draw the settings screen. Returns what the app should apply or do.
@@ -686,9 +309,9 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
     );
     ui.add_space(12.0);
 
-    profile_card(ui, vm, ui_state, &mut events);
-    people_card(ui, vm, ui_state, &mut events);
-    categories_card(ui, vm, ui_state, &mut events);
+    general::profile_card(ui, vm, ui_state, &mut events);
+    people::people_card(ui, vm, ui_state, &mut events);
+    categories::categories_card(ui, vm, ui_state, &mut events);
     let shown = ui_state
         .settings
         .error
@@ -698,47 +321,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
         ui.add_space(8.0);
     }
 
-    card(ui, &p, s.settings_data, |ui| {
-        ui.label(
-            RichText::new(s.data_path)
-                .text_style(egui::TextStyle::Small)
-                .color(p.muted),
-        );
-        ui.label(RichText::new(&vm.data_path).font(typography::money_font()));
-        ui.add_space(8.0);
-        if ui.button(s.open_data_folder).clicked() {
-            events.push(ScreenEvent::OpenDataFolder);
-        }
-        ui.add_space(12.0);
-        ui.label(
-            RichText::new(s.export_hint)
-                .text_style(egui::TextStyle::Small)
-                .color(p.muted),
-        );
-        let month_text = s
-            .export_csv_month
-            .replace("{month}", &month_label(ui_state.month, vm.language()));
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(s.export_json).clicked() {
-                events.push(ScreenEvent::Export(ExportRequest::Json));
-            }
-            if ui.button(&month_text).clicked() {
-                events.push(ScreenEvent::Export(ExportRequest::Csv(ExportScope::Month(
-                    ui_state.month,
-                ))));
-            }
-            if ui.button(s.export_csv_all).clicked() {
-                events.push(ScreenEvent::Export(ExportRequest::Csv(ExportScope::All)));
-            }
-        });
-    });
-    card(ui, &p, s.settings_about, |ui| {
-        ui.label(format!(
-            "Athena · {} {}",
-            s.version,
-            env!("CARGO_PKG_VERSION")
-        ));
-    });
+    data::data_and_about_cards(ui, vm, ui_state, &mut events);
     events
 }
 
@@ -760,8 +343,11 @@ mod tests {
     use super::*;
     use crate::app::AppCore;
     use crate::application::services::onboarding::OnboardingResult;
+    use crate::domain::export::ExportScope;
     use crate::domain::money::Money;
+    use crate::domain::settings::Theme;
     use crate::infrastructure::db::Db;
+    use crate::ui::screens::ExportRequest;
 
     fn core(partner: Option<&str>) -> AppCore {
         let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());

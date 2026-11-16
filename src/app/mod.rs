@@ -1,5 +1,7 @@
 pub mod actions;
+pub mod files;
 pub mod instance;
+pub mod modals;
 pub mod navigation;
 pub mod store;
 pub mod ui_state;
@@ -7,27 +9,30 @@ pub mod view_model;
 
 use eframe::egui::{self, Key, Modifiers};
 
-use crate::application::services::export;
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
-use crate::domain::export::{default_export_name, default_json_name};
 use crate::domain::person::Person;
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::TxDraft;
-use crate::i18n::{PluralKey, ToastKey, plural, strings};
+use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
 use crate::shared::error::Result;
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
 use crate::ui::components::toast::{self, Toast};
-use crate::ui::quick_add::{self, QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
+use crate::ui::quick_add::{self, QuickAddState};
+use crate::ui::screens::ScreenEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
-use crate::ui::screens::settings::{self, SettingsError};
-use crate::ui::screens::{ExportRequest, ScreenEvent};
 use crate::ui::{shell, theme};
 
 use self::actions::{ActionOutcome, AppAction};
+pub use self::files::run_export;
+use self::files::{now_rfc3339, open_folder, pick_export_path};
+pub use self::modals::{
+    ModalAfter, apply_confirmed, apply_settings_action, begin_edit, delete_confirmation,
+    handle_quick_add,
+};
 use self::navigation::Screen;
 use self::store::Store;
 use self::ui_state::UiState;
@@ -181,188 +186,6 @@ impl AppCore {
     /// See [`AppCore::apply`].
     pub fn archive_category(&mut self, id: i64) -> Result<ActionOutcome> {
         self.apply(AppAction::ArchiveCategory(id))
-    }
-}
-
-/// Whether the quick-add modal stays up after handling an event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModalAfter {
-    Keep,
-    Close,
-}
-
-/// Apply what the quick-add modal asked for. A new entry saves and leaves the modal open, reset
-/// for the next one; an edit saves and closes it. A refused save keeps the modal and its input.
-pub fn handle_quick_add(
-    core: &mut AppCore,
-    state: &mut QuickAddState,
-    event: QuickAddEvent,
-) -> (ModalAfter, Option<ToastKey>) {
-    let draft = match event {
-        QuickAddEvent::Close => return (ModalAfter::Close, None),
-        QuickAddEvent::Submit(draft) => draft,
-    };
-    let action = match state.mode {
-        QuickAddMode::Create => AppAction::SaveTransaction(draft),
-        QuickAddMode::Edit(id) => AppAction::UpdateTransaction(id, draft),
-    };
-    match core.apply(action) {
-        Ok(outcome) => match state.mode {
-            QuickAddMode::Create => {
-                state.reset_for_next();
-                (ModalAfter::Keep, outcome.toast)
-            }
-            QuickAddMode::Edit(_) => (ModalAfter::Close, outcome.toast),
-        },
-        Err(err) => {
-            tracing::warn!("quick add could not save: {err}");
-            state.errors = vec![QuickAddError::Save];
-            (ModalAfter::Keep, None)
-        }
-    }
-}
-
-/// Open the quick-add form on a stored transaction, prefilled in the mode it was saved with.
-///
-/// # Errors
-/// [`crate::shared::error::AppError::NotFound`] when the transaction no longer exists.
-pub fn begin_edit(core: &AppCore, id: i64) -> Result<QuickAddState> {
-    let tx = core.store.transaction(id)?;
-    let people: Vec<_> = core.vm.active_people().into_iter().cloned().collect();
-    Ok(QuickAddState::from_transaction(
-        &tx,
-        &people,
-        core.vm.language(),
-    ))
-}
-
-/// The "delete this?" dialog for a transaction, naming it and its amount.
-///
-/// # Errors
-/// [`crate::shared::error::AppError::NotFound`] when the transaction no longer exists.
-pub fn delete_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
-    let tx = core.store.transaction(id)?;
-    let s = strings(core.vm.language());
-    Ok(ConfirmDialog {
-        title: s.confirm_delete_title.to_string(),
-        body: s
-            .confirm_delete_body
-            .replace("{title}", &tx.title)
-            .replace("{amount}", &tx.amount.format_brl()),
-        confirm_label: s.delete.to_string(),
-        danger: true,
-        action: AppAction::DeleteTransaction(id),
-    })
-}
-
-/// Apply an action the user confirmed. Returns the toast text, which names a deleted entry.
-/// A failure is logged and shows nothing.
-pub fn apply_confirmed(core: &mut AppCore, action: AppAction) -> Option<String> {
-    let deleted_title = match &action {
-        AppAction::DeleteTransaction(id) => core.store.transaction(*id).ok().map(|tx| tx.title),
-        _ => None,
-    };
-    match core.apply(action) {
-        Ok(outcome) => {
-            let language = core.vm.language();
-            match deleted_title {
-                Some(title) => Some(
-                    strings(language)
-                        .toast_deleted_named
-                        .replace("{title}", &title),
-                ),
-                None => outcome.toast.map(|key| key.text(language).to_string()),
-            }
-        }
-        Err(err) => {
-            tracing::warn!("confirmed action failed: {err}");
-            None
-        }
-    }
-}
-
-/// Apply an action raised on the settings screen. Success drops the screen's unsaved edits so it
-/// reloads from what is stored; a refusal is remembered so the screen can say so.
-/// Returns the toast text and whether the action succeeded.
-pub fn apply_settings_action(core: &mut AppCore, action: AppAction) -> (Option<String>, bool) {
-    match core.apply(action) {
-        Ok(outcome) => {
-            core.ui.settings.reset();
-            let text = outcome
-                .toast
-                .map(|key| key.text(core.vm.language()).to_string());
-            (text, true)
-        }
-        Err(err) => {
-            tracing::warn!("settings change refused: {err}");
-            core.ui.settings.error = Some(SettingsError::SaveRejected);
-            (None, false)
-        }
-    }
-}
-
-/// Show `folder` in the system file manager. A failure is logged and otherwise ignored.
-fn open_folder(folder: &std::path::Path) {
-    let (program, args) = settings::folder_command(folder);
-    if let Err(err) = std::process::Command::new(program).args(args).spawn() {
-        tracing::warn!("could not open the data folder: {err}");
-    }
-}
-
-/// Ask where to save an export, suggesting the standard file name in the exports folder.
-/// `None` when the user cancels the dialog.
-fn pick_export_path(
-    core: &AppCore,
-    request: ExportRequest,
-    today: chrono::NaiveDate,
-) -> Option<std::path::PathBuf> {
-    let (name, filter_name, extensions): (String, &str, &[&str]) = match request {
-        ExportRequest::Json => (default_json_name(today), "JSON", &["json"]),
-        ExportRequest::Csv(scope) => (default_export_name(scope), "CSV", &["csv"]),
-    };
-    rfd::FileDialog::new()
-        .set_file_name(name)
-        .set_directory(&core.store.dirs().exports_dir)
-        .add_filter(filter_name, extensions)
-        .save_file()
-}
-
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-/// Run an export to `path` and return the toast text: where it went and how much, or that it
-/// failed (in which case any existing file at `path` is untouched).
-pub fn run_export(
-    core: &AppCore,
-    request: ExportRequest,
-    path: &std::path::Path,
-    exported_at: &str,
-) -> String {
-    let language = core.vm.language();
-    let s = strings(language);
-    let conn = core.store.db().conn();
-    let result = match request {
-        ExportRequest::Json => match core.vm.profile.as_ref() {
-            Some(profile) => export::export_json(conn, profile, exported_at, path),
-            None => Err(crate::shared::error::AppError::Export(
-                "no profile yet".into(),
-            )),
-        },
-        ExportRequest::Csv(scope) => export::export_csv(conn, language, scope, path),
-    };
-    match result {
-        Ok(receipt) => s
-            .toast_exported
-            .replace(
-                "{count}",
-                &plural(PluralKey::Entries, receipt.record_count, language),
-            )
-            .replace("{path}", &receipt.path.display().to_string()),
-        Err(err) => {
-            tracing::warn!("export failed: {err}");
-            s.toast_export_failed.to_string()
-        }
     }
 }
 
@@ -589,6 +412,9 @@ mod tests {
     use crate::domain::transaction::{Allocation, TransactionType};
     use crate::i18n::ToastKey;
     use crate::shared::test_fixtures::draft_with;
+    use crate::ui::quick_add::{QuickAddError, QuickAddEvent, QuickAddMode};
+    use crate::ui::screens::ExportRequest;
+    use crate::ui::screens::settings::SettingsError;
 
     fn onboarded(partner: Option<&str>) -> AppCore {
         let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
