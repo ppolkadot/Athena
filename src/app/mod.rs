@@ -1783,4 +1783,88 @@ mod tests {
         // Same-key retry suppression prevents a per-frame loop.
         assert!(!core.sync().unwrap());
     }
+
+    #[test]
+    fn repair_filter_clears_shared_filter_and_pending_search_in_ui() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(Some("Ana"));
+        let owner = core.owner().unwrap().id;
+        let partner = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.kind == PersonKind::Partner)
+            .unwrap()
+            .id;
+
+        // Seed shared expense so the settlement card has >= 2 participants, plus an unassigned
+        // expense in the previous month so it only shows when repair filter clears month+shared+search.
+        let mut shared = draft_with(vec![
+            Allocation {
+                person_id: owner,
+                amount: Money::from_cents(1_000),
+            },
+            Allocation {
+                person_id: partner,
+                amount: Money::from_cents(1_000),
+            },
+        ]);
+        shared.title = "Shared Dinner".into();
+        shared.payer_id = Some(owner);
+        core.create_transaction(shared).unwrap();
+
+        let mut unassigned = draft_with(vec![]);
+        unassigned.title = "Orphan Receipt".into();
+        unassigned.payer_id = Some(owner);
+        unassigned.date = crate::shared::test_fixtures::date(2026, 10, 15);
+        core.create_transaction(unassigned).unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+
+        // Turn on Shared filter and type a pending search before debounce completes.
+        harness.get_by_label("Shared").click();
+        harness.run_steps(2);
+        harness
+            .get_all_by_role(egui::Role::TextInput)
+            .next()
+            .unwrap()
+            .focus();
+        harness.run_steps(1);
+        harness
+            .get_all_by_role(egui::Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text("nomatch");
+        harness.run_steps(1);
+        assert!(harness.state().core.ui.search_pending());
+
+        // Click the settlement Unassigned exclusion link while Shared + pending search are active.
+        harness
+            .get_by_label("1 entry with no one responsible")
+            .click();
+        // Step well past SEARCH_DEBOUNCE (0.2s) to ensure pending search does not re-apply.
+        harness.run_steps(10);
+
+        let app = harness.state();
+        assert!(!app.core.ui.filter.shared_only);
+        assert!(!app.core.ui.search_pending());
+        assert!(app.core.ui.filter.text.is_empty());
+        assert!(app.core.ui.search_input.is_empty());
+        assert!(harness.query_by_label("Orphan Receipt").is_some());
+    }
 }

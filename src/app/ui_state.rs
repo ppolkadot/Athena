@@ -69,9 +69,14 @@ impl UiState {
     }
 
     pub fn set_repair_filter(&mut self, issue: SettlementIssue, as_of: NaiveDate) {
-        self.filter.month = None;
-        self.filter.until = Some(as_of);
-        self.filter.issue = Some(issue);
+        self.filter = TxFilter {
+            month: None,
+            until: Some(as_of),
+            issue: Some(issue),
+            ..TxFilter::default()
+        };
+        self.search_input.clear();
+        self.search_edited_at = None;
     }
 
     pub fn clear_repair_filter(&mut self) {
@@ -315,5 +320,52 @@ mod tests {
         assert_eq!(ui.filter.month, Some(dec));
         assert_eq!(ui.filter.issue, None);
         assert_eq!(ui.filter.until, None);
+    }
+
+    #[test]
+    fn repair_filter_clears_conflicting_filters_and_pending_search() {
+        use crate::domain::transaction::TransactionType;
+        use crate::infrastructure::db::{Db, transactions_repo};
+        use crate::shared::test_fixtures::{date, draft_with, seed_people};
+
+        let nov = YearMonth::new(2026, 11).unwrap();
+        let mut ui = UiState::new(nov);
+        let db = Db::open_in_memory().unwrap();
+        let (_owner, partner) = seed_people(db.conn());
+
+        let mut unassigned = draft_with(vec![]);
+        unassigned.title = "Unassigned item".into();
+        unassigned.date = date(2026, 10, 5);
+        transactions_repo::create(db.conn(), &unassigned).unwrap();
+
+        // Activate every conflicting filter + pending search debounce.
+        ui.filter_shared();
+        ui.set_category_filter(Some(1));
+        ui.filter.kind = Some(TransactionType::Income);
+        ui.filter.text = "nomatch".into();
+        ui.edit_search("still typing".into(), 10.0);
+
+        ui.set_repair_filter(SettlementIssue::Unassigned, nov.last_day());
+        assert_eq!(ui.filter.person_id, None);
+        assert!(!ui.filter.shared_only);
+        assert_eq!(ui.filter.category_id, None);
+        assert_eq!(ui.filter.kind, None);
+        assert!(ui.filter.text.is_empty());
+        assert!(ui.search_input.is_empty());
+        assert!(!ui.search_pending());
+        assert!(
+            !ui.commit_search_if_due(11.0),
+            "pending search must not re-apply"
+        );
+
+        let rows = transactions_repo::list(db.conn(), &ui.filter).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Unassigned item");
+
+        // Also verify Person filter + Unassigned yields the item after repair filter activation.
+        ui.filter_person(partner);
+        ui.set_repair_filter(SettlementIssue::Unassigned, nov.last_day());
+        let rows2 = transactions_repo::list(db.conn(), &ui.filter).unwrap();
+        assert_eq!(rows2.len(), 1);
     }
 }
