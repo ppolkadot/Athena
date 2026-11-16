@@ -408,4 +408,204 @@ mod tests {
             "INSERT INTO categories (name, created_at) VALUES ('food', '2026-11-11T00:00:00Z')";
         assert!(db.conn().execute(dup, []).is_err());
     }
+
+    #[test]
+    fn fk_off_migration_restores_foreign_keys_on_success_and_failure() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let ok_steps = [
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);",
+            "-- athena:foreign-keys-off\nCREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id));",
+        ];
+        run_migrations_with(&mut conn, &ok_steps).unwrap();
+        let fk: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+
+        let mut fail_conn = Connection::open_in_memory().unwrap();
+        fail_conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let bad_steps = [
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);",
+            "-- athena:foreign-keys-off\nCREATE TABLE broken (id INTEGER,",
+        ];
+        assert!(run_migrations_with(&mut fail_conn, &bad_steps).is_err());
+        let fk_after_err: i64 = fail_conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk_after_err, 1);
+    }
+
+    #[test]
+    fn fk_off_migration_rolls_back_on_foreign_key_violation() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let steps = [
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id));",
+            "-- athena:foreign-keys-off\nINSERT INTO child (id, parent_id) VALUES (1, 999);",
+        ];
+        let err = run_migrations_with(&mut conn, &steps).unwrap_err();
+        assert!(
+            matches!(err, AppError::Migration(ref msg) if msg.contains("foreign key check failed")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(version(&conn), 1);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let fk: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+    }
+
+    #[test]
+    fn upgrade_v1_preserves_rows_allocations_and_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("athena.db");
+        let expected_txs;
+        {
+            let v1 = Db::open_with(&path, &MIGRATIONS[..1]).unwrap();
+            crate::shared::test_fixtures::seed_mixed(&v1);
+            expected_txs = transactions_repo::list(
+                v1.conn(),
+                &crate::domain::transaction::TxFilter::default(),
+            )
+            .unwrap();
+        }
+        let upgraded = Db::open(&path).unwrap();
+        assert_eq!(version(upgraded.conn()), latest_version());
+        let actual_txs = transactions_repo::list(
+            upgraded.conn(),
+            &crate::domain::transaction::TxFilter::default(),
+        )
+        .unwrap();
+        assert_eq!(actual_txs, expected_txs);
+        assert!(integrity::check(upgraded.conn()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn upgrade_v1_does_not_reuse_hard_deleted_ids() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        run_migrations_with(&mut conn, &MIGRATIONS[..1]).unwrap();
+        for i in 1..=3 {
+            conn.execute(
+                "INSERT INTO transactions (title, amount_cents, date, kind, created_at, updated_at)
+                 VALUES (?1, 100, '2026-11-11', 'expense', '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+                [format!("T{i}")],
+            )
+            .unwrap();
+        }
+        conn.execute("DELETE FROM transactions WHERE id = 3", [])
+            .unwrap();
+        run_migrations(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (title, amount_cents, date, kind, created_at, updated_at)
+             VALUES ('T4', 100, '2026-11-11', 'expense', '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        assert!(conn.last_insert_rowid() >= 4);
+    }
+
+    #[test]
+    fn schema_accepts_settlement_and_guards_its_shape() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = crate::shared::test_fixtures::seed_people(db.conn());
+        let cat = crate::shared::test_fixtures::seeded_category(db.conn(), "Food");
+        let c = db.conn();
+        c.execute(
+            "INSERT INTO transactions (title, amount_cents, date, kind, category_id, payer_id, split_mode, created_at, updated_at)
+             VALUES ('Payback', 500, '2026-11-11', 'settlement', NULL, ?1, NULL, '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+            [owner],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO transactions (title, amount_cents, date, kind, category_id, payer_id, split_mode, created_at, updated_at)
+                 VALUES ('No payer', 500, '2026-11-11', 'settlement', NULL, NULL, NULL, '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO transactions (title, amount_cents, date, kind, category_id, payer_id, split_mode, created_at, updated_at)
+                 VALUES ('With cat', 500, '2026-11-11', 'settlement', ?1, ?2, NULL, '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+                [cat, owner],
+            )
+            .is_err()
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO transactions (title, amount_cents, date, kind, category_id, payer_id, split_mode, created_at, updated_at)
+                 VALUES ('With split', 500, '2026-11-11', 'settlement', NULL, ?1, 'even', '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+                [owner],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn trash_column_view_and_application_id_exist() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.conn();
+        let app_id: i64 = c
+            .pragma_query_value(None, "application_id", |r| r.get(0))
+            .unwrap();
+        assert_eq!(app_id, 0x4154_4E41);
+
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(transactions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(std::result::Result::unwrap)
+            .collect();
+        assert!(cols.contains(&"deleted_at".to_string()));
+
+        assert!(
+            c.execute(
+                "INSERT INTO transactions (title, amount_cents, date, kind, deleted_at, created_at, updated_at)
+                 VALUES ('Bad deleted', 100, '2026-11-11', 'expense', 'not-a-timestamp', '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+                [],
+            )
+            .is_err()
+        );
+
+        c.execute(
+            "INSERT INTO transactions (title, amount_cents, date, kind, deleted_at, created_at, updated_at)
+             VALUES ('Live', 100, '2026-11-11', 'expense', NULL, '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO transactions (title, amount_cents, date, kind, deleted_at, created_at, updated_at)
+             VALUES ('Deleted', 100, '2026-11-11', 'expense', '2026-11-16T10:00:00Z', '2026-11-11T00:00:00Z', '2026-11-11T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let live_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM live_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live_count, 1);
+    }
+
+    #[test]
+    fn upgrade_writes_pre_migration_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("athena.db");
+        drop(Db::open_with(&path, &MIGRATIONS[..1]).unwrap());
+        let db = Db::open(&path).unwrap();
+        assert_eq!(version(db.conn()), latest_version());
+        let backups: Vec<String> = std::fs::read_dir(dir.path().join("backups"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("pre-migration-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].starts_with("pre-migration-v1-"));
+    }
 }
