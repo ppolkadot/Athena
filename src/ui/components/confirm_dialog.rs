@@ -47,9 +47,10 @@ pub fn show(
         ui.add_space(16.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let color = if dialog.danger { p.negative } else { p.accent };
-            let confirm =
-                Button::new(RichText::new(&dialog.confirm_label).color(p.bg).strong()).fill(color);
-            if ui.add_sized([120.0, 36.0], confirm).clicked() {
+            let confirm = Button::new(RichText::new(&dialog.confirm_label).color(p.bg).strong())
+                .fill(color)
+                .min_size(eframe::egui::Vec2::new(120.0, 36.0));
+            if ui.add(confirm).clicked() {
                 choice = Some(ConfirmChoice::Confirmed(dialog.action.clone()));
             }
             if ui.add_sized([96.0, 36.0], Button::new(s.cancel)).clicked() {

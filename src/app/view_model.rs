@@ -14,7 +14,8 @@ use crate::domain::reports::{CalendarMonthTotal, CategoryTotal, MonthSummary, Pe
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
-    categories_repo, people_repo, profile_repo, transactions_repo, trash_repo,
+    categories_repo, people_repo, profile_repo, transactions_repo,
+    trash_repo::{self, TrashItem},
 };
 use crate::shared::error::Result;
 
@@ -46,6 +47,8 @@ pub struct ViewModel {
     pub balance: Money,
     /// Number of deleted transactions currently in Trash.
     pub trash_count: usize,
+    /// Soft-deleted transactions, loaded only when viewing the Trash screen.
+    pub trash: Vec<TrashItem>,
     /// Most recent backup/restore/import/purge operation notice in this session.
     pub last_operation: Option<OperationNotice>,
     /// Where the database file lives, for the settings screen.
@@ -73,6 +76,7 @@ impl ViewModel {
             calendar: Vec::new(),
             balance: Money::ZERO,
             trash_count: 0,
+            trash: Vec::new(),
             last_operation: None,
             data_path: String::new(),
             today: chrono::Local::now().date_naive(),
@@ -152,7 +156,7 @@ impl ViewModel {
         not(test),
         allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)
     )]
-    fn load_trash_screen_stub(&mut self) {
+    fn record_trash_load(&mut self) {
         #[cfg(test)]
         {
             self.trash_loads += 1;
@@ -183,7 +187,8 @@ impl ViewModel {
             RefreshScope::Categories => self.all_categories = categories_repo::list(conn, true)?,
             RefreshScope::Trash => {
                 self.trash_count = trash_repo::count(conn)?;
-                self.load_trash_screen_stub();
+                self.trash = trash_repo::list(conn)?;
+                self.record_trash_load();
             }
             RefreshScope::Backups => {}
             RefreshScope::Month | RefreshScope::Calendar | RefreshScope::All => {
@@ -204,7 +209,10 @@ impl ViewModel {
                 self.trash_count = trash_repo::count(conn)?;
                 self.data_path = store.dirs().db_path.display().to_string();
                 if ui.screen == Screen::Trash {
-                    self.load_trash_screen_stub();
+                    self.trash = trash_repo::list(conn)?;
+                    self.record_trash_load();
+                } else {
+                    self.trash.clear();
                 }
             }
         }
@@ -262,5 +270,52 @@ mod tests {
 
         assert!(!vm.sync(&store, &ui).unwrap());
         assert_eq!(vm.trash_loads, 1);
+    }
+
+    #[test]
+    fn trash_lists_newest_first_and_loads_only_on_trash_screen() {
+        use crate::shared::test_fixtures::draft_with;
+
+        let store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-trash-test")),
+        );
+        let mut older_draft = draft_with(vec![]);
+        older_draft.title = "Older".into();
+        let older_id = transactions_repo::create(store.db().conn(), &older_draft).unwrap();
+        let mut newer_draft = draft_with(vec![]);
+        newer_draft.title = "Newer".into();
+        let newer_id = transactions_repo::create(store.db().conn(), &newer_draft).unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-11-10T10:00:00Z' WHERE id = ?1",
+                [older_id],
+            )
+            .unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-11-12T10:00:00Z' WHERE id = ?1",
+                [newer_id],
+            )
+            .unwrap();
+
+        let mut ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_count, 2);
+        assert!(vm.trash.is_empty(), "trash does not load off-screen");
+        assert_eq!(vm.trash_loads, 0);
+
+        ui.set_screen(Screen::Trash);
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_loads, 1);
+        let titles: Vec<_> = vm.trash.iter().map(|t| t.tx.title.as_str()).collect();
+        assert_eq!(titles, vec!["Newer", "Older"]);
     }
 }

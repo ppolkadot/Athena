@@ -13,6 +13,7 @@ pub mod calendar;
 pub mod month;
 pub mod onboarding;
 pub mod settings;
+pub mod trash;
 
 /// A file export the user asked for. The app picks the destination and runs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,8 @@ pub enum ScreenEvent {
     NewTransaction,
     EditTransaction(i64),
     DeleteTransaction(i64),
+    PurgeTransaction(i64),
+    EmptyTrash,
     /// Open the month register for this month.
     OpenMonth(crate::domain::date::YearMonth),
     /// Apply this action; the screen that raised it shows the result.
@@ -52,10 +55,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
             })
             .into_iter()
             .collect(),
-        Screen::Trash => {
-            placeholder(ui, vm, state);
-            Vec::new()
-        }
+        Screen::Trash => trash::show(ui, vm, state),
         Screen::Settings => settings::show(ui, vm, state),
     }
 }

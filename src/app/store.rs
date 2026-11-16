@@ -1,7 +1,7 @@
 //! Owns the database and applies [`AppAction`]s. `apply` is the only mutation path for persisted
 //! domain state; every successful action bumps `data_version`.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 
 use super::actions::{ActionOutcome, AppAction, OperationKind, OperationNotice, RefreshScope};
 use crate::application::services::onboarding;
@@ -47,13 +47,17 @@ impl Store {
         self.data_version
     }
 
-    /// Once per launch: the daily snapshot (a failure is logged, never fatal) and, in debug
-    /// builds, an integrity check whose findings are logged as a count only.
-    pub fn run_startup_tasks(&self, today: NaiveDate) {
+    /// Once per launch: the daily snapshot (a failure is logged, never fatal), Trash 30-day
+    /// retention (skipped if the snapshot failed or if the clock rolled back before `max(deleted_at)`),
+    /// and, in debug builds, an integrity check whose findings are logged as a count only.
+    pub fn run_startup_tasks(&self, today: NaiveDate, now_utc: DateTime<Utc>) {
         match backup::daily_snapshot(self.db.conn(), &self.dirs, today) {
-            Ok(Some(_)) => tracing::info!("daily snapshot written"),
-            Ok(None) => {}
-            Err(err) => tracing::warn!("daily snapshot failed: {err}"),
+            Ok(Some(_)) => {
+                tracing::info!("daily snapshot written");
+                self.run_trash_retention(now_utc);
+            }
+            Ok(None) => self.run_trash_retention(now_utc),
+            Err(err) => tracing::warn!("daily snapshot failed, skipping trash purge: {err}"),
         }
         if cfg!(debug_assertions) {
             match integrity::check(self.db.conn()) {
@@ -61,6 +65,35 @@ impl Store {
                 Ok(issues) => tracing::error!("integrity check found {} issue(s)", issues.len()),
                 Err(err) => tracing::warn!("integrity check failed: {err}"),
             }
+        }
+    }
+
+    fn run_trash_retention(&self, now_utc: DateTime<Utc>) {
+        let conn = self.db.conn();
+        let max_deleted = match trash_repo::max_deleted_at(conn) {
+            Ok(Some(stamp)) => stamp,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!("could not inspect trash timestamps: {err}");
+                return;
+            }
+        };
+        let Ok(max_dt) = DateTime::parse_from_rfc3339(&max_deleted) else {
+            tracing::warn!("unparseable deleted_at timestamp in trash: {max_deleted}");
+            return;
+        };
+        if now_utc < max_dt.with_timezone(&Utc) {
+            tracing::warn!("clock appears earlier than latest deletion; skipping trash purge");
+            return;
+        }
+        let Some(cutoff_dt) = now_utc.checked_sub_days(chrono::Days::new(30)) else {
+            return;
+        };
+        let cutoff = cutoff_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        match trash_repo::purge_older_than(conn, &cutoff) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("purged {n} expired transaction(s) from trash"),
+            Err(err) => tracing::warn!("trash retention purge failed: {err}"),
         }
     }
 
@@ -388,9 +421,98 @@ mod tests {
         let dirs = AppDirs::from_root(dir.path().to_path_buf());
         let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
         let today = NaiveDate::from_ymd_opt(2026, 11, 12).unwrap();
-        store.run_startup_tasks(today);
-        store.run_startup_tasks(today);
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.run_startup_tasks(today, now_utc);
+        store.run_startup_tasks(today, now_utc);
         let snapshots = std::fs::read_dir(&dirs.backups_dir).unwrap().count();
         assert_eq!(snapshots, 1);
+    }
+
+    #[test]
+    fn retention_purges_after_snapshot_only() {
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+
+        let seed = |store: &Store| {
+            let expired =
+                transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+            let recent = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+            store
+                .db()
+                .conn()
+                .execute(
+                    "UPDATE transactions SET deleted_at = '2026-10-10T00:00:00Z' WHERE id = ?1",
+                    [expired],
+                )
+                .unwrap();
+            store
+                .db()
+                .conn()
+                .execute(
+                    "UPDATE transactions SET deleted_at = '2026-11-01T00:00:00Z' WHERE id = ?1",
+                    [recent],
+                )
+                .unwrap();
+            (expired, recent)
+        };
+
+        // Snapshot failure (file blocking backups_dir): nothing is purged.
+        let blocked_dir = tempfile::tempdir().unwrap();
+        let blocked_dirs = AppDirs::from_root(blocked_dir.path().to_path_buf());
+        std::fs::write(&blocked_dirs.backups_dir, b"not a dir").unwrap();
+        let blocked_store = Store::new(Db::open_in_memory().unwrap(), blocked_dirs);
+        seed(&blocked_store);
+        blocked_store.run_startup_tasks(today, now_utc);
+        assert_eq!(trash_repo::count(blocked_store.db().conn()).unwrap(), 2);
+
+        // Snapshot succeeds: >30d row is purged, recent row stays.
+        let ok_dir = tempfile::tempdir().unwrap();
+        let ok_dirs = AppDirs::from_root(ok_dir.path().to_path_buf());
+        let ok_store = Store::new(Db::open_in_memory().unwrap(), ok_dirs.clone());
+        let (expired, recent) = seed(&ok_store);
+        ok_store.run_startup_tasks(today, now_utc);
+        assert_eq!(trash_repo::count(ok_store.db().conn()).unwrap(), 1);
+        assert!(matches!(
+            trash_repo::get_deleted(ok_store.db().conn(), expired),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(trash_repo::get_deleted(ok_store.db().conn(), recent).is_ok());
+        assert!(ok_dirs.backups_dir.join("auto-2026-11-16.db").exists());
+    }
+
+    #[test]
+    fn retention_skips_on_clock_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        let store = Store::new(Db::open_in_memory().unwrap(), dirs);
+        let expired = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+        let future = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
+                [expired],
+            )
+            .unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-12-01T00:00:00Z' WHERE id = ?1",
+                [future],
+            )
+            .unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.run_startup_tasks(today, now_utc);
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 2);
     }
 }

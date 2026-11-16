@@ -94,6 +94,31 @@ pub fn purge(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Newest `deleted_at` timestamp currently in Trash, if any.
+///
+/// # Errors
+/// Database errors.
+pub fn max_deleted_at(conn: &Connection) -> Result<Option<String>> {
+    let max: Option<String> = conn.query_row(
+        "SELECT MAX(deleted_at) FROM transactions WHERE deleted_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(max)
+}
+
+/// Hard-delete trashed rows whose `deleted_at` is strictly older than `cutoff_utc` (UTC RFC 3339).
+///
+/// # Errors
+/// Database errors.
+pub fn purge_older_than(conn: &Connection, cutoff_utc: &str) -> Result<usize> {
+    let removed = conn.execute(
+        "DELETE FROM transactions WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+        [cutoff_utc],
+    )?;
+    Ok(removed)
+}
+
 /// Hard-delete all deleted transactions. Returns how many rows were removed.
 ///
 /// # Errors

@@ -31,7 +31,7 @@ pub use self::files::run_export;
 use self::files::{now_rfc3339, open_folder, pick_export_path};
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
-    delete_confirmation, handle_quick_add,
+    delete_confirmation, empty_trash_confirmation, handle_quick_add, purge_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -60,7 +60,7 @@ impl AppCore {
             ui: UiState::default(),
         };
         core.store
-            .run_startup_tasks(chrono::Local::now().date_naive());
+            .run_startup_tasks(chrono::Local::now().date_naive(), chrono::Utc::now());
         core.sync()?;
         Ok(core)
     }
@@ -203,6 +203,10 @@ pub struct AthenaApp {
     quick_add: Option<QuickAddState>,
     confirm: Option<ConfirmDialog>,
     toast: Option<Toast>,
+    /// Widget that opened the active modal, so Esc/Cancel can restore focus to it.
+    modal_opener: Option<egui::Id>,
+    /// Opener id deferred until the first non-modal frame so background widgets allow focus.
+    pending_focus_restore: Option<egui::Id>,
     /// Tests pin the date so they do not depend on when they run.
     pinned_today: Option<chrono::NaiveDate>,
 }
@@ -221,7 +225,20 @@ impl AthenaApp {
             quick_add: None,
             confirm: None,
             toast: None,
+            modal_opener: None,
+            pending_focus_restore: None,
             pinned_today: None,
+        }
+    }
+
+    fn remember_modal_opener(&mut self, ctx: &egui::Context) {
+        self.modal_opener = ctx.memory(egui::Memory::focused);
+    }
+
+    fn restore_modal_opener(&mut self, ctx: &egui::Context) {
+        self.pending_focus_restore = self.modal_opener.take();
+        if self.pending_focus_restore.is_some() {
+            ctx.request_repaint();
         }
     }
 
@@ -229,16 +246,36 @@ impl AthenaApp {
     fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
         let idle = self.quick_add.is_none() && self.confirm.is_none();
         match event {
-            ScreenEvent::NewTransaction if self.quick_add.is_none() => self.open_quick_add(),
+            ScreenEvent::NewTransaction if self.quick_add.is_none() => {
+                self.remember_modal_opener(ctx);
+                self.open_quick_add();
+            }
             ScreenEvent::EditTransaction(id) if idle => match begin_edit(&self.core, id) {
-                Ok(state) => self.quick_add = Some(state),
+                Ok(state) => {
+                    self.remember_modal_opener(ctx);
+                    self.quick_add = Some(state);
+                }
                 Err(err) => tracing::warn!("could not open the transaction: {err}"),
             },
             ScreenEvent::DeleteTransaction(id) if idle => match delete_confirmation(&self.core, id)
             {
-                Ok(dialog) => self.confirm = Some(dialog),
+                Ok(dialog) => {
+                    self.remember_modal_opener(ctx);
+                    self.confirm = Some(dialog);
+                }
                 Err(err) => tracing::warn!("could not open the transaction: {err}"),
             },
+            ScreenEvent::PurgeTransaction(id) if idle => match purge_confirmation(&self.core, id) {
+                Ok(dialog) => {
+                    self.remember_modal_opener(ctx);
+                    self.confirm = Some(dialog);
+                }
+                Err(err) => tracing::warn!("could not open the trashed transaction: {err}"),
+            },
+            ScreenEvent::EmptyTrash if idle => {
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(empty_trash_confirmation(&self.core));
+            }
             ScreenEvent::OpenMonth(month) => {
                 if let Err(err) = self.core.open_month(month) {
                     tracing::error!("could not open the month: {err}");
@@ -271,6 +308,8 @@ impl AthenaApp {
             quick_add: None,
             confirm: None,
             toast: None,
+            modal_opener: None,
+            pending_focus_restore: None,
             pinned_today: Some(crate::shared::test_fixtures::today()),
         }
     }
@@ -375,7 +414,17 @@ impl AthenaApp {
         }
         let ctx = ui.ctx().clone();
         if self.quick_add.is_none() && self.confirm.is_none() {
+            if self.pending_focus_restore.is_some() {
+                if ctx.memory(|m| m.top_modal_layer().is_none()) {
+                    if let Some(id) = self.pending_focus_restore.take() {
+                        ctx.memory_mut(|m| m.request_focus(id));
+                    }
+                } else {
+                    ctx.request_repaint();
+                }
+            }
             if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
+                self.remember_modal_opener(&ctx);
                 self.open_quick_add();
             }
             for &(key, screen) in &navigation::SHORTCUTS {
@@ -407,29 +456,7 @@ impl AthenaApp {
             settings_failed |= !self.handle_screen_event(&ctx, event);
         }
 
-        if let Some(mut state) = self.quick_add.take() {
-            match quick_add::show(&ctx, &mut state, &self.core.vm) {
-                Some(event) => {
-                    let (after, toast) = handle_quick_add(&mut self.core, &mut state, event);
-                    self.raise_toast(&ctx, toast);
-                    if after == ModalAfter::Keep {
-                        self.quick_add = Some(state);
-                    }
-                }
-                None => self.quick_add = Some(state),
-            }
-        }
-        if let Some(dialog) = self.confirm.take() {
-            match confirm_dialog::show(&ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
-            {
-                Some(ConfirmChoice::Confirmed(action)) => {
-                    let toast = apply_confirmed_outcome(&mut self.core, action);
-                    self.raise_confirmed_toast(&ctx, toast);
-                }
-                Some(ConfirmChoice::Cancelled) => {}
-                None => self.confirm = Some(dialog),
-            }
-        }
+        self.handle_modals(&ctx);
         if let Some(undo_action) = toast::show(
             &ctx,
             &mut self.toast,
@@ -437,6 +464,47 @@ impl AthenaApp {
             self.core.vm.language(),
         ) {
             self.apply_undo(undo_action);
+        }
+    }
+
+    fn handle_modals(&mut self, ctx: &egui::Context) {
+        if let Some(mut state) = self.quick_add.take() {
+            match quick_add::show(ctx, &mut state, &self.core.vm) {
+                Some(event) => {
+                    let (after, toast) = handle_quick_add(&mut self.core, &mut state, event);
+                    self.raise_toast(ctx, toast);
+                    if after == ModalAfter::Keep {
+                        self.quick_add = Some(state);
+                    } else {
+                        self.restore_modal_opener(ctx);
+                    }
+                }
+                None => self.quick_add = Some(state),
+            }
+        }
+        if let Some(dialog) = self.confirm.take() {
+            match confirm_dialog::show(ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
+            {
+                Some(ConfirmChoice::Confirmed(action)) => {
+                    let is_purge = matches!(action, AppAction::PurgeTransaction(_));
+                    let is_delete = matches!(action, AppAction::DeleteTransaction(_));
+                    let toast = apply_confirmed_outcome(&mut self.core, action);
+                    self.raise_confirmed_toast(ctx, toast);
+                    if is_purge {
+                        self.core.ui.trash_focus_row = self.core.ui.pending_purge_focus_row.take();
+                        self.modal_opener = None;
+                    } else if is_delete {
+                        self.modal_opener = None;
+                    } else {
+                        self.restore_modal_opener(ctx);
+                    }
+                }
+                Some(ConfirmChoice::Cancelled) => {
+                    self.core.ui.pending_purge_focus_row = None;
+                    self.restore_modal_opener(ctx);
+                }
+                None => self.confirm = Some(dialog),
+            }
         }
     }
 }
@@ -824,15 +892,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
 
         let core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
-        let mut app = AthenaApp {
-            core,
-            applied_theme: Theme::Dark,
-            onboarding: OnboardingState::new(Language::En),
-            quick_add: None,
-            confirm: None,
-            toast: None,
-            pinned_today: Some(crate::shared::test_fixtures::today()),
-        };
+        let mut app = AthenaApp::for_test(core);
         app.core.ui.set_month(YearMonth::new(2026, 11).unwrap());
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1280.0, 820.0))
@@ -1050,15 +1110,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
 
         let core = onboarded(Some("Ana"));
-        let app = AthenaApp {
-            core,
-            applied_theme: Theme::Dark,
-            onboarding: OnboardingState::new(Language::En),
-            quick_add: None,
-            confirm: None,
-            toast: None,
-            pinned_today: Some(crate::shared::test_fixtures::today()),
-        };
+        let app = AthenaApp::for_test(core);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1280.0, 2600.0))
             .build_ui_state(
@@ -1185,15 +1237,7 @@ mod tests {
     /// screens, and the shortcuts stay out of the way while a modal is open.
     #[test]
     fn keyboard_shortcuts_work_from_every_screen() {
-        let app = AthenaApp {
-            core: onboarded(Some("Ana")),
-            applied_theme: Theme::Dark,
-            onboarding: OnboardingState::new(Language::En),
-            quick_add: None,
-            confirm: None,
-            toast: None,
-            pinned_today: Some(crate::shared::test_fixtures::today()),
-        };
+        let app = AthenaApp::for_test(onboarded(Some("Ana")));
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1280.0, 900.0))
             .with_step_dt(0.05)
@@ -1253,15 +1297,7 @@ mod tests {
         draft.title = "Coffee".into();
         core.create_transaction(draft).unwrap();
 
-        let app = AthenaApp {
-            core,
-            applied_theme: Theme::Dark,
-            onboarding: OnboardingState::new(Language::En),
-            quick_add: None,
-            confirm: None,
-            toast: None,
-            pinned_today: Some(crate::shared::test_fixtures::today()),
-        };
+        let app = AthenaApp::for_test(core);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1280.0, 900.0))
             .with_step_dt(0.05)
@@ -1364,15 +1400,7 @@ mod tests {
         state.amount_input = "9,99".into();
         let draft = state.to_draft().unwrap();
         handle_quick_add(&mut core, &mut state, QuickAddEvent::Submit(draft));
-        let app = AthenaApp {
-            core,
-            applied_theme: Theme::Dark,
-            onboarding: OnboardingState::new(Language::En),
-            quick_add: None,
-            confirm: None,
-            toast: None,
-            pinned_today: Some(crate::shared::test_fixtures::today()),
-        };
+        let app = AthenaApp::for_test(core);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1000.0, 800.0))
             .build_ui_state(
@@ -1392,5 +1420,154 @@ mod tests {
             amount.right() <= 1000.0,
             "the amount stays inside the window: {amount:?}"
         );
+    }
+
+    #[test]
+    fn trash_screen_restore_and_delete_forever() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        for (idx, (title, stamp)) in [
+            ("First", "2026-11-10T14:00:00Z"),
+            ("Second", "2026-11-11T14:00:00Z"),
+            ("Third", "2026-11-12T14:00:00Z"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut d = draft_with(vec![]);
+            d.title = title.into();
+            d.amount = Money::from_cents((i64::try_from(idx).unwrap() + 1) * 1_000);
+            core.create_transaction(d).unwrap();
+            let id = core.vm.transactions[0].id;
+            core.delete_transaction(id).unwrap();
+            core.store
+                .db()
+                .conn()
+                .execute(
+                    "UPDATE transactions SET deleted_at = ?1 WHERE id = ?2",
+                    rusqlite::params![stamp, id],
+                )
+                .unwrap();
+        }
+        core.set_screen(Screen::Trash);
+        core.sync().unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 760.0))
+            .with_step_dt(0.05)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Third").is_some());
+        assert!(harness.query_by_label("Second").is_some());
+        assert!(harness.query_by_label("First").is_some());
+
+        // Restoring the middle row ("Second") brings it back and moves focus to the nearest row ("First").
+        harness.get_by_label("Restore Second").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.trash.len(), 2);
+        assert_eq!(harness.state().core.vm.trash_count, 2);
+        assert!(harness.query_by_label("Second").is_none());
+        assert!(
+            harness.get_by_label("Restore First").is_focused(),
+            "focus moves to the nearest remaining row after restore"
+        );
+
+        // Delete forever asks for confirmation, states permanence, and returns focus if cancelled.
+        harness.get_by_label("Delete forever Third").focus();
+        harness.run_steps(2);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("Delete this transaction forever?")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label(
+                    "Third · R$ 30,00 will be permanently removed from Trash. This cannot be undone."
+                )
+                .is_some()
+        );
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.vm.trash.len(), 2);
+        assert!(
+            harness.get_by_label("Delete forever Third").is_focused(),
+            "cancelling returns focus to the button that opened the dialog"
+        );
+
+        // Confirming permanent deletion purges Third and focuses the nearest remaining row ("First").
+        harness.get_by_label("Delete forever Third").click();
+        harness.run_steps(3);
+        harness.get_by_label("Delete forever").click();
+        harness.run_steps(4);
+        assert_eq!(harness.state().core.vm.trash.len(), 1);
+        assert_eq!(harness.state().core.vm.trash[0].tx.title, "First");
+        assert!(
+            harness.get_by_label("Restore First").is_focused(),
+            "focus moves to the nearest remaining row after permanent deletion"
+        );
+    }
+
+    #[test]
+    fn empty_trash_states_count_and_confirms() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut core = onboarded(None);
+        for title in ["Alpha", "Beta"] {
+            let mut d = draft_with(vec![]);
+            d.title = title.into();
+            core.create_transaction(d).unwrap();
+            let id = core.vm.transactions[0].id;
+            core.delete_transaction(id).unwrap();
+        }
+        core.set_screen(Screen::Trash);
+        core.sync().unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 760.0))
+            .with_step_dt(0.05)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Empty trash").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Empty trash?").is_some());
+        assert!(
+            harness
+                .query_by_label("Permanently delete 2 entries from Trash? This cannot be undone.")
+                .is_some()
+        );
+        // Header button + confirm dialog button share label "Empty trash"; confirm is second.
+        harness
+            .get_all_by_label("Empty trash")
+            .nth(1)
+            .unwrap()
+            .click();
+        harness.run_steps(4);
+        assert!(harness.state().core.vm.trash.is_empty());
+        assert_eq!(harness.state().core.vm.trash_count, 0);
+        assert!(harness.query_by_label("Trash is empty.").is_some());
     }
 }

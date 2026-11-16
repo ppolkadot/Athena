@@ -152,3 +152,42 @@ fn snapshot_settings() {
     }
     results.unwrap();
 }
+
+#[test]
+fn snapshot_trash() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        let mut core = onboarded_core(language, theme, true);
+        let ids: Vec<i64> = core.vm.transactions.iter().take(2).map(|t| t.id).collect();
+        for (id, stamp) in ids
+            .into_iter()
+            .zip(["2026-11-12T14:00:00Z", "2026-11-10T14:00:00Z"])
+        {
+            core.delete_transaction(id).unwrap();
+            core.store
+                .db()
+                .conn()
+                .execute(
+                    "UPDATE transactions SET deleted_at = ?1 WHERE id = ?2",
+                    rusqlite::params![stamp, id],
+                )
+                .unwrap();
+        }
+        core.set_screen(Screen::Trash);
+        snapshot(
+            &mut results,
+            &format!("trash_{tag}"),
+            AthenaApp::for_test(core),
+            SIZE,
+        );
+    }
+    let mut empty = onboarded_core(Language::En, Theme::Dark, false);
+    empty.set_screen(Screen::Trash);
+    snapshot(
+        &mut results,
+        "trash_empty_en_dark",
+        AthenaApp::for_test(empty),
+        SIZE,
+    );
+    results.unwrap();
+}

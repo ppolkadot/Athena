@@ -17,6 +17,10 @@ pub struct UiState {
     search_edited_at: Option<f64>,
     /// Edits in progress on the settings screen.
     pub settings: SettingsState,
+    /// Target row index to focus on Trash after restoring or purging an item.
+    pub trash_focus_row: Option<usize>,
+    /// Row index awaiting permanent-delete confirmation on Trash.
+    pub pending_purge_focus_row: Option<usize>,
 }
 
 /// How long typing must pause before the search runs, in seconds.
@@ -36,6 +40,8 @@ impl UiState {
             search_input: String::new(),
             search_edited_at: None,
             settings: SettingsState::default(),
+            trash_focus_row: None,
+            pending_purge_focus_row: None,
         }
     }
 
@@ -43,6 +49,10 @@ impl UiState {
         if screen != Screen::Settings {
             // Leaving settings drops unsaved edits, so reopening shows what is stored.
             self.settings.reset();
+        }
+        if screen != Screen::Trash {
+            self.trash_focus_row = None;
+            self.pending_purge_focus_row = None;
         }
         self.screen = screen;
     }

@@ -1,6 +1,6 @@
 //! Modal, confirmation, and settings-action orchestration around [`AppCore`].
 
-use crate::i18n::{ToastKey, strings};
+use crate::i18n::{PluralKey, ToastKey, plural, strings};
 use crate::shared::error::Result;
 use crate::ui::components::confirm_dialog::ConfirmDialog;
 use crate::ui::components::toast::ToastAction;
@@ -79,6 +79,40 @@ pub fn delete_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
         danger: true,
         action: AppAction::DeleteTransaction(id),
     })
+}
+
+/// The "delete forever?" dialog for a trashed transaction.
+///
+/// # Errors
+/// [`crate::shared::error::AppError::NotFound`] when no deleted transaction matches `id`.
+pub fn purge_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
+    let item = crate::infrastructure::db::trash_repo::get_deleted(core.store.db().conn(), id)?;
+    let s = strings(core.vm.language());
+    Ok(ConfirmDialog {
+        title: s.confirm_purge_title.to_string(),
+        body: s
+            .confirm_purge_body
+            .replace("{title}", &item.tx.title)
+            .replace("{amount}", &item.tx.amount.format_brl()),
+        confirm_label: s.delete_forever.to_string(),
+        danger: true,
+        action: AppAction::PurgeTransaction(id),
+    })
+}
+
+/// The "empty trash?" dialog naming the count that will be permanently deleted.
+#[must_use]
+pub fn empty_trash_confirmation(core: &AppCore) -> ConfirmDialog {
+    let language = core.vm.language();
+    let s = strings(language);
+    let count = plural(PluralKey::Entries, core.vm.trash_count, language);
+    ConfirmDialog {
+        title: s.confirm_empty_trash_title.to_string(),
+        body: s.confirm_empty_trash_body.replace("{count}", &count),
+        confirm_label: s.empty_trash.to_string(),
+        danger: true,
+        action: AppAction::EmptyTrash,
+    }
 }
 
 /// Apply an action the user confirmed, returning its toast text and an optional undo action
