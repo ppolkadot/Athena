@@ -4,6 +4,7 @@ pub const STRINGS: Strings = Strings {
     app_name: "ATHENA",
     month: "Month",
     calendar: "Calendar",
+    trash: "Trash",
     settings: "Settings",
     version: "Version",
     all_time: "All time",

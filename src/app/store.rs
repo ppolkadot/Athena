@@ -79,7 +79,7 @@ impl Store {
         Ok(outcome)
     }
 
-    fn run(&self, action: AppAction) -> Result<ActionOutcome> {
+    fn run(&mut self, action: AppAction) -> Result<ActionOutcome> {
         let conn = self.db.conn();
         let (inverse, toast, refresh) = match action {
             AppAction::CompleteOnboarding(result) => {
@@ -159,6 +159,7 @@ impl Store {
             inverse,
             toast,
             refresh,
+            notice: None,
         })
     }
 }

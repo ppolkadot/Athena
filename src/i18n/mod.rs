@@ -38,6 +38,7 @@ strings! {
     app_name,
     month,
     calendar,
+    trash,
     settings,
     version,
     all_time,

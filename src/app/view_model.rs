@@ -1,7 +1,8 @@
 //! Cached read data for the screens. Screens read this and never query the database. It reloads
 //! when the store's `data_version` or the selected month, year or filter changes.
 
-use super::actions::RefreshScope;
+use super::actions::{OperationNotice, RefreshScope};
+use super::navigation::Screen;
 use super::store::Store;
 use super::ui_state::UiState;
 use crate::application::services::reports;
@@ -22,6 +23,8 @@ struct LoadKey {
     month: YearMonth,
     year: i32,
     filter: TxFilter,
+    today: chrono::NaiveDate,
+    screen: Screen,
 }
 
 #[derive(Debug, Clone)]
@@ -39,10 +42,16 @@ pub struct ViewModel {
     pub calendar: Vec<CalendarMonthTotal>,
     /// Start balance plus all income, expenses and refunds, all time.
     pub balance: Money,
+    /// Number of deleted transactions currently in Trash.
+    pub trash_count: usize,
+    /// Most recent backup/restore/import/purge operation notice in this session.
+    pub last_operation: Option<OperationNotice>,
     /// Where the database file lives, for the settings screen.
     pub data_path: String,
     /// The local date, kept here so screens never read the clock and tests can pin it.
     pub today: chrono::NaiveDate,
+    #[cfg(test)]
+    pub(crate) trash_loads: usize,
     loaded: Option<LoadKey>,
 }
 
@@ -61,8 +70,12 @@ impl ViewModel {
             person_totals: Vec::new(),
             calendar: Vec::new(),
             balance: Money::ZERO,
+            trash_count: 0,
+            last_operation: None,
             data_path: String::new(),
             today: chrono::Local::now().date_naive(),
+            #[cfg(test)]
+            trash_loads: 0,
             loaded: None,
         }
     }
@@ -119,7 +132,7 @@ impl ViewModel {
             .collect()
     }
 
-    fn key(store: &Store, ui: &UiState) -> LoadKey {
+    fn key(&self, store: &Store, ui: &UiState) -> LoadKey {
         LoadKey {
             version: store.data_version(),
             month: ui.month,
@@ -128,6 +141,19 @@ impl ViewModel {
                 month: Some(ui.month),
                 ..ui.filter.clone()
             },
+            today: self.today,
+            screen: ui.screen,
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)
+    )]
+    fn load_trash_screen_stub(&mut self) {
+        #[cfg(test)]
+        {
+            self.trash_loads += 1;
         }
     }
 
@@ -137,7 +163,7 @@ impl ViewModel {
     /// # Errors
     /// Database errors.
     pub fn sync(&mut self, store: &Store, ui: &UiState) -> Result<bool> {
-        if self.loaded.as_ref() == Some(&Self::key(store, ui)) {
+        if self.loaded.as_ref() == Some(&self.key(store, ui)) {
             return Ok(false);
         }
         self.reload(store, ui, RefreshScope::All)?;
@@ -153,8 +179,12 @@ impl ViewModel {
         match scope {
             RefreshScope::People => self.all_people = people_repo::list(conn, true)?,
             RefreshScope::Categories => self.all_categories = categories_repo::list(conn, true)?,
+            RefreshScope::Trash => {
+                self.load_trash_screen_stub();
+            }
+            RefreshScope::Backups => {}
             RefreshScope::Month | RefreshScope::Calendar | RefreshScope::All => {
-                let key = Self::key(store, ui);
+                let key = self.key(store, ui);
                 self.profile = profile_repo::load(conn)?;
                 self.all_people = people_repo::list(conn, true)?;
                 self.all_categories = categories_repo::list(conn, true)?;
@@ -169,9 +199,64 @@ impl ViewModel {
                     .map_or(Money::ZERO, |p| p.start_balance);
                 self.balance = reports::tracked_balance(conn, start)?;
                 self.data_path = store.dirs().db_path.display().to_string();
+                if ui.screen == Screen::Trash {
+                    self.load_trash_screen_stub();
+                }
             }
         }
-        self.loaded = Some(Self::key(store, ui));
+        self.loaded = Some(self.key(store, ui));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::config::AppDirs;
+    use crate::infrastructure::db::Db;
+
+    #[test]
+    fn load_key_changes_at_midnight() {
+        let store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-midnight-test")),
+        );
+        let ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        let day1 = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let day2 = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
+
+        vm.today = day1;
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert!(!vm.sync(&store, &ui).unwrap());
+
+        vm.today = day2;
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert!(!vm.sync(&store, &ui).unwrap());
+    }
+
+    #[test]
+    fn screen_change_reloads_screen_specific_models() {
+        let store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-screen-test")),
+        );
+        let mut ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_loads, 0);
+
+        ui.set_screen(Screen::Calendar);
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_loads, 0);
+
+        ui.set_screen(Screen::Trash);
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_loads, 1);
+
+        assert!(!vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.trash_loads, 1);
     }
 }

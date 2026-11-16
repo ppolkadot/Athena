@@ -1,6 +1,8 @@
 //! The only way the UI changes persisted data: build an [`AppAction`], hand it to
 //! `Store::apply`, show the [`ActionOutcome`].
 
+use std::path::PathBuf;
+
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
@@ -29,9 +31,26 @@ pub enum RefreshScope {
     /// Transactions and everything derived from them: register, summaries, calendar, balance.
     Month,
     Calendar,
+    Trash,
+    Backups,
     People,
     Categories,
     All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    BackupCreated,
+    Restored,
+    Imported,
+    TrashPurged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationNotice {
+    pub kind: OperationKind,
+    pub snapshot: Option<PathBuf>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,4 +59,5 @@ pub struct ActionOutcome {
     pub inverse: Option<AppAction>,
     pub toast: Option<ToastKey>,
     pub refresh: RefreshScope,
+    pub notice: Option<OperationNotice>,
 }

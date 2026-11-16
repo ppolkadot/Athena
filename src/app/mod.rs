@@ -98,8 +98,15 @@ impl AppCore {
     /// Whatever the action fails with; nothing changes in that case.
     pub fn apply(&mut self, action: AppAction) -> Result<ActionOutcome> {
         let outcome = self.store.apply(action)?;
+        self.record_outcome_notice(&outcome);
         self.vm.reload(&self.store, &self.ui, outcome.refresh)?;
         Ok(outcome)
+    }
+
+    fn record_outcome_notice(&mut self, outcome: &ActionOutcome) {
+        if let Some(notice) = &outcome.notice {
+            self.vm.last_operation = Some(notice.clone());
+        }
     }
 
     /// # Errors
@@ -354,11 +361,7 @@ impl AthenaApp {
             if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
                 self.open_quick_add();
             }
-            for (key, screen) in [
-                (Key::Num1, Screen::ALL[0]),
-                (Key::Num2, Screen::ALL[1]),
-                (Key::Num3, Screen::ALL[2]),
-            ] {
+            for &(key, screen) in &navigation::SHORTCUTS {
                 if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, key)) {
                     self.core.set_screen(screen);
                 }
@@ -1179,6 +1182,12 @@ mod tests {
         harness.key_press_modifiers(ctrl, Key::Num3);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Settings);
+        harness.key_press_modifiers(ctrl, Key::Num4);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Trash);
+        harness.key_press_modifiers(ctrl, Key::Num3);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Settings);
 
         harness.key_press_modifiers(ctrl, Key::N);
         harness.run_steps(3);
@@ -1198,6 +1207,32 @@ mod tests {
         harness.key_press_modifiers(ctrl, Key::Num1);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Month);
+    }
+
+    #[test]
+    fn outcome_notice_is_kept_as_last_operation() {
+        use actions::{OperationKind, OperationNotice, RefreshScope};
+        use std::path::PathBuf;
+
+        let mut core = onboarded(None);
+        assert_eq!(core.vm.last_operation, None);
+
+        let notice = OperationNotice {
+            kind: OperationKind::BackupCreated,
+            snapshot: Some(PathBuf::from("backups/manual-2026-11-16_10-00-00.db")),
+            source: None,
+        };
+        core.record_outcome_notice(&ActionOutcome {
+            inverse: None,
+            toast: None,
+            refresh: RefreshScope::Backups,
+            notice: Some(notice.clone()),
+        });
+        assert_eq!(core.vm.last_operation.as_ref(), Some(&notice));
+
+        // Subsequent actions without a notice preserve last_operation for the session.
+        core.create_transaction(draft_with(vec![])).unwrap();
+        assert_eq!(core.vm.last_operation.as_ref(), Some(&notice));
     }
 
     #[test]

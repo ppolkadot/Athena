@@ -52,6 +52,10 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
             })
             .into_iter()
             .collect(),
+        Screen::Trash => {
+            placeholder(ui, vm, state);
+            Vec::new()
+        }
         Screen::Settings => settings::show(ui, vm, state),
     }
 }
