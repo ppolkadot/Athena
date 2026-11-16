@@ -1,0 +1,102 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, Clippy, Tests & Doc-Lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run locked test suite
+        run: cargo test --locked
+
+      - name: Run document lint
+        shell: bash
+        run: bash docs/superpowers/doc-lint.sh
+
+  package:
+    name: Build Release & Installer
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Install Inno Setup 6.7.3
+        run: choco install innosetup --version 6.7.3 -y
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          & $iscc installer\athena.iss
+
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $files = @(
+            (Get-Item target\release\athena.exe),
+            (Get-Item target\installer\Athena-*-setup.exe | Select-Object -First 1),
+            (Get-Item assets\fonts\LICENSE.txt)
+          )
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+            "$hash  $($f.Name)"
+          }
+          $lines | Set-Content -Path SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-windows-release
+          path: |
+            target/release/athena.exe
+            target/installer/Athena-*-setup.exe
+            assets/fonts/LICENSE.txt
+            SHA256SUMS.txt
+          if-no-files-found: error

@@ -112,3 +112,8 @@ checklist: `docs/smoke-1.0.md`.
 
 Pixel snapshots of every screen live in `src/ui/snapshots`. After an intended visual change run
 `UPDATE_SNAPSHOTS=1 cargo test snapshot_` and review the new images.
+
+CI runs `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+`cargo test --locked`, and `docs/superpowers/doc-lint.sh` on `windows-latest`; snapshot goldens
+render against Windows' WARP (`Microsoft Basic Render Driver`) DX12 adapter with a 150-pixel
+tolerance.
