@@ -10,6 +10,8 @@ use crate::domain::settings::Profile;
 use crate::domain::transaction::TxDraft;
 use crate::i18n::ToastKey;
 
+pub use crate::infrastructure::db::restore::RestoreSource;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
     CompleteOnboarding(OnboardingResult),
@@ -28,6 +30,7 @@ pub enum AppAction {
     SaveCategory(Category),
     ArchiveCategory(i64),
     CreateBackup,
+    RestoreBackup(RestoreSource),
 }
 
 /// What the view model must reload after an action.

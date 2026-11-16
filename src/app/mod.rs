@@ -27,12 +27,13 @@ use crate::ui::screens::ScreenEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
 use crate::ui::{shell, theme};
 
-use self::actions::{ActionOutcome, AppAction};
+use self::actions::{ActionOutcome, AppAction, RestoreSource};
 pub use self::files::run_export;
-use self::files::{now_rfc3339, open_folder, pick_export_path};
+use self::files::{now_rfc3339, open_folder, pick_export_path, pick_restore_path};
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
     delete_confirmation, empty_trash_confirmation, handle_quick_add, purge_confirmation,
+    restore_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -98,8 +99,14 @@ impl AppCore {
     /// # Errors
     /// Whatever the action fails with; nothing changes in that case.
     pub fn apply(&mut self, action: AppAction) -> Result<ActionOutcome> {
+        let reset_ui = matches!(action, AppAction::RestoreBackup(_));
         let outcome = self.store.apply(action)?;
         self.record_outcome_notice(&outcome);
+        if reset_ui {
+            self.ui.clear_filters();
+            self.ui.set_screen(Screen::Month);
+            self.ui.settings.reset_all();
+        }
         if let Err(err) = self.vm.reload(&self.store, &self.ui, outcome.refresh) {
             tracing::error!("could not refresh the view after applying action: {err}");
         }
@@ -297,6 +304,28 @@ impl AthenaApp {
                 if let Some(path) = pick_export_path(&self.core, request, self.today()) {
                     let text = run_export(&self.core, request, &path, &now_rfc3339());
                     self.raise_toast_text(ctx, Some(text));
+                }
+            }
+            ScreenEvent::RequestRestoreListed(file) if idle => {
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(restore_confirmation(
+                    &self.core,
+                    RestoreSource::Listed(file.path),
+                    Some(file.created_utc),
+                ));
+            }
+            ScreenEvent::PickRestoreFile if idle => {
+                if let Some(path) = pick_restore_path(&self.core) {
+                    let modified_utc = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(chrono::DateTime::<chrono::Utc>::from);
+                    self.remember_modal_opener(ctx);
+                    self.confirm = Some(restore_confirmation(
+                        &self.core,
+                        RestoreSource::External(path),
+                        modified_utc,
+                    ));
                 }
             }
             ScreenEvent::RetryRefresh => {
@@ -559,6 +588,7 @@ impl AthenaApp {
                 Some(ConfirmChoice::Confirmed(action)) => {
                     let is_purge = matches!(action, AppAction::PurgeTransaction(_));
                     let is_delete = matches!(action, AppAction::DeleteTransaction(_));
+                    let is_restore = matches!(action, AppAction::RestoreBackup(_));
                     let purged_id = match action {
                         AppAction::PurgeTransaction(id) => Some(id),
                         _ => None,
@@ -566,14 +596,21 @@ impl AthenaApp {
                     let emptied_trash = matches!(action, AppAction::EmptyTrash);
                     let before_version = self.core.store.data_version();
                     let toast = apply_confirmed_outcome(&mut self.core, action);
+                    let restored_ok =
+                        is_restore && self.core.store.data_version() != before_version;
                     if self.core.store.data_version() != before_version {
-                        if let Some(id) = purged_id && self.toast.as_ref().is_some_and(|t| {
-                            matches!(
-                                &t.action,
-                                Some(ToastAction::Undo(AppAction::RestoreTransaction(restore_id)))
-                                    if *restore_id == id
-                            )
-                        }) {
+                        if restored_ok {
+                            self.toast = None;
+                        } else if let Some(id) = purged_id
+                            && self.toast.as_ref().is_some_and(|t| {
+                                matches!(
+                                    &t.action,
+                                    Some(ToastAction::Undo(AppAction::RestoreTransaction(
+                                        restore_id
+                                    ))) if *restore_id == id
+                                )
+                            })
+                        {
                             self.toast = None;
                         } else if emptied_trash
                             && self.toast.as_ref().is_some_and(|t| {
@@ -590,7 +627,7 @@ impl AthenaApp {
                     if is_purge {
                         self.core.ui.trash_focus_row = self.core.ui.pending_purge_focus_row.take();
                         self.modal_opener = None;
-                    } else if is_delete {
+                    } else if is_delete || restored_ok {
                         self.modal_opener = None;
                     } else {
                         self.restore_modal_opener(ctx);
@@ -1258,6 +1295,8 @@ mod tests {
         assert!(harness.query_all_by_label("Configurações").count() > 0);
         assert!(harness.query_all_by_label("Perfil").count() > 0);
 
+        harness.get_by_label("Pessoas").click();
+        harness.run_steps(2);
         harness.get_all_by_label("Arquivar").next().unwrap().click();
         harness.run_steps(3);
         assert_eq!(
@@ -2132,5 +2171,179 @@ mod tests {
                 .is_some()
         );
         assert!(harness.state().core.vm.person(ana_id).unwrap().archived);
+    }
+
+    fn file_backed_core() -> (tempfile::TempDir, AppCore) {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let db = Db::open(&dirs.db_path).unwrap();
+        let mut core = AppCore {
+            store: Store::new(db, dirs),
+            vm: ViewModel::new(Language::En),
+            ui: UiState::new(YearMonth::new(2026, 11).unwrap()),
+        };
+        core.vm.today = crate::shared::test_fixtures::today();
+        core.complete_onboarding(OnboardingResult {
+            display_name: "A3".into(),
+            partner_name: Some("Ana".into()),
+            start_balance: Money::from_cents(10_000),
+            language: Language::En,
+        })
+        .unwrap();
+        (dir, core)
+    }
+
+    #[test]
+    fn restore_success_reloads_everything_and_resets_ui() {
+        let (_dir, mut core) = file_backed_core();
+        let mut before = draft_with(vec![]);
+        before.title = "Saved Before Backup".into();
+        core.create_transaction(before).unwrap();
+
+        let backup = core.apply(AppAction::CreateBackup).unwrap();
+        let backup_path = backup.notice.unwrap().snapshot.unwrap();
+
+        let mut after = draft_with(vec![]);
+        after.title = "Added After Backup".into();
+        core.create_transaction(after).unwrap();
+        assert_eq!(core.vm.transactions.len(), 2);
+
+        core.ui.filter_shared();
+        core.ui.edit_search("Added".into(), 1.0);
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+
+        let outcome = core
+            .apply(AppAction::RestoreBackup(RestoreSource::Listed(backup_path)))
+            .unwrap();
+        let snapshot_path = outcome.notice.unwrap().snapshot.unwrap();
+
+        assert_eq!(core.ui.screen, Screen::Month);
+        assert!(!core.ui.has_filters());
+        assert_eq!(
+            core.ui.settings.page,
+            crate::ui::screens::settings::SettingsPage::General
+        );
+        assert_eq!(core.vm.transactions.len(), 1);
+        assert_eq!(core.vm.transactions[0].title, "Saved Before Backup");
+        assert_eq!(
+            core.vm
+                .last_operation
+                .as_ref()
+                .and_then(|n| n.snapshot.as_ref()),
+            Some(&snapshot_path)
+        );
+    }
+
+    #[test]
+    fn data_page_lists_backups_and_confirms_restore() {
+        use egui_kittest::kittest::Queryable;
+
+        let (_dir, mut core) = file_backed_core();
+        let mut d1 = draft_with(vec![]);
+        d1.title = "In Backup".into();
+        core.create_transaction(d1).unwrap();
+        let backup = core.apply(AppAction::CreateBackup).unwrap();
+        let backup_path = backup.notice.unwrap().snapshot.unwrap();
+        let backup_name = backup_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let mut d2 = draft_with(vec![]);
+        d2.title = "After Backup".into();
+        core.create_transaction(d2).unwrap();
+
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 900.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+        assert!(harness.query_by_label(backup_name.as_str()).is_some());
+
+        harness
+            .get_by_label(format!("Restore… {backup_name}").as_str())
+            .click();
+        harness.run_steps(3);
+
+        let dialog = harness.state().confirm.as_ref().expect("confirm dialog");
+        assert!(dialog.body.contains(&backup_name));
+        assert!(dialog.body.contains("Replaces everything in Athena"));
+        assert!(dialog.body.contains(&harness.state().core.vm.backups_dir));
+
+        harness.get_by_label("Restore").click();
+        harness.run_steps(4);
+
+        let app = harness.state();
+        assert_eq!(app.core.ui.screen, Screen::Month);
+        assert_eq!(app.core.vm.transactions.len(), 1);
+        assert_eq!(app.core.vm.transactions[0].title, "In Backup");
+    }
+
+    #[test]
+    fn back_up_now_adds_a_row() {
+        use egui_kittest::kittest::Queryable;
+
+        let (_dir, mut core) = file_backed_core();
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+        assert!(core.vm.backups.is_empty());
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 900.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    let style = ui.ctx().global_style();
+                    ui.set_style(style);
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            );
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("No backups in this folder yet.")
+                .is_some()
+        );
+
+        harness.get_by_label("Back up now").click();
+        harness.run_steps(4);
+
+        let app = harness.state();
+        assert_eq!(app.core.vm.backups.len(), 1);
+        let name = app.core.vm.backups[0]
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("manual-"));
+        assert!(harness.query_by_label(name.as_str()).is_some());
+        assert_eq!(
+            app.core.ui.settings.page,
+            crate::ui::screens::settings::SettingsPage::Data
+        );
     }
 }

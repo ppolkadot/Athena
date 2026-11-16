@@ -9,7 +9,7 @@ use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::{
-    Db, backup, categories_repo, integrity, people_repo, profile_repo, transactions_repo,
+    Db, backup, categories_repo, integrity, people_repo, profile_repo, restore, transactions_repo,
     trash_repo,
 };
 use crate::shared::error::Result;
@@ -47,13 +47,13 @@ impl Store {
         self.data_version
     }
 
-    /// Interim D-P4 gate: automatic >30d trash purging is paused until Task 8's restore UI lands.
-    pub(crate) const AUTO_TRASH_RETENTION_ENABLED: bool = false;
+    /// Automatic >30d trash purging (backed by verified pre-purge snapshots and Task 8 restore UI).
+    pub(crate) const AUTO_TRASH_RETENTION_ENABLED: bool = true;
 
     /// Once per launch: the daily snapshot (a failure is logged, never fatal), Trash 30-day
-    /// retention (paused until restore UI lands in Task 8; skipped if the snapshot failed or if the
-    /// clock rolled back before `max(deleted_at)`), and, in debug builds, an integrity check whose
-    /// findings are logged as a count only.
+    /// retention (skipped if the snapshot failed or if the clock rolled back before
+    /// `max(deleted_at)`), and, in debug builds, an integrity check whose findings are logged as a
+    /// count only.
     pub fn run_startup_tasks(&self, today: NaiveDate, now_utc: DateTime<Utc>) {
         if let Err(err) = backup::clear_staging(&self.dirs) {
             tracing::warn!("could not clear staging folder: {err}");
@@ -63,15 +63,11 @@ impl Store {
                 tracing::info!("daily snapshot written");
                 if Self::AUTO_TRASH_RETENTION_ENABLED {
                     self.run_trash_retention(now_utc);
-                } else {
-                    tracing::debug!("automatic trash retention paused until restore UI lands");
                 }
             }
             Ok(None) => {
                 if Self::AUTO_TRASH_RETENTION_ENABLED {
                     self.run_trash_retention(now_utc);
-                } else {
-                    tracing::debug!("automatic trash retention paused until restore UI lands");
                 }
             }
             Err(err) => tracing::warn!("daily snapshot failed, skipping trash purge: {err}"),
@@ -160,18 +156,38 @@ impl Store {
     }
 
     fn run(&mut self, action: AppAction) -> Result<ActionOutcome> {
-        if action == AppAction::CreateBackup {
-            let file = backup::create_manual(self.db.conn(), &self.dirs, Utc::now())?;
-            return Ok(ActionOutcome {
-                inverse: None,
-                toast: Some(ToastKey::BackupCreated),
-                refresh: RefreshScope::Backups,
-                notice: Some(OperationNotice {
-                    kind: OperationKind::BackupCreated,
-                    snapshot: Some(file.path),
-                    source: None,
-                }),
-            });
+        match action {
+            AppAction::CreateBackup => {
+                let file = backup::create_manual(self.db.conn(), &self.dirs, Utc::now())?;
+                return Ok(ActionOutcome {
+                    inverse: None,
+                    toast: Some(ToastKey::BackupCreated),
+                    refresh: RefreshScope::Backups,
+                    notice: Some(OperationNotice {
+                        kind: OperationKind::BackupCreated,
+                        snapshot: Some(file.path),
+                        source: None,
+                    }),
+                });
+            }
+            AppAction::RestoreBackup(source) => {
+                let receipt =
+                    restore::restore_backup(&mut self.db, &self.dirs, &source, Utc::now())?;
+                return Ok(ActionOutcome {
+                    inverse: None,
+                    toast: Some(ToastKey::Restored),
+                    refresh: RefreshScope::All,
+                    notice: Some(OperationNotice {
+                        kind: OperationKind::Restored,
+                        snapshot: Some(receipt.snapshot),
+                        source: receipt
+                            .source
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned()),
+                    }),
+                });
+            }
+            _ => {}
         }
         let conn = self.db.conn();
         match action {
@@ -191,7 +207,7 @@ impl Store {
             | AppAction::RestorePerson(_)
             | AppAction::SaveCategory(_)
             | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
-            AppAction::CreateBackup => unreachable!(),
+            AppAction::CreateBackup | AppAction::RestoreBackup(_) => unreachable!(),
         }
     }
 
@@ -628,27 +644,61 @@ mod tests {
     }
 
     #[test]
-    fn startup_pauses_auto_purge_until_restore_ui_lands() {
+    fn startup_auto_purges_and_pre_purge_snapshot_restores_deleted_rows() {
         let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let dirs = AppDirs::from_root(dir.path().to_path_buf());
-        let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
-        let expired = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+        dirs.ensure().unwrap();
+        let mut store = Store::new(Db::open(&dirs.db_path).unwrap(), dirs.clone());
+        profile_repo::save(
+            store.db().conn(),
+            &crate::domain::settings::Profile {
+                start_balance: Money::ZERO,
+                theme: crate::domain::settings::Theme::Dark,
+                language: crate::domain::settings::Language::En,
+                onboarding_complete: true,
+            },
+        )
+        .unwrap();
+        let (_owner, partner) = seed_people(store.db().conn());
+
+        let mut live_draft = draft_with(vec![]);
+        live_draft.title = "Live Lunch".into();
+        let live_id = transactions_repo::create(store.db().conn(), &live_draft).unwrap();
+
+        let mut expired_draft = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(2_500),
+        }]);
+        expired_draft.title = "Expired Coffee".into();
+        let expired_id = transactions_repo::create(store.db().conn(), &expired_draft).unwrap();
         store
             .db()
             .conn()
             .execute(
                 "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
-                [expired],
+                [expired_id],
             )
             .unwrap();
 
         store.run_startup_tasks(today, now_utc);
         assert!(dirs.backups_dir.join("auto-2026-11-16.db").exists());
+        let pre_purge = dirs.backups_dir.join("pre-purge-2026-11-16_12-00-00.db");
+        assert!(pre_purge.exists());
+        assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 0);
+
+        store
+            .apply(AppAction::RestoreBackup(restore::RestoreSource::Listed(
+                pre_purge,
+            )))
+            .unwrap();
         assert_eq!(trash_repo::count(store.db().conn()).unwrap(), 1);
+        let restored = trash_repo::get_deleted(store.db().conn(), expired_id).unwrap();
+        assert_eq!(restored.tx.title, "Expired Coffee");
+        assert_eq!(store.transaction(live_id).unwrap().title, "Live Lunch");
     }
 
     #[test]

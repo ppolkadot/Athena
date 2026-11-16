@@ -1,14 +1,17 @@
 //! Modal, confirmation, and settings-action orchestration around [`AppCore`].
 
-use crate::i18n::{PluralKey, ToastKey, plural, strings};
-use crate::shared::error::Result;
+use chrono::{DateTime, Local, Utc};
+
+use crate::i18n::{PluralKey, ToastKey, format_date, plural, restore_error_message, strings};
+use crate::infrastructure::db::restore::RestoreSource;
+use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::ConfirmDialog;
 use crate::ui::components::toast::ToastAction;
 use crate::ui::quick_add::{QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
 use crate::ui::screens::settings::SettingsError;
 
 use super::AppCore;
-use super::actions::AppAction;
+use super::actions::{AppAction, OperationKind};
 
 /// Whether the quick-add modal stays up after handling an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,8 +118,54 @@ pub fn empty_trash_confirmation(core: &AppCore) -> ConfirmDialog {
     }
 }
 
+/// The "restore this backup?" dialog naming the source, local backup date, full-replacement
+/// consequence, and safety-snapshot folder (`§9.3`).
+#[must_use]
+pub fn restore_confirmation(
+    core: &AppCore,
+    source: RestoreSource,
+    modified_utc: Option<DateTime<Utc>>,
+) -> ConfirmDialog {
+    let language = core.vm.language();
+    let s = strings(language);
+    let source_label = match &source {
+        RestoreSource::Listed(path) => path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
+        RestoreSource::External(path) => path.display().to_string(),
+    };
+    let date_label = modified_utc.map_or_else(
+        || s.unknown_date.to_string(),
+        |utc| {
+            let local = utc.with_timezone(&Local);
+            format!(
+                "{} {}",
+                format_date(local.date_naive(), language),
+                local.format("%H:%M")
+            )
+        },
+    );
+    let snapshot_dir = if core.vm.backups_dir.is_empty() {
+        core.store.dirs().backups_dir.display().to_string()
+    } else {
+        core.vm.backups_dir.clone()
+    };
+    ConfirmDialog {
+        title: s.confirm_restore_title.to_string(),
+        body: s
+            .confirm_restore_body
+            .replace("{source}", &source_label)
+            .replace("{date}", &date_label)
+            .replace("{snapshot_dir}", &snapshot_dir),
+        confirm_label: s.restore.to_string(),
+        danger: true,
+        action: AppAction::RestoreBackup(source),
+    }
+}
+
 /// Apply an action the user confirmed, returning its toast text and an optional undo action
-/// (offered for `DeleteTransaction` only). A failure is logged and shows nothing.
+/// (offered for `DeleteTransaction` only). Restore failures surface a localized error message.
 pub fn apply_confirmed_outcome(
     core: &mut AppCore,
     action: AppAction,
@@ -129,19 +178,39 @@ pub fn apply_confirmed_outcome(
     match core.apply(action) {
         Ok(outcome) => {
             let language = core.vm.language();
-            let text = match deleted_title {
-                Some(title) => Some(
+            let text = if let Some(title) = deleted_title {
+                Some(
                     strings(language)
                         .toast_deleted_named
                         .replace("{title}", &title),
-                ),
-                None => outcome.toast.map(|key| key.text(language).to_string()),
+                )
+            } else if let Some(notice) = &outcome.notice
+                && notice.kind == OperationKind::Restored
+                && let Some(snapshot) = &notice.snapshot
+            {
+                let snap_name = snapshot.file_name().map_or_else(
+                    || snapshot.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                Some(
+                    strings(language)
+                        .toast_restored_named
+                        .replace("{snapshot}", &snap_name),
+                )
+            } else {
+                outcome.toast.map(|key| key.text(language).to_string())
             }?;
             let toast_action = is_delete
                 .then_some(outcome.inverse)
                 .flatten()
                 .map(ToastAction::Undo);
             Some((text, toast_action))
+        }
+        Err(AppError::Restore(err)) => {
+            tracing::warn!("restore failed: {err}");
+            let message = restore_error_message(&err, core.vm.language());
+            core.ui.settings.restore_error = Some(message.clone());
+            Some((message, None))
         }
         Err(err) => {
             tracing::warn!("confirmed action failed: {err}");

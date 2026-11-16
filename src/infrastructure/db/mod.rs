@@ -7,6 +7,7 @@ pub mod migrations;
 pub mod people_repo;
 pub mod profile_repo;
 pub mod reports_repo;
+pub mod restore;
 pub mod settlement_repo;
 pub mod transactions_repo;
 pub mod trash_repo;
@@ -126,7 +127,7 @@ pub(crate) fn bad_code(column: usize, what: &str, value: &str) -> rusqlite::Erro
 
 /// SQL helper functions every connection needs. `fold(text)` is the accent- and case-insensitive
 /// folding from `domain::text`, used by search.
-fn register_functions(conn: &Connection) -> Result<()> {
+pub(crate) fn register_functions(conn: &Connection) -> Result<()> {
     conn.create_scalar_function(
         "fold",
         1,

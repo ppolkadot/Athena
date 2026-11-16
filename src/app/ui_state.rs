@@ -49,8 +49,8 @@ impl UiState {
 
     pub fn set_screen(&mut self, screen: Screen) {
         if screen != Screen::Settings {
-            // Leaving settings drops unsaved edits, so reopening shows what is stored.
-            self.settings.reset();
+            // Leaving settings drops unsaved edits and subpage selection, so reopening starts fresh.
+            self.settings.reset_all();
         }
         if screen != Screen::Trash {
             self.trash_focus_row = None;

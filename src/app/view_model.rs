@@ -63,6 +63,8 @@ pub struct ViewModel {
     pub last_operation: Option<OperationNotice>,
     /// Where the database file lives, for the settings screen.
     pub data_path: String,
+    /// Where managed backup snapshots are stored.
+    pub backups_dir: String,
     /// The local date, kept here so screens never read the clock and tests can pin it.
     pub today: chrono::NaiveDate,
     #[cfg(test)]
@@ -94,6 +96,7 @@ impl ViewModel {
             backups: Vec::new(),
             last_operation: None,
             data_path: String::new(),
+            backups_dir: String::new(),
             today: chrono::Local::now().date_naive(),
             #[cfg(test)]
             trash_loads: 0,
@@ -372,6 +375,7 @@ impl ViewModel {
                 let balance = reports::tracked_balance(conn, start)?;
                 let trash_count = trash_repo::count(conn)?;
                 let data_path = store.dirs().db_path.display().to_string();
+                let backups_dir = store.dirs().backups_dir.display().to_string();
                 let (trash, trash_loaded) = if ui.screen == Screen::Trash {
                     (trash_repo::list(conn)?, true)
                 } else {
@@ -408,6 +412,7 @@ impl ViewModel {
                 self.settlement_unavailable = settlement_unavailable;
                 self.trash_count = trash_count;
                 self.data_path = data_path;
+                self.backups_dir = backups_dir;
                 self.trash = trash;
                 self.backups = backups;
                 if trash_loaded {

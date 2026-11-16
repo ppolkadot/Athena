@@ -21,8 +21,7 @@ use crate::i18n::{money_error_message, strings};
 use crate::ui::screens::ScreenEvent;
 use crate::ui::theme::{Palette, palette, parse_hex, typography};
 
-/// Sub-pages for Settings. The page selector arrives in 1.1; until then `show` renders all
-/// cards in one scroll.
+/// Sub-pages for Settings (`§12`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsPage {
     #[default]
@@ -64,6 +63,7 @@ pub struct CategoryDraft {
 #[derive(Debug, Clone)]
 pub struct SettingsState {
     initialized: bool,
+    pub page: SettingsPage,
     pub owner_name: String,
     pub partner_name: String,
     pub balance_input: String,
@@ -76,12 +76,14 @@ pub struct SettingsState {
     pub confirm_archive_person: Option<i64>,
     pub confirm_archive_category: Option<i64>,
     pub error: Option<SettingsError>,
+    pub restore_error: Option<String>,
 }
 
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
             initialized: false,
+            page: SettingsPage::General,
             owner_name: String::new(),
             partner_name: String::new(),
             balance_input: String::new(),
@@ -94,6 +96,7 @@ impl Default for SettingsState {
             confirm_archive_person: None,
             confirm_archive_category: None,
             error: None,
+            restore_error: None,
         }
     }
 }
@@ -105,8 +108,19 @@ fn partner_of(vm: &ViewModel) -> Option<&Person> {
 }
 
 impl SettingsState {
-    /// Forget every in-progress edit; the next frame reloads the fields from the view model.
+    /// Forget every in-progress edit while staying on the active sub-page; the next frame reloads
+    /// the fields from the view model.
     pub fn reset(&mut self) {
+        let page = self.page;
+        *self = Self {
+            page,
+            ..Self::default()
+        };
+    }
+
+    /// Forget edits and return to the default General sub-page (used when leaving Settings or
+    /// replacing the database via restore/import).
+    pub fn reset_all(&mut self) {
         *self = Self::default();
     }
 
@@ -307,11 +321,41 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
             .text_style(typography::display())
             .strong(),
     );
+    ui.add_space(8.0);
+    ui.horizontal_wrapped(|ui| {
+        for (page, label) in [
+            (SettingsPage::General, s.settings_tab_general),
+            (SettingsPage::People, s.settings_tab_people),
+            (SettingsPage::Categories, s.settings_tab_categories),
+            (SettingsPage::Data, s.settings_tab_data),
+        ] {
+            if ui
+                .selectable_label(ui_state.settings.page == page, label)
+                .clicked()
+            {
+                ui_state.settings.page = page;
+            }
+        }
+    });
     ui.add_space(12.0);
 
-    general::profile_card(ui, vm, ui_state, &mut events);
-    people::people_card(ui, vm, ui_state, &mut events);
-    categories::categories_card(ui, vm, ui_state, &mut events);
+    match ui_state.settings.page {
+        SettingsPage::General => {
+            general::profile_card(ui, vm, ui_state, &mut events);
+            data::about_card(ui, vm);
+        }
+        SettingsPage::People => {
+            people::people_card(ui, vm, ui_state, &mut events);
+        }
+        SettingsPage::Categories => {
+            categories::categories_card(ui, vm, ui_state, &mut events);
+        }
+        SettingsPage::Data => {
+            data::data_card(ui, vm, ui_state, &mut events);
+            data::backups_card(ui, vm, ui_state, &mut events);
+        }
+    }
+
     let shown = ui_state
         .settings
         .error
@@ -320,8 +364,6 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
         ui.label(RichText::new(error_message(error, vm.language())).color(p.negative));
         ui.add_space(8.0);
     }
-
-    data::data_and_about_cards(ui, vm, ui_state, &mut events);
     events
 }
 
@@ -602,10 +644,11 @@ mod tests {
         harness.run_steps(3);
         for label in [
             "Settings",
-            "Profile",
+            "General",
             "People",
             "Categories",
-            "Data",
+            "Data & backups",
+            "Profile",
             "About",
             "Dark",
             "Light",
@@ -616,12 +659,24 @@ mod tests {
         }
         let about = format!("Athena · Version {}", env!("CARGO_PKG_VERSION"));
         assert!(harness.query_by_label(about.as_str()).is_some());
+
+        harness.get_by_label("People").click();
+        harness.run_steps(2);
+        assert!(harness.query_all_by_label("Add a person").count() > 0);
+
+        harness.get_by_label("Categories").click();
+        harness.run_steps(2);
         for category in ["Food", "Salary", "Other income"] {
             assert!(
                 harness.query_all_by_label(category).count() > 0,
                 "{category}"
             );
         }
+
+        harness.get_by_label("Data & backups").click();
+        harness.run_steps(2);
+        assert!(harness.query_all_by_label("Data").count() > 0);
+        assert!(harness.query_all_by_label("Backups & restore").count() > 0);
     }
 
     #[test]
@@ -658,6 +713,8 @@ mod tests {
             .id;
         let mut harness = harness(&core);
         harness.run_steps(3);
+        harness.get_by_label("People").click();
+        harness.run_steps(2);
         // Only the partner has an Archive button; the owner never does.
         let archive_buttons = harness.get_all_by_label("Archive").count();
         assert!(archive_buttons >= 1);
@@ -674,6 +731,8 @@ mod tests {
         let core = core(None);
         let mut harness = harness(&core);
         harness.run_steps(3);
+        harness.get_by_label("Data & backups").click();
+        harness.run_steps(2);
         harness.get_by_label("Open data folder").click();
         harness.run_steps(2);
         assert!(harness.state().2.contains(&ScreenEvent::OpenDataFolder));
@@ -685,6 +744,8 @@ mod tests {
         let core = core(None);
         let mut harness = harness(&core);
         harness.run_steps(3);
+        harness.get_by_label("Data & backups").click();
+        harness.run_steps(2);
         harness.get_by_label("Export JSON (everything)").click();
         harness.run_steps(2);
         harness.get_by_label("Export CSV for November 2026").click();

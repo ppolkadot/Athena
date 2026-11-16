@@ -13,7 +13,8 @@ use crate::domain::date::YearMonth;
 use crate::domain::money::MoneyError;
 use crate::domain::settings::Language;
 use crate::domain::transaction::{TransactionType, ValidationError};
-use crate::shared::error::AppError;
+use crate::infrastructure::db::backup::BackupKind;
+use crate::shared::error::{AppError, RestoreError};
 
 /// Declares [`Strings`] and a `fields()` listing used by the completeness tests.
 macro_rules! strings {
@@ -95,6 +96,10 @@ strings! {
     settings_categories,
     settings_data,
     settings_about,
+    settings_tab_general,
+    settings_tab_people,
+    settings_tab_categories,
+    settings_tab_data,
     person_owner,
     person_other,
     archived_tag,
@@ -124,6 +129,35 @@ strings! {
     export_hint,
     toast_exported,
     toast_export_failed,
+    backups_title,
+    backups_hint,
+    backups_empty,
+    back_up_now,
+    restore_ellipsis,
+    restore_from_file,
+    backup_kind_auto,
+    backup_kind_manual,
+    backup_kind_pre_purge,
+    backup_kind_pre_restore,
+    backup_kind_pre_import,
+    backup_kind_pre_migration,
+    notice_backup_created,
+    notice_restored,
+    notice_imported,
+    notice_trash_purged,
+    confirm_restore_title,
+    confirm_restore_body,
+    unknown_date,
+    err_restore_not_athena,
+    err_restore_too_new,
+    err_restore_corrupt,
+    err_restore_page_size,
+    err_restore_invalid,
+    err_restore_snapshot_failed,
+    err_restore_same_as_live,
+    err_restore_verification_failed,
+    err_restore_rollback_failed,
+    err_restore_failed,
     startup_failed,
     startup_schema_too_new,
     startup_corrupt,
@@ -192,6 +226,8 @@ strings! {
     toast_category_saved,
     toast_category_archived,
     toast_backup_created,
+    toast_restored,
+    toast_restored_named,
     toast_welcome,
     toast_undo_failed,
     settlement_title,
@@ -244,6 +280,7 @@ pub enum ToastKey {
     CategorySaved,
     CategoryArchived,
     BackupCreated,
+    Restored,
     Welcome,
     UndoFailed,
 }
@@ -265,6 +302,7 @@ impl ToastKey {
             ToastKey::CategorySaved => s.toast_category_saved,
             ToastKey::CategoryArchived => s.toast_category_archived,
             ToastKey::BackupCreated => s.toast_backup_created,
+            ToastKey::Restored => s.toast_restored,
             ToastKey::Welcome => s.toast_welcome,
             ToastKey::UndoFailed => s.toast_undo_failed,
         }
@@ -509,10 +547,62 @@ pub fn money_error_message(error: MoneyError, language: Language) -> &'static st
     }
 }
 
+/// Localized label for a [`BackupKind`].
+#[must_use]
+pub fn backup_kind_label(kind: BackupKind, language: Language) -> &'static str {
+    let s = strings(language);
+    match kind {
+        BackupKind::Auto => s.backup_kind_auto,
+        BackupKind::Manual => s.backup_kind_manual,
+        BackupKind::PrePurge => s.backup_kind_pre_purge,
+        BackupKind::PreRestore => s.backup_kind_pre_restore,
+        BackupKind::PreImport => s.backup_kind_pre_import,
+        BackupKind::PreMigration => s.backup_kind_pre_migration,
+    }
+}
+
+/// Localized message for every [`RestoreError`] variant.
+#[must_use]
+pub fn restore_error_message(error: &RestoreError, language: Language) -> String {
+    let s = strings(language);
+    match error {
+        RestoreError::NotAthena => s.err_restore_not_athena.to_string(),
+        RestoreError::TooNew { found, supported } => s
+            .err_restore_too_new
+            .replace("{found}", &found.to_string())
+            .replace("{supported}", &supported.to_string()),
+        RestoreError::Corrupt => s.err_restore_corrupt.to_string(),
+        RestoreError::PageSize => s.err_restore_page_size.to_string(),
+        RestoreError::Invalid(issues) => s
+            .err_restore_invalid
+            .replace("{count}", &issues.len().to_string()),
+        RestoreError::SnapshotFailed(detail) => {
+            s.err_restore_snapshot_failed.replace("{detail}", detail)
+        }
+        RestoreError::SameAsLive => s.err_restore_same_as_live.to_string(),
+        RestoreError::VerificationFailed {
+            source_path,
+            snapshot_path,
+        } => s
+            .err_restore_verification_failed
+            .replace("{source}", source_path)
+            .replace("{snapshot}", snapshot_path),
+        RestoreError::RollbackFailed {
+            snapshot_path,
+            detail,
+        } => s
+            .err_restore_rollback_failed
+            .replace("{snapshot}", snapshot_path)
+            .replace("{detail}", detail),
+        RestoreError::Failed(detail) => s.err_restore_failed.replace("{detail}", detail),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::money::Money;
+    use crate::infrastructure::db::integrity::IntegrityIssue;
 
     #[test]
     fn dictionaries_cover_core_labels() {
@@ -584,9 +674,47 @@ mod tests {
             PersonRestored,
             CategorySaved,
             CategoryArchived,
+            BackupCreated,
+            Restored,
             Welcome,
+            UndoFailed,
         ] {
             assert_ne!(key.text(Language::En), key.text(Language::PtBr));
+        }
+    }
+
+    #[test]
+    fn restore_errors_are_localized() {
+        let cases = [
+            RestoreError::NotAthena,
+            RestoreError::TooNew {
+                found: 9,
+                supported: 3,
+            },
+            RestoreError::Corrupt,
+            RestoreError::PageSize,
+            RestoreError::Invalid(vec![IntegrityIssue::AllocationSumMismatch { tx_id: 1 }]),
+            RestoreError::SnapshotFailed("disk full".into()),
+            RestoreError::SameAsLive,
+            RestoreError::VerificationFailed {
+                source_path: "src.db".into(),
+                snapshot_path: "pre.db".into(),
+            },
+            RestoreError::RollbackFailed {
+                snapshot_path: "pre.db".into(),
+                detail: "io".into(),
+            },
+            RestoreError::Failed("err".into()),
+        ];
+        for err in &cases {
+            let en = restore_error_message(err, Language::En);
+            let pt = restore_error_message(err, Language::PtBr);
+            assert!(!en.trim().is_empty() && !pt.trim().is_empty());
+            assert_ne!(en, pt, "{err:?}");
+            assert!(
+                !en.contains('{') && !pt.contains('{'),
+                "{err:?}: {en} / {pt}"
+            );
         }
     }
 

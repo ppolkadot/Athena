@@ -159,6 +159,27 @@ fn snapshot_settings() {
 }
 
 #[test]
+fn snapshot_settings_data() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        let mut core = onboarded_core(language, theme, false);
+        let _ = std::fs::remove_dir_all(&core.store.dirs().backups_dir);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.set_screen(Screen::Settings);
+        core.sync().unwrap();
+        core.vm.data_path = "athena/athena.db".into();
+        core.vm.backups_dir = "athena/backups".into();
+        snapshot(
+            &mut results,
+            &format!("settings_data_{tag}"),
+            AthenaApp::for_test(core),
+            SIZE,
+        );
+    }
+    results.unwrap();
+}
+
+#[test]
 fn snapshot_trash() {
     let mut results = SnapshotResults::new();
     for (language, theme, tag) in variants() {

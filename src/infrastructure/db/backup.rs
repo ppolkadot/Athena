@@ -8,7 +8,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use super::migrations;
 use crate::infrastructure::config::AppDirs;
-use crate::shared::error::{AppError, Result};
+use crate::shared::error::{AppError, RestoreError, Result};
 
 /// How many `auto-` snapshots are kept.
 pub const AUTO_SNAPSHOTS_KEPT: usize = 7;
@@ -37,6 +37,12 @@ pub struct BackupFile {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SnapshotMeta {
+    pub version: i64,
+    pub page_size: i64,
+}
+
 const V1_TABLES: [&str; 5] = [
     "allocations",
     "categories",
@@ -58,68 +64,83 @@ pub fn integrity_ok(path: &Path) -> Result<bool> {
     Ok(rows.len() == 1 && rows[0] == "ok")
 }
 
-/// Verify that `path` is a regular, non-empty, integrity-clean SQLite file belonging to Athena
-/// with a supported schema version (`1..=latest_version()`). Returns `Ok(false)` (never panics)
-/// when the path is missing, a directory/symlink, empty, corrupt, foreign, or too new.
-///
-/// # Errors
-/// Reserved for unexpected non-SQLite I/O failures; malformed files return `Ok(false)`.
-pub fn is_valid_athena_snapshot(path: &Path) -> Result<bool> {
+/// Inspect `path` as an Athena SQLite snapshot, distinguishing `Corrupt`, `TooNew`, and
+/// `NotAthena` for the restore pipeline (`§9.3`).
+pub(crate) fn inspect_athena_snapshot(
+    path: &Path,
+) -> std::result::Result<SnapshotMeta, RestoreError> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return Ok(false);
+        return Err(RestoreError::NotAthena);
     };
-    if !meta.is_file() || meta.len() == 0 {
-        return Ok(false);
+    if !meta.is_file() {
+        return Err(RestoreError::NotAthena);
+    }
+    if meta.len() == 0 {
+        return Err(RestoreError::Corrupt);
     }
     let Ok(conn) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
     let Ok(mut integrity_stmt) = conn.prepare("PRAGMA integrity_check") else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
     let Ok(integrity_rows) = integrity_stmt
         .query_map([], |r| r.get::<_, String>(0))
         .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
     else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
     if integrity_rows.len() != 1 || integrity_rows[0] != "ok" {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     }
     let Ok(version) = migrations::schema_version(&conn) else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
-    if version < 1 || version > migrations::latest_version() {
-        return Ok(false);
+    let supported = migrations::latest_version();
+    if version > supported {
+        return Err(RestoreError::TooNew {
+            found: version,
+            supported,
+        });
+    }
+    if version < 1 {
+        return Err(RestoreError::NotAthena);
     }
     let Ok(app_id) = conn.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0)) else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
+    };
+    let Ok(page_size) = conn.pragma_query_value(None, "page_size", |r| r.get::<_, i64>(0)) else {
+        return Err(RestoreError::Corrupt);
     };
     let Ok(mut table_stmt) = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     ) else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
     let Ok(tables) = table_stmt
         .query_map([], |r| r.get::<_, String>(0))
         .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
     else {
-        return Ok(false);
+        return Err(RestoreError::Corrupt);
     };
 
     if version == 1 {
         let exact_v1 = tables.iter().map(String::as_str).eq(V1_TABLES);
-        return Ok(exact_v1 && (app_id == 0 || app_id == ATHENA_APPLICATION_ID));
+        return if exact_v1 && (app_id == 0 || app_id == ATHENA_APPLICATION_ID) {
+            Ok(SnapshotMeta { version, page_size })
+        } else {
+            Err(RestoreError::NotAthena)
+        };
     }
 
     if app_id != ATHENA_APPLICATION_ID {
-        return Ok(false);
+        return Err(RestoreError::NotAthena);
     }
     if !V1_TABLES
         .iter()
         .all(|required| tables.iter().any(|t| t == required))
     {
-        return Ok(false);
+        return Err(RestoreError::NotAthena);
     }
     if version >= 3 {
         let Ok(has_live_view) = conn.query_row(
@@ -127,13 +148,23 @@ pub fn is_valid_athena_snapshot(path: &Path) -> Result<bool> {
             [],
             |r| r.get::<_, bool>(0),
         ) else {
-            return Ok(false);
+            return Err(RestoreError::Corrupt);
         };
         if !has_live_view {
-            return Ok(false);
+            return Err(RestoreError::NotAthena);
         }
     }
-    Ok(true)
+    Ok(SnapshotMeta { version, page_size })
+}
+
+/// Verify that `path` is a regular, non-empty, integrity-clean SQLite file belonging to Athena
+/// with a supported schema version (`1..=latest_version()`). Returns `Ok(false)` (never panics)
+/// when the path is missing, a directory/symlink, empty, corrupt, foreign, or too new.
+///
+/// # Errors
+/// Reserved for unexpected non-SQLite I/O failures; malformed files return `Ok(false)`.
+pub fn is_valid_athena_snapshot(path: &Path) -> Result<bool> {
+    Ok(inspect_athena_snapshot(path).is_ok())
 }
 
 /// Write a consistent copy of the open database to `dest`.

@@ -39,6 +39,8 @@ pub enum ScreenEvent {
     Settlement(SettlementEvent),
     OpenDataFolder,
     Export(ExportRequest),
+    RequestRestoreListed(crate::infrastructure::db::backup::BackupFile),
+    PickRestoreFile,
     RetryRefresh,
 }
 

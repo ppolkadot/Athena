@@ -38,6 +38,14 @@ pub(crate) fn pick_export_path(
         .save_file()
 }
 
+/// Ask which backup file to restore, starting in the backups folder. `None` when cancelled.
+pub(crate) fn pick_restore_path(core: &AppCore) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_directory(&core.store.dirs().backups_dir)
+        .add_filter("SQLite", &["db"])
+        .pick_file()
+}
+
 pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
