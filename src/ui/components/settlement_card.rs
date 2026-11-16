@@ -206,11 +206,20 @@ fn exclusions_line(
     event
 }
 
-/// Render the settlement card. Returns `None` without drawing anything when fewer than two
-/// participants have non-zero settlement activity.
+/// Whether the Month rail should display the settlement card.
+#[must_use]
+pub fn should_show(vm: &ViewModel) -> bool {
+    vm.settlement_unavailable
+        || vm
+            .settlement
+            .as_ref()
+            .is_some_and(|s| s.balances.len() >= 2)
+}
+
+/// Render the settlement card. Returns `None` without drawing anything when unavailable is false
+/// and fewer than two participants have non-zero settlement activity.
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Option<SettlementEvent> {
-    let settlement = vm.settlement.as_ref()?;
-    if settlement.balances.len() < 2 {
+    if !should_show(vm) {
         return None;
     }
 
@@ -229,6 +238,29 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Option<SettlementEvent> {
             let max_w = ui.available_width();
             ui.set_width(max_w);
             ui.set_max_width(max_w);
+
+            if vm.settlement_unavailable {
+                ui.scope(|ui| {
+                    ui.set_max_width(max_w);
+                    ui.add(
+                        Label::new(
+                            RichText::new(s.settlement_title)
+                                .text_style(typography::section())
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(6.0);
+                    ui.add(
+                        Label::new(RichText::new(s.settlement_unavailable).color(p.warning)).wrap(),
+                    );
+                });
+                return;
+            }
+
+            let Some(settlement) = vm.settlement.as_ref() else {
+                return;
+            };
 
             ui.scope(|ui| {
                 ui.set_max_width(max_w);
@@ -468,6 +500,44 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn settlement_unavailable_renders_card_with_notice() {
+        use egui_kittest::kittest::Queryable;
+
+        for (language, expected_title, expected_msg) in [
+            (
+                Language::En,
+                "Settlement",
+                "Settlement totals could not be calculated for this data.",
+            ),
+            (
+                Language::PtBr,
+                "Acertos",
+                "Não foi possível calcular os acertos para estes dados.",
+            ),
+        ] {
+            let mut vm = ViewModel::new(language);
+            vm.settlement_unavailable = true;
+
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::Vec2::new(320.0, 300.0))
+                .with_context_setup(crate::ui::theme::typography::install_test_fonts)
+                .build_ui_state(
+                    |ui, vm: &mut ViewModel| {
+                        ui.ctx()
+                            .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                        crate::ui::theme::apply(ui.ctx(), Theme::Dark);
+                        ui.set_style(ui.ctx().global_style());
+                        show(ui, vm);
+                    },
+                    vm,
+                );
+            harness.run_steps(2);
+            assert!(harness.query_by_label(expected_title).is_some());
+            assert!(harness.query_by_label(expected_msg).is_some());
         }
     }
 }

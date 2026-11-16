@@ -8,7 +8,7 @@ use crate::domain::reports::{
     CalendarMonthTotal, CategoryTotal, DayTotal, MonthSummary, PersonTotal,
 };
 use crate::infrastructure::db::reports_repo;
-use crate::shared::error::Result;
+use crate::shared::error::{AppError, Result};
 
 /// # Errors
 /// Database errors.
@@ -53,9 +53,14 @@ pub fn year_calendar(conn: &Connection, year: i32) -> Result<Vec<CalendarMonthTo
 /// Start balance + all income - all expenses + all refunds.
 ///
 /// # Errors
-/// Database errors.
+/// Database errors or [`AppError::Validation`] on arithmetic overflow.
 pub fn tracked_balance(conn: &Connection, start_balance: Money) -> Result<Money> {
-    Ok(start_balance + reports_repo::lifetime_summary(conn)?.net)
+    let net = reports_repo::lifetime_summary(conn)?.net;
+    start_balance
+        .cents()
+        .checked_add(net.cents())
+        .map(Money::from_cents)
+        .ok_or_else(|| AppError::Validation("tracked balance overflow".into()))
 }
 
 #[cfg(test)]
@@ -430,5 +435,17 @@ mod tests {
         let after_restore =
             crate::application::services::settlement::for_month(db.conn(), nov()).unwrap();
         assert!(after_restore.transfers.is_empty());
+    }
+
+    #[test]
+    fn tracked_balance_overflow_returns_validation_error() {
+        let db = Db::open_in_memory().unwrap();
+        let mut inc = draft_with(vec![]);
+        inc.kind = crate::domain::transaction::TransactionType::Income;
+        inc.amount = Money::from_cents(100);
+        transactions_repo::create(db.conn(), &inc).unwrap();
+
+        let err = tracked_balance(db.conn(), Money::from_cents(i64::MAX)).unwrap_err();
+        assert!(matches!(err, crate::shared::error::AppError::Validation(_)));
     }
 }

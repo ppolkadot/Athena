@@ -302,11 +302,15 @@ New `ViewModel` fields:
 
 | Field | Loaded when | Source |
 |---|---|---|
-| `settlement: Option<SettlementView>` | always (cheap) | §7 service |
+| `settlement: Option<SettlementView>` | always (cheap, isolated) | §7 service |
+| `settlement_unavailable: bool` | on settlement error | set `true` when optional settlement calculation fails |
+| `refresh_failed: bool` | on required query error | set `true` when required reload fails; prior loaded fields remain coherent and same-key auto-retry is suppressed |
 | `trash_count: usize` | always | `trash_repo::count` |
 | `trash: Vec<TrashItem>` | `screen == Trash` | `trash_repo::list` (newest first) |
 | `backups: Vec<BackupFile>` | `screen == Settings` | `backup::list` (file I/O; not per frame) |
 | `last_operation: Option<OperationNotice>` | set from outcomes | in-session only |
+
+`ViewModel::reload` stages all required queries before mutating `self`, and `AppCore::apply` preserves `Ok(outcome)` when a post-commit reload fails so committed mutations never lose `ActionOutcome` or trigger double submission.
 
 `TrashItem { tx: Transaction, deleted_at: String }`.
 
@@ -551,3 +555,4 @@ These reserve names and rules. They are not frozen.
 - 2026-11-16 — Created. Froze 1.1 (§4–§13) after D8/D9 and technical decisions T1–T5.
 - 2026-11-16 — Added `RestorePerson(i64)` and `ToastKey::PersonRestored` (§8.1, §8.2) so archived settlement parties can be restored in place (§7.3).
 - 2026-11-16 — Added `pre-purge-YYYY-MM-DD_HH-MM-SS.db` verified Athena snapshot guard before automatic trash retention (§6.2, §9.1).
+- 2026-11-16 — Froze atomic `ViewModel::reload` staging, `settlement_unavailable` / `refresh_failed` state with same-key retry suppression, and `AppCore::apply` committed outcome preservation (§8.2, §8.3).

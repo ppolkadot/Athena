@@ -18,7 +18,7 @@ fn text(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
-fn summary_from(income: i64, expenses: i64, refunds: i64, count: i64) -> MonthSummary {
+fn summary_from(income: i64, expenses: i64, refunds: i64, count: i64) -> Result<MonthSummary> {
     MonthSummary::new(
         Money::from_cents(income),
         Money::from_cents(expenses),
@@ -35,7 +35,7 @@ const SUMMARY_SELECT: &str = "SELECT
     FROM live_transactions t";
 
 /// # Errors
-/// Database errors.
+/// Database errors or [`AppError::Validation`] if report arithmetic overflows.
 pub fn summary_between(
     conn: &Connection,
     start: NaiveDate,
@@ -46,24 +46,24 @@ pub fn summary_between(
         conn.query_row(&sql, params![text(start), text(end)], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
-    Ok(summary_from(i, e, r, n))
+    summary_from(i, e, r, n)
 }
 
 /// All-time totals, for the tracked balance.
 ///
 /// # Errors
-/// Database errors.
+/// Database errors or [`AppError::Validation`] if report arithmetic overflows.
 pub fn lifetime_summary(conn: &Connection) -> Result<MonthSummary> {
     let (i, e, r, n): (i64, i64, i64, i64) = conn.query_row(SUMMARY_SELECT, [], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     })?;
-    Ok(summary_from(i, e, r, n))
+    summary_from(i, e, r, n)
 }
 
 /// Per-month summaries for one calendar year. Months with no entries are absent.
 ///
 /// # Errors
-/// Database errors; [`AppError::Validation`] for a year chrono cannot represent.
+/// Database errors; [`AppError::Validation`] for an out-of-range year or report arithmetic overflow.
 pub fn summaries_for_year(
     conn: &Connection,
     year: i32,
@@ -100,7 +100,7 @@ pub fn summaries_for_year(
             .ok()
             .and_then(|m| YearMonth::new(year, m))
         {
-            by_month.insert(ym, summary_from(i, e, r, n));
+            by_month.insert(ym, summary_from(i, e, r, n)?);
         }
     }
     Ok(by_month)

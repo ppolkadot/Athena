@@ -39,6 +39,7 @@ pub enum ScreenEvent {
     Settlement(SettlementEvent),
     OpenDataFolder,
     Export(ExportRequest),
+    RetryRefresh,
 }
 
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<ScreenEvent> {

@@ -106,7 +106,29 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutp
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width().min(CONTENT_MAX_WIDTH));
-                    output.events = screens::show(ui, vm, state);
+                    if vm.refresh_failed {
+                        let mut retry = false;
+                        Frame::new()
+                            .fill(p.card)
+                            .stroke(egui::Stroke::new(1.0, p.warning))
+                            .corner_radius(CornerRadius::same(12))
+                            .inner_margin(Margin::symmetric(14, 10))
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(s.view_refresh_failed).color(p.warning));
+                                    if ui.button(s.retry).clicked() {
+                                        retry = true;
+                                    }
+                                });
+                            });
+                        ui.add_space(12.0);
+                        output.events = screens::show(ui, vm, state);
+                        if retry {
+                            output.events.push(ScreenEvent::RetryRefresh);
+                        }
+                    } else {
+                        output.events = screens::show(ui, vm, state);
+                    }
                 });
         });
 

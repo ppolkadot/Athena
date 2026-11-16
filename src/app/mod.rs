@@ -100,7 +100,9 @@ impl AppCore {
     pub fn apply(&mut self, action: AppAction) -> Result<ActionOutcome> {
         let outcome = self.store.apply(action)?;
         self.record_outcome_notice(&outcome);
-        self.vm.reload(&self.store, &self.ui, outcome.refresh)?;
+        if let Err(err) = self.vm.reload(&self.store, &self.ui, outcome.refresh) {
+            tracing::error!("could not refresh the view after applying action: {err}");
+        }
         Ok(outcome)
     }
 
@@ -330,6 +332,12 @@ impl AthenaApp {
                 if let Some(path) = pick_export_path(&self.core, request, self.today()) {
                     let text = run_export(&self.core, request, &path, &now_rfc3339());
                     self.raise_toast_text(ctx, Some(text));
+                }
+            }
+            ScreenEvent::RetryRefresh => {
+                self.core.vm.clear_refresh_failure();
+                if let Err(err) = self.core.sync() {
+                    tracing::error!("could not refresh the view: {err}");
                 }
             }
             _ => {}
@@ -1705,5 +1713,74 @@ mod tests {
                 .is_none()
         );
         assert!(harness.query_by_label("Record").is_some());
+    }
+
+    #[test]
+    fn apply_preserves_committed_outcome_when_settlement_refresh_errors() {
+        use crate::domain::transaction::{Allocation, TransactionType};
+        use crate::ui::quick_add::QuickAddEvent;
+
+        let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
+        let (owner, partner) = crate::shared::test_fixtures::seed_people(core.store.db().conn());
+        core.sync().unwrap();
+
+        let mut d1 = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(i64::MAX / 2 + 100),
+        }]);
+        d1.payer_id = Some(owner);
+        core.apply(AppAction::SaveTransaction(d1)).unwrap();
+
+        // Second large entry (Settlement) triggers settlement paid overflow while itself being valid.
+        let mut d2 = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(i64::MAX / 2 + 100),
+        }]);
+        d2.kind = TransactionType::Settlement;
+        d2.payer_id = Some(owner);
+        d2.category_id = None;
+        d2.split_mode = None;
+
+        let mut qa = QuickAddState::new(
+            &core
+                .vm
+                .active_people()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            core.vm.today,
+            Language::En,
+        );
+        let (after, toast) = handle_quick_add(&mut core, &mut qa, QuickAddEvent::Submit(d2));
+        assert_eq!(after, ModalAfter::Keep);
+        assert!(
+            qa.errors.is_empty(),
+            "committed write must not report SaveFailed"
+        );
+        assert_eq!(toast, Some(ToastKey::TransactionSaved));
+        assert_eq!(core.vm.transactions.len(), 2);
+        assert!(core.vm.settlement_unavailable);
+        assert!(!core.vm.refresh_failed);
+    }
+
+    #[test]
+    fn apply_preserves_committed_outcome_when_required_refresh_errors() {
+        let mut core = onboarded(None);
+        let owner = core.owner().unwrap().id;
+        let expense = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(100),
+        }]);
+        core.create_transaction(expense).unwrap();
+
+        let mut bad_profile = core.vm.profile.clone().unwrap();
+        bad_profile.start_balance = Money::from_cents(i64::MIN);
+        let outcome = core
+            .apply(AppAction::SaveProfile(bad_profile))
+            .expect("committed store action must return Ok(outcome) even when reload fails");
+        assert_eq!(outcome.toast, Some(ToastKey::ProfileSaved));
+        assert!(core.vm.refresh_failed);
+        // Same-key retry suppression prevents a per-frame loop.
+        assert!(!core.sync().unwrap());
     }
 }

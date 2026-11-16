@@ -393,11 +393,7 @@ fn rail_row(
 fn rail(ui: &mut egui::Ui, vm: &ViewModel, event: &mut Option<MonthEvent>) {
     let s = strings(vm.language());
     let p = palette(vm.theme());
-    if vm
-        .settlement
-        .as_ref()
-        .is_some_and(|settlement| settlement.balances.len() >= 2)
-    {
+    if settlement_card::should_show(vm) {
         if let Some(ev) = settlement_card::show(ui, vm) {
             *event = Some(MonthEvent::Settlement(ev));
         }

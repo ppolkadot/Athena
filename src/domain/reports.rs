@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 
 use super::date::YearMonth;
 use super::money::Money;
+use crate::shared::error::{AppError, Result};
 
 /// Income, expenses and refunds for a range. `net = income - expenses + refunds`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -19,19 +20,41 @@ impl MonthSummary {
     /// Expenses minus refunds. Refunds are never income.
     #[must_use]
     pub fn spending(&self) -> Money {
-        self.expenses - self.refunds
+        Money::from_cents(self.expenses.cents().saturating_sub(self.refunds.cents()))
+    }
+
+    /// Checked expenses minus refunds.
+    ///
+    /// # Errors
+    /// [`AppError::Validation`] if `expenses - refunds` overflows `i64`.
+    pub fn checked_spending(&self) -> Result<Money> {
+        self.expenses
+            .cents()
+            .checked_sub(self.refunds.cents())
+            .map(Money::from_cents)
+            .ok_or_else(|| AppError::Validation("report calculation overflow".into()))
     }
 
     /// Build a summary and compute `net` in exactly one place.
-    #[must_use]
-    pub fn new(income: Money, expenses: Money, refunds: Money, count: i64) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// [`AppError::Validation`] if `net` (`income - expenses + refunds`) or `expenses - refunds` overflows `i64`.
+    pub fn new(income: Money, expenses: Money, refunds: Money, count: i64) -> Result<Self> {
+        let net =
+            i128::from(income.cents()) - i128::from(expenses.cents()) + i128::from(refunds.cents());
+        let net = i64::try_from(net)
+            .map_err(|_| AppError::Validation("report calculation overflow".into()))?;
+        expenses
+            .cents()
+            .checked_sub(refunds.cents())
+            .ok_or_else(|| AppError::Validation("report calculation overflow".into()))?;
+        Ok(Self {
             income,
             expenses,
             refunds,
-            net: income - expenses + refunds,
+            net: Money::from_cents(net),
             count,
-        }
+        })
     }
 }
 
@@ -107,9 +130,32 @@ mod tests {
             Money::from_cents(150),
             Money::from_cents(20),
             4,
-        );
+        )
+        .unwrap();
         assert_eq!(s.net, Money::from_cents(170));
         assert_eq!(s.spending(), Money::from_cents(130));
+        assert_eq!(s.checked_spending().unwrap(), Money::from_cents(130));
         assert_eq!(MonthSummary::default().net, Money::ZERO);
+    }
+
+    #[test]
+    fn summary_overflow_returns_validation_error() {
+        let err = MonthSummary::new(
+            Money::from_cents(i64::MAX),
+            Money::ZERO,
+            Money::from_cents(1),
+            1,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        let err2 = MonthSummary::new(
+            Money::ZERO,
+            Money::from_cents(i64::MAX),
+            Money::from_cents(-1),
+            1,
+        )
+        .unwrap_err();
+        assert!(matches!(err2, AppError::Validation(_)));
     }
 }

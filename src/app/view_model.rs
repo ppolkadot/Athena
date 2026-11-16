@@ -48,6 +48,10 @@ pub struct ViewModel {
     pub balance: Money,
     /// Cumulative household settlement balances and suggested transfers as of `ui.month`.
     pub settlement: Option<SettlementView>,
+    /// `true` when the latest settlement calculation failed (e.g. overflow) and is unavailable.
+    pub settlement_unavailable: bool,
+    /// `true` when the latest view refresh failed on a required query; prior loaded state stays coherent.
+    pub refresh_failed: bool,
     /// Number of deleted transactions currently in Trash.
     pub trash_count: usize,
     /// Soft-deleted transactions, loaded only when viewing the Trash screen.
@@ -61,6 +65,7 @@ pub struct ViewModel {
     #[cfg(test)]
     pub(crate) trash_loads: usize,
     loaded: Option<LoadKey>,
+    failed_load_key: Option<LoadKey>,
 }
 
 impl ViewModel {
@@ -79,6 +84,8 @@ impl ViewModel {
             calendar: Vec::new(),
             balance: Money::ZERO,
             settlement: None,
+            settlement_unavailable: false,
+            refresh_failed: false,
             trash_count: 0,
             trash: Vec::new(),
             last_operation: None,
@@ -87,6 +94,7 @@ impl ViewModel {
             #[cfg(test)]
             trash_loads: 0,
             loaded: None,
+            failed_load_key: None,
         }
     }
 
@@ -164,13 +172,20 @@ impl ViewModel {
         }
     }
 
+    /// Clear recorded refresh failure so the next [`Self::sync`] retries loading the current key.
+    pub fn clear_refresh_failure(&mut self) {
+        self.failed_load_key = None;
+        self.refresh_failed = false;
+    }
+
     /// Reload everything if the store or the selection changed since the last load.
     /// Returns whether it reloaded.
     ///
     /// # Errors
     /// Database errors.
     pub fn sync(&mut self, store: &Store, ui: &UiState) -> Result<bool> {
-        if self.loaded.as_ref() == Some(&self.key(store, ui)) {
+        let key = self.key(store, ui);
+        if self.loaded.as_ref() == Some(&key) || self.failed_load_key.as_ref() == Some(&key) {
             return Ok(false);
         }
         self.reload(store, ui, RefreshScope::All)?;
@@ -178,47 +193,103 @@ impl ViewModel {
     }
 
     /// Reload what `scope` covers. People and category changes reload only those lists.
+    /// Stages all required queries before mutating `self` so an error never leaves half-updated
+    /// state, and isolates optional settlement math failures into `settlement_unavailable`.
     ///
     /// # Errors
-    /// Database errors.
+    /// Database or validation errors on required queries.
     pub fn reload(&mut self, store: &Store, ui: &UiState, scope: RefreshScope) -> Result<()> {
+        let key = self.key(store, ui);
+        match self.load_scope(store, ui, scope, &key) {
+            Ok(()) => {
+                self.loaded = Some(key);
+                self.failed_load_key = None;
+                self.refresh_failed = false;
+                Ok(())
+            }
+            Err(err) => {
+                self.failed_load_key = Some(key);
+                self.refresh_failed = true;
+                Err(err)
+            }
+        }
+    }
+
+    fn load_scope(
+        &mut self,
+        store: &Store,
+        ui: &UiState,
+        scope: RefreshScope,
+        key: &LoadKey,
+    ) -> Result<()> {
         let conn = store.db().conn();
         match scope {
-            RefreshScope::People => self.all_people = people_repo::list(conn, true)?,
-            RefreshScope::Categories => self.all_categories = categories_repo::list(conn, true)?,
+            RefreshScope::People => {
+                let all_people = people_repo::list(conn, true)?;
+                self.all_people = all_people;
+            }
+            RefreshScope::Categories => {
+                let all_categories = categories_repo::list(conn, true)?;
+                self.all_categories = all_categories;
+            }
             RefreshScope::Trash => {
-                self.trash_count = trash_repo::count(conn)?;
-                self.trash = trash_repo::list(conn)?;
+                let trash_count = trash_repo::count(conn)?;
+                let trash = trash_repo::list(conn)?;
+                self.trash_count = trash_count;
+                self.trash = trash;
                 self.record_trash_load();
             }
             RefreshScope::Backups => {}
             RefreshScope::Month | RefreshScope::Calendar | RefreshScope::All => {
-                let key = self.key(store, ui);
-                self.profile = profile_repo::load(conn)?;
-                self.all_people = people_repo::list(conn, true)?;
-                self.all_categories = categories_repo::list(conn, true)?;
-                self.transactions = transactions_repo::list(conn, &key.filter)?;
-                self.summary = reports::month_summary(conn, ui.month)?;
-                self.category_totals = reports::category_totals(conn, ui.month)?;
-                self.person_totals = reports::person_totals(conn, ui.month)?;
-                self.calendar = reports::year_calendar(conn, ui.calendar_year)?;
-                let start = self
-                    .profile
-                    .as_ref()
-                    .map_or(Money::ZERO, |p| p.start_balance);
-                self.balance = reports::tracked_balance(conn, start)?;
-                self.settlement = Some(settlement::for_month(conn, ui.month)?);
-                self.trash_count = trash_repo::count(conn)?;
-                self.data_path = store.dirs().db_path.display().to_string();
-                if ui.screen == Screen::Trash {
-                    self.trash = trash_repo::list(conn)?;
-                    self.record_trash_load();
+                let profile = profile_repo::load(conn)?;
+                let all_people = people_repo::list(conn, true)?;
+                let all_categories = categories_repo::list(conn, true)?;
+                let transactions = transactions_repo::list(conn, &key.filter)?;
+                let summary = reports::month_summary(conn, ui.month)?;
+                let category_totals = reports::category_totals(conn, ui.month)?;
+                let person_totals = reports::person_totals(conn, ui.month)?;
+                let calendar = reports::year_calendar(conn, ui.calendar_year)?;
+                let start = profile.as_ref().map_or(Money::ZERO, |p| p.start_balance);
+                let balance = reports::tracked_balance(conn, start)?;
+                let trash_count = trash_repo::count(conn)?;
+                let data_path = store.dirs().db_path.display().to_string();
+                let (trash, trash_loaded) = if ui.screen == Screen::Trash {
+                    (trash_repo::list(conn)?, true)
                 } else {
-                    self.trash.clear();
+                    (Vec::new(), false)
+                };
+                let (settlement, settlement_unavailable) =
+                    match settlement::for_month(conn, ui.month) {
+                        Ok(view) => (Some(view), false),
+                        Err(err) => {
+                            tracing::warn!(
+                                "settlement unavailable for {:04}-{:02}: {err}",
+                                ui.month.year,
+                                ui.month.month
+                            );
+                            (None, true)
+                        }
+                    };
+
+                self.profile = profile;
+                self.all_people = all_people;
+                self.all_categories = all_categories;
+                self.transactions = transactions;
+                self.summary = summary;
+                self.category_totals = category_totals;
+                self.person_totals = person_totals;
+                self.calendar = calendar;
+                self.balance = balance;
+                self.settlement = settlement;
+                self.settlement_unavailable = settlement_unavailable;
+                self.trash_count = trash_count;
+                self.data_path = data_path;
+                self.trash = trash;
+                if trash_loaded {
+                    self.record_trash_load();
                 }
             }
         }
-        self.loaded = Some(self.key(store, ui));
         Ok(())
     }
 }
@@ -319,5 +390,108 @@ mod tests {
         assert_eq!(vm.trash_loads, 1);
         let titles: Vec<_> = vm.trash.iter().map(|t| t.tx.title.as_str()).collect();
         assert_eq!(titles, vec!["Newer", "Older"]);
+    }
+
+    #[test]
+    fn settlement_overflow_keeps_app_loadable_and_other_fields_coherent() {
+        use crate::app::actions::AppAction;
+        use crate::domain::transaction::{Allocation, TransactionType};
+        use crate::shared::test_fixtures::{date, draft_with, seed_people};
+
+        let mut store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-overflow-test")),
+        );
+        let (owner, partner) = seed_people(store.db().conn());
+        let mut expense = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(i64::MAX / 2 + 100),
+        }]);
+        expense.title = "Huge expense".into();
+        expense.kind = TransactionType::Expense;
+        expense.payer_id = Some(owner);
+        expense.date = date(2026, 11, 10);
+        store.apply(AppAction::SaveTransaction(expense)).unwrap();
+
+        // Settlement is excluded from reports_repo SUM, so only settlement::for_month overflows.
+        let mut settlement_tx = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(i64::MAX / 2 + 100),
+        }]);
+        settlement_tx.title = "Huge settlement".into();
+        settlement_tx.kind = TransactionType::Settlement;
+        settlement_tx.payer_id = Some(owner);
+        settlement_tx.category_id = None;
+        settlement_tx.split_mode = None;
+        settlement_tx.date = date(2026, 11, 11);
+        store
+            .apply(AppAction::SaveTransaction(settlement_tx))
+            .unwrap();
+
+        let ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 16);
+
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert!(
+            !vm.sync(&store, &ui).unwrap(),
+            "must not retry every frame for same key"
+        );
+        assert_eq!(vm.transactions.len(), 2);
+        assert!(vm.settlement.is_none());
+        assert!(vm.settlement_unavailable);
+        assert!(!vm.refresh_failed);
+    }
+
+    #[test]
+    fn required_query_failure_stages_without_half_mutation_and_suppresses_same_key_retry() {
+        use crate::app::actions::AppAction;
+        use crate::application::services::onboarding::OnboardingResult;
+        use crate::shared::test_fixtures::{date, draft_with};
+
+        let mut store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-required-err-test")),
+        );
+        store
+            .apply(AppAction::CompleteOnboarding(OnboardingResult {
+                display_name: "A3".into(),
+                partner_name: None,
+                start_balance: Money::ZERO,
+                language: Language::En,
+            }))
+            .unwrap();
+        let mut expense = draft_with(vec![]);
+        expense.amount = Money::from_cents(100);
+        expense.date = date(2026, 11, 10);
+        store.apply(AppAction::SaveTransaction(expense)).unwrap();
+
+        let ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 16);
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.profile.as_ref().unwrap().start_balance, Money::ZERO);
+
+        // SaveProfile updates start_balance to i64::MIN, causing tracked_balance (i64::MIN - 100)
+        // to fail AFTER profile_repo::load succeeds inside reload.
+        let mut bad_profile = vm.profile.clone().unwrap();
+        bad_profile.start_balance = Money::from_cents(i64::MIN);
+        store.apply(AppAction::SaveProfile(bad_profile)).unwrap();
+
+        let err = vm.sync(&store, &ui).unwrap_err();
+        assert!(matches!(err, crate::shared::error::AppError::Validation(_)));
+        assert!(vm.refresh_failed);
+        // profile must NOT be half-mutated to i64::MIN when tracked_balance failed.
+        assert_eq!(vm.profile.as_ref().unwrap().start_balance, Money::ZERO);
+        // Same-key retry must be suppressed to avoid per-frame query/log loops.
+        assert!(!vm.sync(&store, &ui).unwrap());
+
+        // Fixing start_balance bumps data_version (new LoadKey), clearing refresh_failed on sync.
+        let mut good_profile = vm.profile.clone().unwrap();
+        good_profile.start_balance = Money::from_cents(500);
+        store.apply(AppAction::SaveProfile(good_profile)).unwrap();
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert!(!vm.refresh_failed);
+        assert_eq!(vm.balance, Money::from_cents(400));
     }
 }
