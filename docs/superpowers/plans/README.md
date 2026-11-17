@@ -7,7 +7,7 @@
 | Plan | Scope | Status |
 |---|---|---|
 | [2026-11-16-athena-phase-0-foundation.md](2026-11-16-athena-phase-0-foundation.md) | Finish 1.0.2, Windows CI, doc consolidation, Settings/app module split | Code merged; local `v1.0.2` tag at `ef63d23` (not on `origin`); release publication pending |
-| [2026-11-16-athena-1.1.0-safe-data.md](2026-11-16-athena-1.1.0-safe-data.md) | 1.1.0 Safe data (trash/undo, settlement with paybacks, backups/restore, format-2 import/export) | Active |
+| [2026-11-16-athena-1.1.0-safe-data.md](2026-11-16-athena-1.1.0-safe-data.md) | 1.1.0 Safe data (trash/undo, settlement with paybacks, backups/restore, format-2 import/export) | Released as `v1.1.0` (manual smoke items pending; see `docs/smoke-1.1.md`) |
 | [2026-11-16-athena-review-improvement-plan.md](2026-11-16-athena-review-improvement-plan.md) | Review remediation (`R-1..R-7`) and Safe Data (`Tasks 7–10`) integration | Active |
 
 ## Shipped and historical plans

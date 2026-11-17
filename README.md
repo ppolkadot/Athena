@@ -6,8 +6,9 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-The crate remains version 1.0.2; this branch implements the 1.1.0 Safe Data features.
-Release packaging and native smoke verification are pending. English and Brazilian Portuguese. Windows is the primary target.
+Version 1.1.0 (Safe Data): settlement balances and paybacks, Trash with undo, automatic, manual and
+safety backups with in-app recovery and restore, and Format 2 JSON export and import. English and
+Brazilian Portuguese. Windows is the primary target.
 
 Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
 license and provenance live in `assets/fonts/`.
@@ -111,8 +112,11 @@ permanently delete individual entries, or empty Trash after confirmation. Entrie
 
 Onboarding, people, exact shared splits, categories, search, the year calendar, CSV export,
 themes, and both languages remain available. Bank import, sync, budgets, recurring entries,
-goals, attachments, and multi-currency remain future work. The local `v1.0.2` tag points to
-`ef63d23`; 1.1.0 is not tagged or released.
+goals, attachments, and multi-currency remain future work.
+
+Release verification: automated checks (format, Clippy, tests, document lint) and the installer
+build pass. The live interactive GUI walk-through, 100/150/200 % Windows scaling checks, and a clean
+Windows machine test were not performed for 1.1.0; see `docs/smoke-1.1.md`.
 
 ## Development
 
