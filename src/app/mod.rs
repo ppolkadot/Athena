@@ -3,6 +3,7 @@ pub mod files;
 pub mod instance;
 pub mod modals;
 pub mod navigation;
+pub mod recovery;
 pub mod store;
 pub mod ui_state;
 pub mod view_model;
@@ -15,7 +16,7 @@ use crate::domain::date::YearMonth;
 use crate::domain::person::Person;
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::TxDraft;
-use crate::i18n::{ToastKey, format_import_errors, strings};
+use crate::i18n::{ToastKey, backup_error_message, format_import_errors, strings};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
 use crate::shared::error::{AppError, Result};
@@ -35,8 +36,8 @@ use self::files::{
 };
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
-    delete_confirmation, empty_trash_confirmation, handle_quick_add, import_preview_dialog,
-    purge_confirmation, restore_confirmation,
+    delete_backup_confirmation, delete_confirmation, empty_trash_confirmation, handle_quick_add,
+    import_preview_dialog, purge_confirmation, restore_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -242,9 +243,16 @@ pub struct AthenaApp {
 impl AthenaApp {
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, core: AppCore) -> Self {
-        theme::install_fonts(&cc.egui_ctx);
+        Self::from_core(&cc.egui_ctx, core)
+    }
+
+    /// Build the window on an already-open core. Used by `new` and by the recovery session once a
+    /// restore has produced a working database.
+    #[must_use]
+    pub fn from_core(ctx: &egui::Context, core: AppCore) -> Self {
+        theme::install_fonts(ctx);
         let applied_theme = core.vm.theme();
-        theme::apply(&cc.egui_ctx, applied_theme);
+        theme::apply(ctx, applied_theme);
         let onboarding = OnboardingState::new(core.vm.language());
         Self {
             core,
@@ -316,6 +324,11 @@ impl AthenaApp {
                 self.raise_toast_text(ctx, text);
                 return ok;
             }
+            ScreenEvent::CreateBackup => return self.handle_create_backup(ctx),
+            ScreenEvent::DeleteBackup(path) if idle => {
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(delete_backup_confirmation(&self.core, &path));
+            }
             ScreenEvent::Settlement(event) => {
                 return self.handle_settlement_event(ctx, event, idle);
             }
@@ -363,6 +376,28 @@ impl AthenaApp {
             _ => {}
         }
         true
+    }
+
+    /// Save a manual backup from the Data tab. Unlike the other settings actions this keeps the
+    /// screen's drafts: a failed backup is not a refused edit, so it shows inline and as a toast
+    /// instead of clearing the form.
+    fn handle_create_backup(&mut self, ctx: &egui::Context) -> bool {
+        let language = self.core.vm.language();
+        match self.core.apply(AppAction::CreateBackup) {
+            Ok(outcome) => {
+                self.core.ui.settings.backup_error = None;
+                let text = outcome.toast.map(|key| key.text(language).to_string());
+                self.raise_toast_text(ctx, text);
+                true
+            }
+            Err(err) => {
+                tracing::warn!("could not save a backup: {err}");
+                let message = backup_error_message(&err, language);
+                self.core.ui.settings.backup_error = Some(message);
+                self.raise_toast_text(ctx, Some(ToastKey::BackupFailed.text(language).to_string()));
+                false
+            }
+        }
     }
 
     pub(crate) fn open_import_preview(&mut self, ctx: &egui::Context, path: &std::path::Path) {
@@ -1497,6 +1532,207 @@ mod tests {
         harness.key_press_modifiers(ctrl, Key::Num1);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Month);
+    }
+
+    fn polish_harness(core: AppCore) -> egui_kittest::Harness<'static, AthenaApp> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .with_context_setup(theme::typography::install_test_fonts)
+            .build_ui_state(
+                |ui, app: &mut AthenaApp| {
+                    ui.ctx()
+                        .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+                    theme::apply(ui.ctx(), app.core.vm.theme());
+                    ui.set_style(ui.ctx().global_style());
+                    app.show(ui);
+                },
+                AthenaApp::for_test(core),
+            )
+    }
+
+    #[test]
+    fn ctrl_z_undoes_visible_delete_but_not_while_typing() {
+        undo_toast_restores_and_clears();
+    }
+
+    #[test]
+    fn trash_keyboard_only_flow() {
+        use egui_kittest::kittest::Queryable;
+        let mut core = onboarded(None);
+        for title in ["First", "Second"] {
+            let mut draft = draft_with(vec![]);
+            draft.title = title.into();
+            core.create_transaction(draft).unwrap();
+        }
+        for id in core
+            .vm
+            .transactions
+            .iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+        {
+            core.delete_transaction(id).unwrap();
+        }
+        core.set_screen(Screen::Trash);
+        core.sync().unwrap();
+        let mut h = polish_harness(core);
+        h.run_steps(3);
+        // Start at a known keyboard focus anchor, then navigate to the restore action.
+        h.get_by_label("Delete forever Second").focus();
+        h.key_press(Key::Tab);
+        h.run_steps(2);
+        assert!(h.get_by_label("Restore Second").is_focused());
+        h.key_press(Key::Enter);
+        h.run_steps(4);
+        assert_eq!(h.state().core.vm.trash.len(), 1);
+        assert!(h.get_by_label("Restore First").is_focused());
+    }
+
+    #[test]
+    fn screen_reader_labels_for_settlement_and_trash() {
+        use egui_kittest::kittest::Queryable;
+        let mut core = onboarded(Some("Ana"));
+        let owner = core.owner().unwrap().id;
+        let partner = core
+            .vm
+            .all_people
+            .iter()
+            .find(|p| p.name == "Ana")
+            .unwrap()
+            .id;
+        let mut draft = draft_with(vec![Allocation {
+            person_id: partner,
+            amount: Money::from_cents(100),
+        }]);
+        draft.payer_id = Some(owner);
+        core.create_transaction(draft).unwrap();
+        let mut h = polish_harness(core);
+        h.run_steps(3);
+        assert!(h.query_by_label("Settlement").is_some());
+        let settlement = h.state().core.vm.settlement.as_ref().unwrap();
+        let sentence = crate::ui::components::settlement_card::transfer_sentence(
+            settlement.transfers[0],
+            Some(owner),
+            "Ana",
+            "A3",
+            Language::En,
+        );
+        assert!(h.query_by_label(&sentence).is_some());
+        assert!(
+            h.query_by_label(strings(Language::En).settlement_record)
+                .is_some()
+        );
+        let id = h.state().core.vm.transactions[0].id;
+        h.state_mut().core.delete_transaction(id).unwrap();
+        h.state_mut().core.set_screen(Screen::Trash);
+        h.state_mut().core.sync().unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("Restore Test").is_some());
+        assert!(h.query_by_label("Delete forever Test").is_some());
+    }
+
+    #[test]
+    fn dialogs_return_focus_to_their_opener() {
+        use egui_kittest::kittest::Queryable;
+        let (_dir, mut core) = file_backed_core();
+        core.create_transaction(draft_with(vec![])).unwrap();
+        let mut h = polish_harness(core);
+        h.run_steps(3);
+        h.get_by_label("Delete Test").focus();
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        h.key_press(Key::Escape);
+        h.run_steps(4);
+        assert!(h.get_by_label("Delete Test").is_focused());
+        // Purge has its own row-focus path, covered through a real cancel flow.
+        trash_screen_restore_and_delete_forever();
+        h.state_mut().core.set_screen(Screen::Settings);
+        h.state_mut().core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        h.state_mut().core.sync().unwrap();
+        h.run_steps(3);
+        for import in [false, true] {
+            h.get_by_label("Back up now").focus();
+            h.run_steps(1);
+            let ctx = h.ctx.clone();
+            if import {
+                let path = std::path::Path::new("tests/fixtures/format1-1.0.2.json");
+                h.state_mut().open_import_preview(&ctx, path);
+            } else {
+                let app = h.state_mut();
+                app.remember_modal_opener(&ctx);
+                app.confirm = Some(restore_confirmation(
+                    &app.core,
+                    RestoreSource::External("backup.db".into()),
+                    None,
+                ));
+            }
+            h.run_steps(3);
+            h.key_press(Key::Escape);
+            h.run_steps(4);
+            assert!(h.get_by_label("Back up now").is_focused());
+        }
+    }
+
+    #[test]
+    fn backups_keep_unsaved_settings_on_success_and_failure() {
+        let (_dir, mut core) = file_backed_core();
+        core.set_screen(Screen::Settings);
+        core.sync().unwrap();
+        let mut app = AthenaApp::for_test(core);
+        app.core.ui.settings.owner_name = "Unsaved owner".into();
+        app.core.ui.settings.new_person = "Unsaved person".into();
+        app.core.ui.settings.new_category = "Unsaved category".into();
+        app.core.ui.settings.backup_error = Some("old error".into());
+        let ctx = egui::Context::default();
+        assert!(app.handle_create_backup(&ctx));
+        assert_eq!(app.core.vm.backups.len(), 1);
+        assert!(app.core.vm.last_operation.is_some());
+        assert!(app.core.ui.settings.backup_error.is_none());
+        // A regular file blocks directory creation without relying on OS permissions.
+        let backups = app.core.store.dirs().backups_dir.clone();
+        std::fs::remove_file(&app.core.vm.backups[0].path).unwrap();
+        std::fs::remove_dir(&backups).unwrap();
+        std::fs::write(&backups, b"blocked").unwrap();
+        assert!(!app.handle_create_backup(&ctx));
+        assert!(app.core.ui.settings.backup_error.is_some());
+        assert_eq!(app.core.ui.settings.owner_name, "Unsaved owner");
+        assert_eq!(app.core.ui.settings.new_person, "Unsaved person");
+        assert_eq!(app.core.ui.settings.new_category, "Unsaved category");
+        assert_eq!(
+            app.toast.as_ref().unwrap().text,
+            ToastKey::BackupFailed.text(Language::En)
+        );
+    }
+
+    #[test]
+    fn manual_backup_delete_confirms_refreshes_and_preserves_drafts() {
+        use egui_kittest::kittest::Queryable;
+        let (_dir, mut core) = file_backed_core();
+        let path = core
+            .apply(AppAction::CreateBackup)
+            .unwrap()
+            .notice
+            .unwrap()
+            .snapshot
+            .unwrap();
+        core.set_screen(Screen::Settings);
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Data;
+        core.sync().unwrap();
+        let mut h = polish_harness(core);
+        h.run_steps(3);
+        h.state_mut().core.ui.settings.owner_name = "Unsaved".into();
+        let label = format!(
+            "Delete\u{2026} {}",
+            path.file_name().unwrap().to_str().unwrap()
+        );
+        h.get_by_label(&label).click();
+        h.run_steps(3);
+        assert!(path.exists());
+        h.get_by_label(strings(Language::En).backup_delete).click();
+        h.run_steps(4);
+        assert!(!path.exists());
+        assert!(h.state().core.vm.backups.is_empty());
+        assert_eq!(h.state().core.ui.settings.owner_name, "Unsaved");
     }
 
     #[test]

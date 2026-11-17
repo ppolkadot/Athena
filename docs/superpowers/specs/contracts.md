@@ -340,11 +340,13 @@ New `ViewModel` fields:
 - Pruning only touches `.db` files with a known prefix in `backups_dir`.
 - `AppDirs` gains `staging_dir = root/staging`. Its contents are app-owned temporary files, deleted at startup and after each operation.
 
-`BackupFile { path, kind: BackupKind, created_utc: DateTime<Utc>, bytes: u64 }`. Unrecognized names are not listed.
+`BackupFile { path, kind: BackupKind, created_utc: DateTime<Utc>, suffix: u32, bytes: u64 }`. Unrecognized names are not listed. `suffix` is the `-N` a second backup written in the same second carries (`…_HH-MM-SS-1.db`), so two files in one second still order deterministically.
 
 ### §9.2 Manual backup
 
 `backup::create_manual(conn, dirs, now_utc) -> Result<BackupFile>` reuses `vacuum_into`, so the copy is integrity-checked before it gets its final name.
+
+`backup::delete_manual(dir, path) -> Result<()>` deletes one manual backup from the Data tab, after confirmation. It refuses any path outside `backups_dir`, any file that is not a regular file, and any kind other than `Manual`. A stale row (already deleted on disk) reports the I/O error instead of pretending it worked.
 
 ### §9.3 Restore pipeline
 
@@ -355,9 +357,9 @@ Each step is a named seam. Tests inject a failure after each one.
 3. **Validate the staged copy:**
    - `PRAGMA integrity_check == ok`
    - `user_version` in `1..=latest`
-   - `application_id == 0x41544E41`, or `user_version == 1` with the exact 0001 table set
+   - `application_id == 0x41544E41`, or `user_version == 1` with the exact 0001 table set — established **before** the version check, so a foreign database carrying a high `user_version` is `NotAthena`, not `TooNew`
    - `page_size` equal to the live database's
-4. **Upgrade the staged copy:** run migrations on it, then `integrity::check` must be empty and a profile row must exist.
+4. **Upgrade the staged copy:** run migrations on it, then `integrity::check` must be empty, a profile row must exist, and after onboarding exactly one non-archived owner must remain.
 5. **Snapshot:** `vacuum_into(live) → pre-restore-<ts>.db`. A failure aborts the restore.
 6. **Copy:** `conn_mut().restore(Main, staged, None)`. An interruption rolls back inside SQLite; the live data stays intact.
 7. **Verify:** `integrity::check(live)` must be empty. If not, restore from the step-5 snapshot with the same API, then report the error with both paths.
@@ -417,12 +419,13 @@ Restore is synchronous on the UI thread in 1.1, with a measured budget of < 1 s 
 ### §10.4 Validation (`ImportError`, all collected, at most 50 reported)
 
 - **Envelope:** valid version; `exported_at` is RFC 3339.
+- **Profile:** `onboarding_complete` is true. An export from a setup that never finished is rejected (`OnboardingIncomplete`) rather than imported as an empty-looking profile.
 - **Ids:** positive and unique per collection.
-- **People:** exactly one owner; the owner is not archived; names are non-blank after trim.
-- **Categories:** names non-blank and unique case-insensitively (matching `COLLATE NOCASE`); color `#RRGGBB`; valid scope.
+- **People:** exactly one owner; the owner is not archived; names are non-blank after trim; the names of **active** people are unique after a Unicode fold (NFD, diacritics stripped, lowercased), matching how the pickers compare them. An archived person's name may be reused.
+- **Categories:** names non-blank and unique after the same Unicode fold; color `#RRGGBB`; valid scope.
 - **Transactions:**
   - title non-blank; amount > 0; valid calendar date; known kind
-  - category exists and allows the kind (archived allowed)
+  - category exists (archived allowed). A non-settlement entry whose category scope does not allow its kind is **not** rejected: the category is widened to `CategoryScope::Both`, the widened names are reported in `ImportPlan.widened_categories`, and the preview says so. This keeps history from 1.0.x exports whose categories were narrowed afterwards.
   - payer exists (archived allowed); a payer on income is accepted as stored and ignored by settlement
   - allocation people exist with no duplicates; non-empty allocations sum exactly (checked)
   - `split_mode` rules; settlement shape per §5.2
@@ -435,6 +438,7 @@ Restore is synchronous on the UI thread in 1.1, with a measured budget of < 1 s 
 2. Preview shows:
    - source file name, `app_version`, `exported_at`, format
    - incoming counts against current counts, **including the trash count that will be emptied**
+   - the widened categories, when validation had to widen any (§10.4)
    - the consequence ("Replaces everything in Athena")
    - the snapshot location
 3. Confirm, then `ImportProfile(plan)`.
@@ -460,7 +464,7 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
 - **Entered when** `Db::open` fails with `Corrupt`, `Migration`, `SchemaTooNew`, or `Db`. `AlreadyRunning` and `Dirs` keep the message-box path.
 - **The recovery screen** (solid surface, no wallpaper in later releases) shows the localized error, the data folder, and the backups list (read-only listing). Actions: **Open data folder**, **Quit**, and **Restore this backup**. For `SchemaTooNew`, restore warns that newer data will be replaced.
 - **Restore from recovery:**
-  1. Validate as in §9.3 steps 1–4.
+  1. Validate as in §9.3 steps 1–4. The `page_size` comparison has no live database to match, so it is skipped; identity, integrity, version, migrations, and the domain invariants still run.
   2. Rename the broken `athena.db`, `-wal` and `-shm` to `broken-<ts>.db…`, which frees the live path.
   3. Write the staged, upgraded copy to the live path with the backup API.
   4. `Db::open`, then switch to `Active`.
@@ -483,9 +487,11 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - data folder
   - export JSON/CSV
   - Import…
-  - Back up now
-  - backups list with Restore… per row, and Restore from file…
+  - Back up now; a failure shows inline on the card and as a toast, and does not drop the page's drafts
+  - backups list with Restore… per row, Delete… on manual rows (confirmed), and Restore from file…
   - the latest operation notice
+  - Changing a category's scope is refused with its own message (`SettingsError::ScopeInUse`) when entries already use it and the new scope would hide them; the generic save failure is reserved for everything else.
+- Successful restore/import clears filters and opens Month.
 - **Dialogs** return keyboard focus to the control that opened them.
 - **All new copy** is added to both languages in the same commit, including error variants for every `RestoreError` and `ImportError`.
 
@@ -563,3 +569,6 @@ These reserve names and rules. They are not frozen.
 - 2026-11-16 — Updated settlement card visibility (`balances.len() >= 2 || excluded.any() || settlement_unavailable`, §7.3, §12) and added non-blocking Quick Add viewed-month date warning on `Record` (§7.4, §12).
 - 2026-11-16 — Cleared stale `RestoreTransaction` Undo toast on purge, added `UndoFailed` toast (§6.3), and clarified the 7-day rolling window for daily backups in Trash copy (§12).
 - 2026-11-16 — Expanded `§10.4` `ImportError::Overflow` to cover per-month/lifetime report sums and chronological (`date ASC, id ASC`) cumulative settlement balances/negations (D-P5), and added the 9th `Payer`/`Pagador` CSV column to `§5.3` (D-P6).
+- 2026-11-17 — Review pass. `§9.1`: added `BackupFile.suffix` for two backups in one second; `§9.2`: added `delete_manual`. `§9.3`: identity is established before the `TooNew` check, and upgrade also enforces the single non-archived owner. `§10.4`: names compared after a Unicode fold, active names unique, `OnboardingIncomplete`, and legacy scope mismatches widen the category instead of failing (removed `CategoryScopeMismatch`); preview names the widened categories. `§11`: recovery restore skips the page-size comparison. `§12`: manual-row Delete…, inline backup failure that keeps drafts, and `SettingsError::ScopeInUse`.
+
+- 2026-11-17 - Final review: restore owner validation applies after onboarding; daily snapshot dates display as calendar dates even across timezone/DST changes; recovery cleans staging and rolls back partial broken-file moves. Successful restore/import opens Month with cleared filters.

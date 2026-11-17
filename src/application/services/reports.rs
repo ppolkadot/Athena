@@ -65,6 +65,10 @@ pub fn tracked_balance(conn: &Connection, start_balance: Money) -> Result<Money>
 
 #[cfg(test)]
 mod tests {
+    // The bar fraction is derived from exact halves of cent counts, so exact comparison is
+    // meaningful here.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::domain::reports::bar_fraction;
     use crate::domain::transaction::Allocation;

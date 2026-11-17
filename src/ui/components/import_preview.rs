@@ -82,6 +82,16 @@ pub fn show(
                     .color(p.accent),
             );
         }
+        if !dialog.plan.widened_categories.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    s.import_preview_widened
+                        .replace("{names}", &dialog.plan.widened_categories.join(", ")),
+                )
+                .color(p.accent),
+            );
+        }
         ui.add_space(8.0);
         ui.label(RichText::new(counts).color(p.text));
         ui.add_space(8.0);
@@ -130,6 +140,7 @@ mod tests {
                 app_version: "1.0.2".into(),
                 exported_at: "2026-11-10T10:00:00Z".into(),
                 used_timestamp_fallback: fallback,
+                widened_categories: vec![],
                 profile: Profile {
                     start_balance: Money::ZERO,
                     theme: Theme::Dark,
@@ -171,6 +182,21 @@ mod tests {
             },
             None,
         )
+    }
+
+    #[test]
+    fn preview_names_widened_categories_in_both_languages() {
+        use egui_kittest::kittest::Queryable;
+        for language in [Language::En, Language::PtBr] {
+            let mut dialog = sample_dialog(false);
+            dialog.plan.widened_categories = vec!["Food".into(), "Salary".into()];
+            let expected = strings(language)
+                .import_preview_widened
+                .replace("{names}", "Food, Salary");
+            let mut h = harness(dialog, language);
+            h.run_steps(3);
+            assert!(h.query_by_label(&expected).is_some());
+        }
     }
 
     #[test]

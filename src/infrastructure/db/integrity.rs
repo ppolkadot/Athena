@@ -1,4 +1,4 @@
-//! Cross-row invariants that SQLite cannot express as CHECK constraints.
+//! Cross-row invariants that `SQLite` cannot express as CHECK constraints.
 
 use rusqlite::Connection;
 

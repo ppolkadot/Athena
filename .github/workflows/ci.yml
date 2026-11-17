@@ -8,6 +8,9 @@ on:
       - "v*"
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,7 +20,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@stable
@@ -48,7 +51,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@stable
@@ -91,7 +94,7 @@ jobs:
           $lines | Set-Content -Path SHA256SUMS.txt -Encoding ascii
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: athena-windows-release
           path: |

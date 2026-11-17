@@ -13,6 +13,7 @@ use crate::ui::theme::{palette, typography};
 pub mod calendar;
 pub mod month;
 pub mod onboarding;
+pub mod recovery;
 pub mod settings;
 pub mod trash;
 
@@ -40,6 +41,10 @@ pub enum ScreenEvent {
     OpenDataFolder,
     Export(ExportRequest),
     RequestRestoreListed(crate::infrastructure::db::backup::BackupFile),
+    /// Save a manual backup; failures stay on the Data tab so drafts are not dropped.
+    CreateBackup,
+    /// Delete one manual backup after the user confirms.
+    DeleteBackup(std::path::PathBuf),
     PickRestoreFile,
     PickImportFile,
     RetryRefresh,

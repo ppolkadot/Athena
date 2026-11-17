@@ -39,6 +39,8 @@ pub enum SettingsError {
     ColorInvalid,
     /// The store refused the change, usually because the name is already used.
     SaveRejected,
+    /// The new scope would hide entries that already use the category.
+    ScopeInUse,
 }
 
 #[must_use]
@@ -49,6 +51,7 @@ pub fn error_message(error: SettingsError, language: Language) -> &'static str {
         SettingsError::Balance(e) => money_error_message(e, language),
         SettingsError::ColorInvalid => s.v_color_invalid,
         SettingsError::SaveRejected => s.settings_save_failed,
+        SettingsError::ScopeInUse => s.settings_scope_in_use,
     }
 }
 
@@ -77,6 +80,7 @@ pub struct SettingsState {
     pub confirm_archive_category: Option<i64>,
     pub error: Option<SettingsError>,
     pub restore_error: Option<String>,
+    pub backup_error: Option<String>,
     pub import_error: Option<String>,
 }
 
@@ -98,6 +102,7 @@ impl Default for SettingsState {
             confirm_archive_category: None,
             error: None,
             restore_error: None,
+            backup_error: None,
             import_error: None,
         }
     }
@@ -358,10 +363,12 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
         }
     }
 
-    let shown = ui_state
-        .settings
-        .error
-        .filter(|e| matches!(e, SettingsError::SaveRejected | SettingsError::ColorInvalid));
+    let shown = ui_state.settings.error.filter(|e| {
+        matches!(
+            e,
+            SettingsError::SaveRejected | SettingsError::ColorInvalid | SettingsError::ScopeInUse
+        )
+    });
     if let Some(error) = shown {
         ui.label(RichText::new(error_message(error, vm.language())).color(p.negative));
         ui.add_space(8.0);
@@ -605,6 +612,7 @@ mod tests {
             SettingsError::Balance(MoneyError::Invalid),
             SettingsError::ColorInvalid,
             SettingsError::SaveRejected,
+            SettingsError::ScopeInUse,
         ] {
             assert_ne!(
                 error_message(error, Language::En),

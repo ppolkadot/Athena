@@ -31,6 +31,8 @@ pub enum AppAction {
     SaveCategory(Category),
     ArchiveCategory(i64),
     CreateBackup,
+    /// Permanently delete one manual backup file from the backups folder.
+    DeleteBackup(std::path::PathBuf),
     RestoreBackup(RestoreSource),
     ImportProfile(Box<ImportPlan>),
 }

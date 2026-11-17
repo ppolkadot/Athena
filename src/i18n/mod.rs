@@ -113,6 +113,7 @@ strings! {
     archive_person_body,
     archive_category_body,
     settings_save_failed,
+    settings_scope_in_use,
     v_color_invalid,
     color_label,
     csv_date,
@@ -138,6 +139,7 @@ strings! {
     import_preview_counts,
     import_preview_consequence,
     import_preview_snapshot,
+    import_preview_widened,
     import_errors_more,
     toast_exported,
     toast_export_failed,
@@ -145,6 +147,7 @@ strings! {
     backups_hint,
     backups_empty,
     back_up_now,
+    backup_delete,
     restore_ellipsis,
     restore_from_file,
     backup_kind_auto,
@@ -159,6 +162,8 @@ strings! {
     notice_trash_purged,
     confirm_restore_title,
     confirm_restore_body,
+    confirm_delete_backup_title,
+    confirm_delete_backup_body,
     unknown_date,
     err_restore_not_athena,
     err_restore_too_new,
@@ -170,6 +175,8 @@ strings! {
     err_restore_verification_failed,
     err_restore_rollback_failed,
     err_restore_failed,
+    err_backup_failed,
+    err_backup_delete_failed,
     err_import_too_large,
     err_import_io,
     err_import_malformed_json,
@@ -178,11 +185,13 @@ strings! {
     err_import_invalid_version,
     err_import_invalid_exported_at,
     err_import_templates_not_supported,
+    err_import_onboarding_incomplete,
     err_import_invalid_theme,
     err_import_invalid_language,
     err_import_non_positive_person_id,
     err_import_duplicate_person_id,
     err_import_blank_person_name,
+    err_import_duplicate_person_name,
     err_import_invalid_person_kind,
     err_import_invalid_person_timestamp,
     err_import_owner_count,
@@ -201,7 +210,6 @@ strings! {
     err_import_invalid_date,
     err_import_invalid_transaction_kind,
     err_import_missing_category,
-    err_import_category_scope_mismatch,
     err_import_missing_payer,
     err_import_missing_allocation_person,
     err_import_duplicate_allocation_person,
@@ -219,6 +227,14 @@ strings! {
     startup_corrupt,
     startup_already_running,
     startup_generic,
+    recovery_title,
+    recovery_body,
+    recovery_backups_title,
+    recovery_no_backups,
+    recovery_restore_hint,
+    recovery_broken_files,
+    recovery_restore_failed,
+    recovery_quit,
     confirm_delete_title,
     confirm_delete_body,
     toast_deleted_named,
@@ -282,6 +298,8 @@ strings! {
     toast_category_saved,
     toast_category_archived,
     toast_backup_created,
+    toast_backup_failed,
+    toast_backup_deleted,
     toast_restored,
     toast_restored_named,
     toast_imported,
@@ -338,6 +356,8 @@ pub enum ToastKey {
     CategorySaved,
     CategoryArchived,
     BackupCreated,
+    BackupFailed,
+    BackupDeleted,
     Restored,
     Imported,
     Welcome,
@@ -361,6 +381,8 @@ impl ToastKey {
             ToastKey::CategorySaved => s.toast_category_saved,
             ToastKey::CategoryArchived => s.toast_category_archived,
             ToastKey::BackupCreated => s.toast_backup_created,
+            ToastKey::BackupFailed => s.toast_backup_failed,
+            ToastKey::BackupDeleted => s.toast_backup_deleted,
             ToastKey::Restored => s.toast_restored,
             ToastKey::Imported => s.toast_imported,
             ToastKey::Welcome => s.toast_welcome,
@@ -658,6 +680,22 @@ pub fn restore_error_message(error: &RestoreError, language: Language) -> String
     }
 }
 
+/// Localized message for a failed manual backup.
+#[must_use]
+pub fn backup_error_message(error: &AppError, language: Language) -> String {
+    strings(language)
+        .err_backup_failed
+        .replace("{detail}", &error.to_string())
+}
+
+/// Localized message for a failed manual backup deletion.
+#[must_use]
+pub fn backup_delete_error_message(error: &AppError, language: Language) -> String {
+    strings(language)
+        .err_backup_delete_failed
+        .replace("{detail}", &error.to_string())
+}
+
 /// Localized message for every [`ImportError`] variant.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -677,6 +715,7 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
         ImportError::InvalidVersion => s.err_import_invalid_version.to_string(),
         ImportError::InvalidExportedAt => s.err_import_invalid_exported_at.to_string(),
         ImportError::TemplatesNotSupported => s.err_import_templates_not_supported.to_string(),
+        ImportError::OnboardingIncomplete => s.err_import_onboarding_incomplete.to_string(),
         ImportError::InvalidTheme => s.err_import_invalid_theme.to_string(),
         ImportError::InvalidLanguage => s.err_import_invalid_language.to_string(),
         ImportError::NonPositivePersonId { index, id } => s
@@ -689,6 +728,9 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
         ImportError::BlankPersonName { id } => s
             .err_import_blank_person_name
             .replace("{id}", &id.to_string()),
+        ImportError::DuplicatePersonName { name } => {
+            s.err_import_duplicate_person_name.replace("{name}", name)
+        }
         ImportError::InvalidPersonKind { id } => s
             .err_import_invalid_person_kind
             .replace("{id}", &id.to_string()),
@@ -744,9 +786,6 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
             .err_import_missing_category
             .replace("{id}", &id.to_string())
             .replace("{category_id}", &category_id.to_string()),
-        ImportError::CategoryScopeMismatch { id } => s
-            .err_import_category_scope_mismatch
-            .replace("{id}", &id.to_string()),
         ImportError::MissingPayer { id, payer_id } => s
             .err_import_missing_payer
             .replace("{id}", &id.to_string())
@@ -888,6 +927,8 @@ mod tests {
             CategorySaved,
             CategoryArchived,
             BackupCreated,
+            BackupFailed,
+            BackupDeleted,
             Restored,
             Imported,
             Welcome,
@@ -933,6 +974,27 @@ mod tests {
     }
 
     #[test]
+    fn backup_errors_are_localized() {
+        let failures = [
+            AppError::Backup("verification failed".into()),
+            AppError::Io(std::io::Error::other("disk full")),
+        ];
+        for err in &failures {
+            let save_en = backup_error_message(err, Language::En);
+            let save_pt = backup_error_message(err, Language::PtBr);
+            let delete_en = backup_delete_error_message(err, Language::En);
+            let delete_pt = backup_delete_error_message(err, Language::PtBr);
+            for text in [&save_en, &save_pt, &delete_en, &delete_pt] {
+                assert!(!text.trim().is_empty());
+                assert!(!text.contains('{'), "{text}");
+            }
+            assert_ne!(save_en, save_pt);
+            assert_ne!(delete_en, delete_pt);
+            assert_ne!(save_en, delete_en);
+        }
+    }
+
+    #[test]
     fn import_errors_are_localized() {
         let cases = [
             ImportError::TooLarge,
@@ -946,11 +1008,13 @@ mod tests {
             ImportError::InvalidVersion,
             ImportError::InvalidExportedAt,
             ImportError::TemplatesNotSupported,
+            ImportError::OnboardingIncomplete,
             ImportError::InvalidTheme,
             ImportError::InvalidLanguage,
             ImportError::NonPositivePersonId { index: 0, id: 0 },
             ImportError::DuplicatePersonId { id: 1 },
             ImportError::BlankPersonName { id: 1 },
+            ImportError::DuplicatePersonName { name: "Ana".into() },
             ImportError::InvalidPersonKind { id: 1 },
             ImportError::InvalidPersonTimestamp { id: 1 },
             ImportError::OwnerCount { count: 2 },
@@ -974,7 +1038,6 @@ mod tests {
                 id: 3,
                 category_id: 9,
             },
-            ImportError::CategoryScopeMismatch { id: 3 },
             ImportError::MissingPayer { id: 3, payer_id: 9 },
             ImportError::MissingAllocationPerson {
                 id: 3,
@@ -994,7 +1057,7 @@ mod tests {
             ImportError::SnapshotFailed("disk".into()),
             ImportError::VerificationFailed("fk".into()),
         ];
-        assert_eq!(cases.len(), 44);
+        assert_eq!(cases.len(), 45);
         for err in &cases {
             let en = import_error_message(err, Language::En);
             let pt = import_error_message(err, Language::PtBr);

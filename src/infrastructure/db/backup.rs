@@ -3,7 +3,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 
 use super::migrations;
@@ -14,7 +14,7 @@ use crate::shared::error::{AppError, RestoreError, Result};
 pub const AUTO_SNAPSHOTS_KEPT: usize = 7;
 /// How many `pre-purge-` / `pre-restore-` / `pre-import-` snapshots are kept.
 pub const PRE_OPERATION_SNAPSHOTS_KEPT: usize = 5;
-/// SQLite `PRAGMA application_id` set on Athena databases from schema v2 onward (`"ATNA"`).
+/// `SQLite` `PRAGMA application_id` set on Athena databases from schema v2 onward (`"ATNA"`).
 pub const ATHENA_APPLICATION_ID: i64 = 0x4154_4E41;
 
 /// Which category of snapshot a managed backup file belongs to (`§9.1`).
@@ -34,6 +34,8 @@ pub struct BackupFile {
     pub path: PathBuf,
     pub kind: BackupKind,
     pub created_utc: DateTime<Utc>,
+    /// Collision suffix from the file name (`0` when the name has no `-N` suffix).
+    pub suffix: u32,
     pub bytes: u64,
 }
 
@@ -64,8 +66,10 @@ pub fn integrity_ok(path: &Path) -> Result<bool> {
     Ok(rows.len() == 1 && rows[0] == "ok")
 }
 
-/// Inspect `path` as an Athena SQLite snapshot, distinguishing `Corrupt`, `TooNew`, and
-/// `NotAthena` for the restore pipeline (`§9.3`).
+/// Inspect `path` as an Athena `SQLite` snapshot, distinguishing `Corrupt`, `TooNew`, and
+/// `NotAthena` for the restore pipeline (`§9.3`). Athena identity is established before the schema
+/// version check, so a foreign database that merely carries a high `user_version` is `NotAthena`
+/// rather than `TooNew`.
 pub(crate) fn inspect_athena_snapshot(
     path: &Path,
 ) -> std::result::Result<SnapshotMeta, RestoreError> {
@@ -96,16 +100,6 @@ pub(crate) fn inspect_athena_snapshot(
     let Ok(version) = migrations::schema_version(&conn) else {
         return Err(RestoreError::Corrupt);
     };
-    let supported = migrations::latest_version();
-    if version > supported {
-        return Err(RestoreError::TooNew {
-            found: version,
-            supported,
-        });
-    }
-    if version < 1 {
-        return Err(RestoreError::NotAthena);
-    }
     let Ok(app_id) = conn.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0)) else {
         return Err(RestoreError::Corrupt);
     };
@@ -124,8 +118,25 @@ pub(crate) fn inspect_athena_snapshot(
         return Err(RestoreError::Corrupt);
     };
 
+    let exact_v1 = tables.iter().map(String::as_str).eq(V1_TABLES);
+    let is_athena = app_id == ATHENA_APPLICATION_ID || (version == 1 && exact_v1);
+    if !is_athena {
+        return Err(RestoreError::NotAthena);
+    }
+
+    let supported = migrations::latest_version();
+    if version > supported {
+        return Err(RestoreError::TooNew {
+            found: version,
+            supported,
+        });
+    }
+
+    if version < 1 {
+        return Err(RestoreError::NotAthena);
+    }
+
     if version == 1 {
-        let exact_v1 = tables.iter().map(String::as_str).eq(V1_TABLES);
         return if exact_v1 && (app_id == 0 || app_id == ATHENA_APPLICATION_ID) {
             Ok(SnapshotMeta { version, page_size })
         } else {
@@ -157,7 +168,7 @@ pub(crate) fn inspect_athena_snapshot(
     Ok(SnapshotMeta { version, page_size })
 }
 
-/// Verify that `path` is a regular, non-empty, integrity-clean SQLite file belonging to Athena
+/// Verify that `path` is a regular, non-empty, integrity-clean `SQLite` file belonging to Athena
 /// with a supported schema version (`1..=latest_version()`). Returns `Ok(false)` (never panics)
 /// when the path is missing, a directory/symlink, empty, corrupt, foreign, or too new.
 ///
@@ -254,7 +265,7 @@ pub fn daily_snapshot(
 /// backups are never auto-pruned.
 ///
 /// # Errors
-/// [`AppError::Backup`], SQLite, or I/O errors if the snapshot cannot be written or verified.
+/// [`AppError::Backup`], `SQLite`, or I/O errors if the snapshot cannot be written or verified.
 pub fn create_manual(
     conn: &Connection,
     dirs: &AppDirs,
@@ -275,6 +286,7 @@ pub fn create_manual(
         path,
         kind: BackupKind::Manual,
         created_utc: now_utc,
+        suffix: 0,
         bytes,
     })
 }
@@ -284,7 +296,7 @@ pub fn create_manual(
 /// created snapshot.
 ///
 /// # Errors
-/// [`AppError::Backup`], SQLite, or I/O errors if the snapshot cannot be written or verified.
+/// [`AppError::Backup`], `SQLite`, or I/O errors if the snapshot cannot be written or verified.
 pub fn pre_purge_snapshot(
     conn: &Connection,
     dirs: &AppDirs,
@@ -300,7 +312,7 @@ pub fn pre_purge_snapshot(
 /// preserves older snapshots.
 ///
 /// # Errors
-/// [`AppError::Backup`], SQLite, or I/O errors if the snapshot cannot be written or verified.
+/// [`AppError::Backup`], `SQLite`, or I/O errors if the snapshot cannot be written or verified.
 pub fn pre_import_snapshot(
     conn: &Connection,
     dirs: &AppDirs,
@@ -342,8 +354,8 @@ fn unique_backup_path(dir: &Path, stem: &str) -> PathBuf {
     unreachable!()
 }
 
-/// List managed `.db` snapshots in `dir`, newest first (`§9.1`). Ignores non-regular files,
-/// `.tmp` files, non-`.db` files, and unknown prefixes.
+/// List managed `.db` snapshots in `dir`, newest first by parsed timestamp then collision suffix
+/// (`§9.1`). Ignores non-regular files, `.tmp` files, non-`.db` files, and unknown prefixes.
 ///
 /// # Errors
 /// I/O errors reading `dir` (a missing `dir` returns an empty list).
@@ -366,69 +378,112 @@ pub fn list(dir: &Path) -> Result<Vec<BackupFile>> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some((kind, created_utc)) = parse_backup_name(name) else {
+        let Some((kind, created_utc, suffix)) = parse_backup_name_parts(name) else {
             continue;
         };
         files.push(BackupFile {
             path,
             kind,
             created_utc,
+            suffix,
             bytes: meta.len(),
         });
     }
     files.sort_by(|a, b| {
         b.created_utc
             .cmp(&a.created_utc)
+            .then_with(|| b.suffix.cmp(&a.suffix))
             .then_with(|| b.path.cmp(&a.path))
     });
     Ok(files)
 }
 
-fn parse_backup_name(name: &str) -> Option<(BackupKind, DateTime<Utc>)> {
+/// Delete a recognized manual snapshot directly inside the managed backup folder.
+///
+/// # Errors
+/// Returns an error for external paths, other backup kinds, links, or filesystem failures.
+pub fn delete_manual(dir: &Path, path: &Path) -> Result<()> {
+    let parent = path.parent().ok_or(AppError::NotFound("manual backup"))?;
+    if std::fs::canonicalize(parent)? != std::fs::canonicalize(dir)?
+        || !std::fs::symlink_metadata(path)?.is_file()
+        || !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(parse_backup_name_parts)
+            .is_some_and(|(kind, _, _)| kind == BackupKind::Manual)
+    {
+        return Err(AppError::NotFound("manual backup"));
+    }
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+/// Calendar date encoded in a daily snapshot; independent of the current timezone.
+#[must_use]
+pub fn auto_calendar_date(path: &Path) -> Option<NaiveDate> {
+    let name = path.file_stem()?.to_str()?.strip_prefix("auto-")?;
+    NaiveDate::parse_from_str(name, "%Y-%m-%d").ok()
+}
+
+/// Interpret an `auto-` file name date as local midnight, converted to UTC. Falls back to UTC
+/// midnight when that local time does not exist (a DST gap).
+fn auto_created_utc(date: NaiveDate) -> DateTime<Utc> {
+    let midnight = date.and_hms_opt(0, 0, 0).unwrap_or_default();
+    Local
+        .from_local_datetime(&midnight)
+        .earliest()
+        .map_or_else(|| midnight.and_utc(), |dt| dt.with_timezone(&Utc))
+}
+
+fn parse_backup_name_parts(name: &str) -> Option<(BackupKind, DateTime<Utc>, u32)> {
     let stem = name
         .strip_suffix(".db")
         .or_else(|| name.strip_suffix(".DB"))?;
     if let Some(date_str) = stem.strip_prefix("auto-") {
         let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
-        let dt = date.and_hms_opt(0, 0, 0)?.and_utc();
-        return Some((BackupKind::Auto, dt));
+        return Some((BackupKind::Auto, auto_created_utc(date), 0));
     }
     if let Some(rest) = stem.strip_prefix("manual-") {
-        return Some((BackupKind::Manual, parse_timestamp_with_suffix(rest)?));
+        let (created_utc, suffix) = parse_timestamp_with_suffix(rest)?;
+        return Some((BackupKind::Manual, created_utc, suffix));
     }
     if let Some(rest) = stem.strip_prefix("pre-purge-") {
-        return Some((BackupKind::PrePurge, parse_timestamp_with_suffix(rest)?));
+        let (created_utc, suffix) = parse_timestamp_with_suffix(rest)?;
+        return Some((BackupKind::PrePurge, created_utc, suffix));
     }
     if let Some(rest) = stem.strip_prefix("pre-restore-") {
-        return Some((BackupKind::PreRestore, parse_timestamp_with_suffix(rest)?));
+        let (created_utc, suffix) = parse_timestamp_with_suffix(rest)?;
+        return Some((BackupKind::PreRestore, created_utc, suffix));
     }
     if let Some(rest) = stem.strip_prefix("pre-import-") {
-        return Some((BackupKind::PreImport, parse_timestamp_with_suffix(rest)?));
+        let (created_utc, suffix) = parse_timestamp_with_suffix(rest)?;
+        return Some((BackupKind::PreImport, created_utc, suffix));
     }
     if let Some(after_v) = stem.strip_prefix("pre-migration-v") {
         let (ver, ts) = after_v.split_once('-')?;
         if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        return Some((BackupKind::PreMigration, parse_timestamp_with_suffix(ts)?));
+        let (created_utc, suffix) = parse_timestamp_with_suffix(ts)?;
+        return Some((BackupKind::PreMigration, created_utc, suffix));
     }
     None
 }
 
-fn parse_timestamp_with_suffix(rest: &str) -> Option<DateTime<Utc>> {
-    let ts = if rest.len() == 19 {
-        rest
+fn parse_timestamp_with_suffix(rest: &str) -> Option<(DateTime<Utc>, u32)> {
+    let (ts, suffix) = if rest.len() == 19 {
+        (rest, 0)
     } else if rest.len() > 20
         && rest.as_bytes().get(19) == Some(&b'-')
         && rest[20..].chars().all(|c| c.is_ascii_digit())
     {
-        &rest[..19]
+        (&rest[..19], rest[20..].parse::<u32>().ok()?)
     } else {
         return None;
     };
     NaiveDateTime::parse_from_str(ts, "%Y-%m-%d_%H-%M-%S")
         .ok()
-        .map(|ndt| ndt.and_utc())
+        .map(|ndt| (ndt.and_utc(), suffix))
 }
 
 /// Apply `§9.1` retention across all managed prefixes in `dir`: keep newest 7 `auto-`, newest 5
@@ -479,7 +534,8 @@ pub fn clear_staging(dirs: &AppDirs) -> Result<()> {
     Ok(())
 }
 
-/// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep` (names sort by date).
+/// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep` (ordered by the
+/// parsed timestamp, then collision suffix).
 ///
 /// # Errors
 /// I/O errors.
@@ -488,7 +544,8 @@ pub fn prune_prefix(dir: &Path, prefix: &str, keep: usize) -> Result<usize> {
 }
 
 /// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep`, while never
-/// deleting `protected`.
+/// deleting `protected`. Ordering is by parsed timestamp then collision suffix; names that do not
+/// parse and entries that are not regular files (directories, symlinks, `.tmp` files) are skipped.
 ///
 /// # Errors
 /// I/O errors.
@@ -503,7 +560,8 @@ pub fn prune_prefix_protected(
 }
 
 /// Delete the oldest `.db` files whose name starts with `prefix`, keeping `keep`, while never
-/// deleting any path in `protected`.
+/// deleting any path in `protected`. Ordering is by parsed timestamp then collision suffix; names
+/// that do not parse and entries that are not regular files are skipped.
 ///
 /// # Errors
 /// I/O errors.
@@ -513,20 +571,33 @@ pub fn prune_prefix_protecting(
     keep: usize,
     protected: &[&Path],
 ) -> Result<usize> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)?
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| {
-            n.starts_with(prefix)
-                && Path::new(n)
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("db"))
-        })
-        .collect();
-    names.sort();
-    let excess = names.len().saturating_sub(keep);
+    let mut candidates: Vec<(DateTime<Utc>, u32, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix)
+            || !Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("db"))
+        {
+            continue;
+        }
+        if !std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let Some((_, created_utc, suffix)) = parse_backup_name_parts(&name) else {
+            continue;
+        };
+        candidates.push((created_utc, suffix, name));
+    }
+    candidates.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let excess = candidates.len().saturating_sub(keep);
     let mut removed = 0;
-    for name in &names {
+    for (_, _, name) in &candidates {
         if removed >= excess {
             break;
         }
@@ -557,6 +628,42 @@ fn is_protected_path(candidate: &Path, protected: &[&Path]) -> bool {
 mod tests {
     use super::*;
     use crate::infrastructure::db::Db;
+
+    #[test]
+    fn manual_deletion_rejects_external_unmanaged_and_non_regular_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        for name in [
+            "auto-2026-11-16.db",
+            "manual-copy.db",
+            "pre-import-2026-11-16_12-00-00.db",
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"keep").unwrap();
+            assert!(delete_manual(dir.path(), &path).is_err());
+            assert!(path.exists());
+        }
+        let name = "manual-2026-11-16_12-00-00.db";
+        let outside = external.path().join(name);
+        std::fs::write(&outside, b"keep").unwrap();
+        assert!(delete_manual(dir.path(), &outside).is_err());
+        let path = dir.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        assert!(delete_manual(dir.path(), &path).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, b"delete").unwrap();
+        delete_manual(dir.path(), &path).unwrap();
+        assert!(!path.exists());
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn auto_calendar_date_does_not_shift_with_timezone() {
+        assert_eq!(
+            auto_calendar_date(Path::new("auto-2026-11-16.db")),
+            NaiveDate::from_ymd_opt(2026, 11, 16)
+        );
+    }
 
     #[test]
     fn daily_snapshot_is_once_per_day_and_keeps_seven() {
@@ -836,5 +943,119 @@ mod tests {
             .filter_map(std::result::Result::ok)
             .count();
         assert_eq!(remaining, 5);
+    }
+
+    #[test]
+    fn auto_names_resolve_to_the_local_calendar_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let bdir = dir.path();
+        std::fs::write(bdir.join("auto-2026-11-16.db"), b"x").unwrap();
+
+        let listed = list(bdir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, BackupKind::Auto);
+        assert_eq!(
+            listed[0].created_utc.with_timezone(&Local).date_naive(),
+            NaiveDate::from_ymd_opt(2026, 11, 16).unwrap(),
+            "the local calendar date must survive the round trip"
+        );
+    }
+
+    #[test]
+    fn prune_orders_collision_suffixes_numerically() {
+        let dir = tempfile::tempdir().unwrap();
+        let bdir = dir.path();
+        for day in 1..=3_u32 {
+            let stem = format!("pre-restore-2026-11-0{day}_10-00-00");
+            std::fs::write(bdir.join(format!("{stem}.db")), b"x").unwrap();
+            for n in 1..=10_u32 {
+                std::fs::write(bdir.join(format!("{stem}-{n}.db")), b"x").unwrap();
+            }
+        }
+
+        assert_eq!(prune_prefix(bdir, "pre-restore-", 5).unwrap(), 28);
+
+        for n in 6..=10_u32 {
+            let name = format!("pre-restore-2026-11-03_10-00-00-{n}.db");
+            assert!(bdir.join(&name).exists(), "{name} must survive as newest");
+        }
+        assert!(
+            !bdir.join("pre-restore-2026-11-03_10-00-00-5.db").exists(),
+            "only the excess oldest files are deleted"
+        );
+        assert!(!bdir.join("pre-restore-2026-11-03_10-00-00.db").exists());
+        assert!(
+            !bdir.join("pre-restore-2026-11-01_10-00-00-10.db").exists(),
+            "-10 must not be treated as -1"
+        );
+        let remaining = std::fs::read_dir(bdir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .count();
+        assert_eq!(remaining, 5);
+    }
+
+    #[test]
+    fn prune_skips_directories_named_like_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let bdir = dir.path();
+        std::fs::create_dir_all(bdir.join("auto-2026-11-01.db")).unwrap();
+        for day in 2..=11_u32 {
+            std::fs::write(bdir.join(format!("auto-2026-11-{day:02}.db")), b"x").unwrap();
+        }
+
+        let removed = prune(bdir, None).unwrap();
+        assert_eq!(removed, 3);
+        assert!(
+            bdir.join("auto-2026-11-01.db").is_dir(),
+            "a directory must never be deleted by pruning"
+        );
+        let files = std::fs::read_dir(bdir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .count();
+        assert_eq!(files, 7);
+        assert!(!bdir.join("auto-2026-11-02.db").exists());
+        assert!(bdir.join("auto-2026-11-11.db").exists());
+    }
+
+    #[test]
+    fn list_orders_same_timestamp_by_suffix_highest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let bdir = dir.path();
+        std::fs::write(bdir.join("pre-purge-2026-11-16_12-00-00.db"), b"x").unwrap();
+        std::fs::write(bdir.join("pre-purge-2026-11-16_12-00-00-1.db"), b"x").unwrap();
+
+        let listed = list(bdir).unwrap();
+        let names: Vec<String> = listed
+            .iter()
+            .map(|b| b.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "pre-purge-2026-11-16_12-00-00-1.db".to_string(),
+                "pre-purge-2026-11-16_12-00-00.db".to_string(),
+            ]
+        );
+        assert_eq!(listed[0].suffix, 1);
+        assert_eq!(listed[1].suffix, 0);
+    }
+
+    #[test]
+    fn inspect_reports_not_athena_before_too_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foreign-high-version.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+                .unwrap();
+            conn.pragma_update(None, "user_version", 99_i64).unwrap();
+        }
+        assert!(matches!(
+            inspect_athena_snapshot(&path),
+            Err(RestoreError::NotAthena)
+        ));
     }
 }

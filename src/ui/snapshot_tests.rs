@@ -217,3 +217,37 @@ fn snapshot_trash() {
     );
     results.unwrap();
 }
+
+#[test]
+fn snapshot_recovery() {
+    let _turn = GPU
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dirs = crate::infrastructure::config::AppDirs::from_root("athena".into());
+    let state = crate::app::recovery::RecoveryState {
+        dirs,
+        error: crate::shared::error::AppError::Corrupt {
+            path: "athena/athena.db".into(),
+        },
+        backups: vec![],
+        restore_error: None,
+        language: Language::En,
+    };
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_context_setup(theme::typography::install_test_fonts)
+        .build_ui(move |ui| {
+            ui.ctx()
+                .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+            theme::apply(ui.ctx(), Theme::Dark);
+            ui.set_style(ui.ctx().global_style());
+            crate::ui::screens::recovery::show(ui, &state);
+        });
+    h.run_steps(6);
+    h.snapshot_options(
+        "recovery_en_dark",
+        &SnapshotOptions::new()
+            .output_path("src/ui/snapshots")
+            .max_failed_pixels(150),
+    );
+}

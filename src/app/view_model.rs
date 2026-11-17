@@ -893,14 +893,14 @@ mod tests {
 
         core.set_screen(Screen::Settings);
         assert!(core.sync().unwrap());
-        // Startup creates 1 daily auto snapshot, plus the 1 manual backup above.
-        assert_eq!(core.vm.backups.len(), 2);
+        // An unfinished setup has no daily snapshot: only the manual backup exists.
+        assert_eq!(core.vm.backups.len(), 1);
         assert!(core.vm.backups.iter().any(|b| b.path == snap_path));
 
         // Creating another backup while on Settings refreshes vm.backups directly via RefreshScope::Backups.
         let outcome2 = core.apply(AppAction::CreateBackup).unwrap();
         let snap2 = outcome2.notice.and_then(|n| n.snapshot).unwrap();
-        assert_eq!(core.vm.backups.len(), 3);
+        assert_eq!(core.vm.backups.len(), 2);
         assert!(core.vm.backups.iter().any(|b| b.path == snap2));
     }
 }

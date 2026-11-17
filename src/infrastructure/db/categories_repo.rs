@@ -110,9 +110,7 @@ pub fn update(conn: &Connection, category: &Category) -> Result<()> {
         category.id,
         category.applies_to,
     )? {
-        return Err(AppError::Validation(
-            "category scope does not allow existing transactions".into(),
-        ));
+        return Err(AppError::CategoryScopeInUse);
     }
     conn.execute(
         "UPDATE categories SET name = ?1, color = ?2, icon = ?3, applies_to = ?4 WHERE id = ?5",
@@ -245,14 +243,14 @@ mod tests {
         cat.applies_to = CategoryScope::Income;
         assert!(matches!(
             update(db.conn(), &cat),
-            Err(AppError::Validation(_))
+            Err(AppError::CategoryScopeInUse)
         ));
 
         // Even when the transaction is in Trash, narrowing must stay blocked.
         crate::infrastructure::db::transactions_repo::delete(db.conn(), tx_id).unwrap();
         assert!(matches!(
             update(db.conn(), &cat),
-            Err(AppError::Validation(_))
+            Err(AppError::CategoryScopeInUse)
         ));
 
         // Once purged permanently, narrowing succeeds.

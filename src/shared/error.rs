@@ -56,6 +56,8 @@ pub enum ImportError {
     InvalidExportedAt,
     #[error("templates are not supported in format 1 imports")]
     TemplatesNotSupported,
+    #[error("the export comes from an unfinished setup")]
+    OnboardingIncomplete,
     #[error("invalid profile theme")]
     InvalidTheme,
     #[error("invalid profile language")]
@@ -66,6 +68,8 @@ pub enum ImportError {
     DuplicatePersonId { id: i64 },
     #[error("person #{id} has a blank name")]
     BlankPersonName { id: i64 },
+    #[error("duplicate person name \"{name}\"")]
+    DuplicatePersonName { name: String },
     #[error("person #{id} has an unknown kind")]
     InvalidPersonKind { id: i64 },
     #[error("person #{id} has an invalid created_at timestamp")]
@@ -102,8 +106,6 @@ pub enum ImportError {
     InvalidTransactionKind { id: i64 },
     #[error("transaction #{id} references unknown category #{category_id}")]
     MissingCategory { id: i64, category_id: i64 },
-    #[error("transaction #{id} uses a category whose scope does not allow its kind")]
-    CategoryScopeMismatch { id: i64 },
     #[error("transaction #{id} references unknown payer #{payer_id}")]
     MissingPayer { id: i64, payer_id: i64 },
     #[error("transaction #{id} references unknown person #{person_id} in allocations")]
@@ -160,6 +162,8 @@ pub enum AppError {
     Money(String),
     #[error("invalid data: {0}")]
     Validation(String),
+    #[error("this category is used by entries that its scope would exclude")]
+    CategoryScopeInUse,
     #[error("export failed: {0}")]
     Export(String),
     #[error("interface error: {0}")]

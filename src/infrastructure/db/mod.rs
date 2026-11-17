@@ -1,4 +1,4 @@
-//! SQLite access. The UI never issues SQL; repositories in this folder do.
+//! `SQLite` access. The UI never issues SQL; repositories in this folder do.
 
 pub mod backup;
 pub mod categories_repo;
@@ -7,6 +7,7 @@ pub mod integrity;
 pub mod migrations;
 pub mod people_repo;
 pub mod profile_repo;
+pub mod recovery;
 pub mod reports_repo;
 pub mod restore;
 pub mod settlement_repo;
@@ -146,7 +147,7 @@ pub(crate) fn register_functions(conn: &Connection) -> Result<()> {
 fn configure_file(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
-    conn.busy_timeout(Duration::from_millis(5000))?;
+    conn.busy_timeout(Duration::from_secs(5))?;
     Ok(())
 }
 

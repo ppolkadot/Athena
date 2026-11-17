@@ -100,6 +100,10 @@ pub fn bar_fraction(value: Money, max: Money) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    // The bar fraction is derived from exact halves of cent counts, so exact comparison is
+    // meaningful here.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
 
     #[test]

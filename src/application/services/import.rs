@@ -14,6 +14,7 @@ use crate::domain::export::ExportScope;
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
 use crate::domain::settings::{Language, Profile, Theme};
+use crate::domain::text::fold;
 use crate::domain::transaction::{Allocation, SplitMode, Transaction, TransactionType};
 use crate::infrastructure::db::{categories_repo, people_repo, transactions_repo};
 use crate::infrastructure::export::format_v1::DocumentV1;
@@ -34,6 +35,9 @@ pub struct ImportPlan {
     pub exported_at: String,
     pub used_timestamp_fallback: bool,
     pub profile: Profile,
+    /// Category names whose scope was widened to [`CategoryScope::Both`] so that existing entries
+    /// stay valid. Empty for exports that already agree with the current rules.
+    pub widened_categories: Vec<String>,
     pub people: Vec<Person>,
     pub categories: Vec<Category>,
     pub transactions: Vec<Transaction>,
@@ -61,6 +65,7 @@ impl ImportPlan {
             exported_at: String::new(),
             used_timestamp_fallback: false,
             profile: profile.clone(),
+            widened_categories: Vec::new(),
             people,
             categories,
             transactions,
@@ -386,6 +391,9 @@ fn validate_raw(
     if !is_rfc3339(&raw.exported_at) {
         errors.push(ImportError::InvalidExportedAt);
     }
+    if !raw.onboarding_complete {
+        errors.push(ImportError::OnboardingIncomplete);
+    }
     let theme = Theme::from_code(&raw.theme).unwrap_or_else(|| {
         errors.push(ImportError::InvalidTheme);
         Theme::Dark
@@ -398,13 +406,13 @@ fn validate_raw(
     let (mut people, seen_person_ids) = validate_people(&raw.people, &mut errors);
     let (mut categories, seen_category_ids, category_scopes) =
         validate_categories(&raw.categories, &mut errors);
+    let mut widen = HashSet::new();
     let mut transactions = validate_transactions(
-        &raw.transactions,
-        raw.is_format_1,
-        raw.used_timestamp_fallback,
+        &raw,
         &seen_person_ids,
         &seen_category_ids,
         &category_scopes,
+        &mut widen,
         &mut errors,
     );
 
@@ -415,6 +423,8 @@ fn validate_raw(
     if !errors.is_empty() {
         return Err(AppError::Import(errors.0));
     }
+
+    let widened_categories = widen_scopes(&mut categories, &widen);
 
     people.sort_by_key(|p| p.id);
     categories.sort_by_key(|c| c.id);
@@ -435,10 +445,27 @@ fn validate_raw(
             language,
             onboarding_complete: raw.onboarding_complete,
         },
+        widened_categories,
         people,
         categories,
         transactions,
     })
+}
+
+/// Replace a rejected mismatch with the narrowest scope that keeps every imported entry valid.
+/// Returns the affected names, sorted and deduplicated, for the preview notice.
+fn widen_scopes(categories: &mut [Category], widen: &HashSet<i64>) -> Vec<String> {
+    let mut names: Vec<String> = categories
+        .iter_mut()
+        .filter(|c| widen.contains(&c.id))
+        .map(|c| {
+            c.applies_to = CategoryScope::Both;
+            c.name.clone()
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn validate_people(
@@ -446,6 +473,7 @@ fn validate_people(
     errors: &mut ErrorCollector,
 ) -> (Vec<Person>, HashSet<i64>) {
     let mut seen_ids = HashSet::new();
+    let mut seen_active_names = HashSet::new();
     let mut owner_count = 0usize;
     let mut out = Vec::with_capacity(raw_people.len());
 
@@ -455,8 +483,13 @@ fn validate_people(
         } else if !seen_ids.insert(p.id) {
             errors.push(ImportError::DuplicatePersonId { id: p.id });
         }
-        if p.name.trim().is_empty() {
+        let trimmed = p.name.trim();
+        if trimmed.is_empty() {
             errors.push(ImportError::BlankPersonName { id: p.id });
+        } else if !p.archived && !seen_active_names.insert(fold(trimmed)) {
+            errors.push(ImportError::DuplicatePersonName {
+                name: p.name.clone(),
+            });
         }
         let kind = match PersonKind::from_code(&p.kind) {
             Some(PersonKind::Owner) => {
@@ -507,7 +540,7 @@ fn validate_categories(
         let trimmed = c.name.trim();
         if trimmed.is_empty() {
             errors.push(ImportError::BlankCategoryName { id: c.id });
-        } else if !seen_names.insert(trimmed.to_ascii_lowercase()) {
+        } else if !seen_names.insert(fold(trimmed)) {
             errors.push(ImportError::DuplicateCategoryName {
                 name: c.name.clone(),
             });
@@ -540,18 +573,17 @@ fn validate_categories(
 }
 
 fn validate_transactions(
-    raw_txs: &[RawTransaction],
-    is_format_1: bool,
-    used_timestamp_fallback: bool,
+    raw: &RawDocument,
     seen_person_ids: &HashSet<i64>,
     seen_category_ids: &HashSet<i64>,
     category_scopes: &HashMap<i64, CategoryScope>,
+    widen: &mut HashSet<i64>,
     errors: &mut ErrorCollector,
 ) -> Vec<Transaction> {
     let mut seen_ids = HashSet::new();
-    let mut out = Vec::with_capacity(raw_txs.len());
+    let mut out = Vec::with_capacity(raw.transactions.len());
 
-    for (index, t) in raw_txs.iter().enumerate() {
+    for (index, t) in raw.transactions.iter().enumerate() {
         if t.id <= 0 {
             errors.push(ImportError::NonPositiveTransactionId { index, id: t.id });
         } else if !seen_ids.insert(t.id) {
@@ -568,7 +600,7 @@ fn validate_transactions(
             NaiveDate::MIN
         });
         let parsed_kind = TransactionType::from_code(&t.kind)
-            .filter(|k| !(is_format_1 && *k == TransactionType::Settlement));
+            .filter(|k| !(raw.is_format_1 && *k == TransactionType::Settlement));
         if parsed_kind.is_none() {
             errors.push(ImportError::InvalidTransactionKind { id: t.id });
         }
@@ -578,11 +610,14 @@ fn validate_transactions(
             seen_person_ids,
             seen_category_ids,
             category_scopes,
+            widen,
             errors,
         );
         let allocations = validate_tx_allocations(t, seen_person_ids, errors);
         let split_mode = validate_tx_split_and_shape(t, parsed_kind, errors);
-        if !used_timestamp_fallback && (!is_rfc3339(&t.created_at) || !is_rfc3339(&t.updated_at)) {
+        if !raw.used_timestamp_fallback
+            && (!is_rfc3339(&t.created_at) || !is_rfc3339(&t.updated_at))
+        {
             errors.push(ImportError::InvalidTransactionTimestamp { id: t.id });
         }
         if let Some(kind) = parsed_kind
@@ -614,6 +649,7 @@ fn validate_tx_refs(
     seen_person_ids: &HashSet<i64>,
     seen_category_ids: &HashSet<i64>,
     category_scopes: &HashMap<i64, CategoryScope>,
+    widen: &mut HashSet<i64>,
     errors: &mut ErrorCollector,
 ) {
     if let Some(cat_id) = t.category_id {
@@ -626,7 +662,9 @@ fn validate_tx_refs(
             && kind != TransactionType::Settlement
             && !scope.allows(kind)
         {
-            errors.push(ImportError::CategoryScopeMismatch { id: t.id });
+            // Older exports can hold entries whose category scope was narrowed afterwards. Widening
+            // the category keeps the history intact instead of rejecting the whole import.
+            widen.insert(cat_id);
         }
     }
     if let Some(payer_id) = t.payer_id
@@ -1208,8 +1246,92 @@ mod tests {
             payer_id: 99
         }));
         assert!(errs.contains(&ImportError::InvalidTransactionTimestamp { id: 0 }));
-        assert!(errs.contains(&ImportError::CategoryScopeMismatch { id: 1 }));
         assert!(errs.contains(&ImportError::DuplicateTransactionId { id: 1 }));
+    }
+
+    #[test]
+    fn validator_rejects_an_unfinished_setup_export() {
+        let mut val = valid_v2_value();
+        val["profile"]["onboarding_complete"] = json!(false);
+        assert_eq!(
+            parse_val(&val).unwrap_err(),
+            vec![ImportError::OnboardingIncomplete]
+        );
+    }
+
+    #[test]
+    fn validator_rejects_duplicate_active_person_names_ignoring_accents() {
+        let mut val = valid_v2_value();
+        val["people"] = json!([
+            {"id": 1, "name": "Owner", "kind": "owner", "archived": false, "created_at": "2026-11-01T10:00:00Z"},
+            {"id": 2, "name": "Joao", "kind": "partner", "archived": false, "created_at": "2026-11-01T10:00:00Z"},
+            {"id": 3, "name": "JOÃO", "kind": "other", "archived": false, "created_at": "2026-11-01T10:00:00Z"}
+        ]);
+        let errs = parse_val(&val).unwrap_err();
+        assert!(
+            errs.contains(&ImportError::DuplicatePersonName {
+                name: "JOÃO".into()
+            }),
+            "{errs:?}"
+        );
+
+        // An archived name may be reused by an active person.
+        let mut ok = valid_v2_value();
+        ok["people"] = json!([
+            {"id": 1, "name": "Owner", "kind": "owner", "archived": false, "created_at": "2026-11-01T10:00:00Z"},
+            {"id": 2, "name": "Bia", "kind": "other", "archived": true, "created_at": "2026-11-01T10:00:00Z"},
+            {"id": 3, "name": "Bia", "kind": "other", "archived": false, "created_at": "2026-11-01T10:00:00Z"}
+        ]);
+        assert!(parse_val(&ok).is_ok());
+    }
+
+    #[test]
+    fn category_names_are_compared_ignoring_accents() {
+        let mut val = valid_v2_value();
+        val["categories"] = json!([
+            {"id": 1, "name": "Alimentação", "color": "#112233", "icon": null, "applies_to": "expense", "is_default": false, "archived": false, "created_at": "2026-11-01T10:00:00Z"},
+            {"id": 2, "name": "ALIMENTACAO", "color": "#112233", "icon": null, "applies_to": "expense", "is_default": false, "archived": false, "created_at": "2026-11-01T10:00:00Z"}
+        ]);
+        val["transactions"] = json!([]);
+        let errs = parse_val(&val).unwrap_err();
+        assert!(
+            errs.contains(&ImportError::DuplicateCategoryName {
+                name: "ALIMENTACAO".into()
+            }),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_scope_mismatch_widens_the_category_to_both() {
+        let mut val = valid_v2_value();
+        val["transactions"] = json!([{
+            "id": 1, "title": "Income on Food", "amount_cents": 500, "date": "2026-11-10", "kind": "income",
+            "category_id": 1, "payer_id": 1, "description": null, "split_mode": null,
+            "created_at": "2026-11-10T12:00:00Z", "updated_at": "2026-11-10T12:00:00Z", "allocations": []
+        }]);
+        let plan = parse_val(&val).unwrap();
+        assert_eq!(plan.widened_categories, vec!["Food".to_string()]);
+        let food = plan.categories.iter().find(|c| c.id == 1).unwrap();
+        assert_eq!(food.applies_to, CategoryScope::Both);
+        let salary = plan.categories.iter().find(|c| c.id == 2).unwrap();
+        assert_eq!(salary.applies_to, CategoryScope::Income);
+        assert_eq!(plan.transactions.len(), 1);
+        assert_eq!(plan.transactions[0].category_id, Some(1));
+    }
+
+    #[test]
+    fn format_1_legacy_scope_widens_and_round_trips() {
+        let mut value: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/format1-1.0.2.json"))
+                .unwrap();
+        for category in value["categories"].as_array_mut().unwrap() {
+            category["applies_to"] = json!("income");
+        }
+        let plan = parse_val(&value).unwrap();
+        assert!(!plan.widened_categories.is_empty());
+        let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db.conn(), &plan).unwrap();
     }
 
     #[test]

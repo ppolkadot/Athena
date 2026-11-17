@@ -4,12 +4,13 @@ use eframe::egui::{
     self, Align, Button, CornerRadius, Frame, Layout, Margin, RichText, Role, Stroke, WidgetInfo,
 };
 
-use crate::app::actions::{AppAction, OperationKind, OperationNotice};
+use crate::app::actions::{OperationKind, OperationNotice};
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
 use crate::domain::export::ExportScope;
 use crate::domain::settings::Language;
 use crate::i18n::{backup_kind_label, format_date, month_label, strings};
+use crate::infrastructure::db::backup::BackupKind;
 use crate::ui::screens::{ExportRequest, ScreenEvent};
 use crate::ui::theme::{Palette, palette, typography};
 
@@ -105,10 +106,14 @@ pub(super) fn backups_card(
             ui.add_space(6.0);
             ui.label(RichText::new(err).color(p.negative));
         }
+        if let Some(err) = &ui_state.settings.backup_error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(err).color(p.negative));
+        }
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             if ui.button(s.back_up_now).clicked() {
-                events.push(ScreenEvent::Apply(AppAction::CreateBackup));
+                events.push(ScreenEvent::CreateBackup);
             }
             if ui.button(s.restore_from_file).clicked() {
                 events.push(ScreenEvent::PickRestoreFile);
@@ -132,11 +137,19 @@ fn backup_rows(ui: &mut egui::Ui, vm: &ViewModel, p: &Palette, events: &mut Vec<
             |n| n.to_string_lossy().into_owned(),
         );
         let local = file.created_utc.with_timezone(&chrono::Local);
-        let date_text = format!(
-            "{} {}",
-            format_date(local.date_naive(), language),
-            local.format("%H:%M")
-        );
+        let date_text = if file.kind == crate::infrastructure::db::backup::BackupKind::Auto {
+            format_date(
+                crate::infrastructure::db::backup::auto_calendar_date(&file.path)
+                    .unwrap_or_else(|| local.date_naive()),
+                language,
+            )
+        } else {
+            format!(
+                "{} {}",
+                format_date(local.date_naive(), language),
+                local.format("%H:%M")
+            )
+        };
         let kind_label = backup_kind_label(file.kind, language);
         let size_text = format_bytes(file.bytes);
 
@@ -169,6 +182,20 @@ fn backup_rows(ui: &mut egui::Ui, vm: &ViewModel, p: &Palette, events: &mut Vec<
                             if btn.clicked() {
                                 btn.request_focus();
                                 events.push(ScreenEvent::RequestRestoreListed(file.clone()));
+                            }
+                            if file.kind == BackupKind::Manual {
+                                let delete = ui.add(Button::new(s.backup_delete));
+                                delete.widget_info(|| {
+                                    WidgetInfo::labeled(
+                                        Role::Button,
+                                        true,
+                                        format!("{} {}", s.backup_delete, file_name),
+                                    )
+                                });
+                                if delete.clicked() {
+                                    delete.request_focus();
+                                    events.push(ScreenEvent::DeleteBackup(file.path.clone()));
+                                }
                             }
                         });
                     });

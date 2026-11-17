@@ -194,7 +194,7 @@ pub(crate) fn step_resolve(dirs: &AppDirs, source: &RestoreSource) -> Result<Pat
     Ok(resolved)
 }
 
-/// Step 2: Open source read-only and copy it with the SQLite backup API into `staging_dir`.
+/// Step 2: Open source read-only and copy it with the `SQLite` backup API into `staging_dir`.
 pub(crate) fn step_stage(source: &Path, staged_path: &Path) -> Result<()> {
     if let Some(parent) = staged_path.parent() {
         std::fs::create_dir_all(parent)
@@ -258,7 +258,7 @@ pub(crate) fn step_snapshot(
         .map_err(|err| AppError::Restore(RestoreError::SnapshotFailed(err.to_string())))
 }
 
-/// Step 6: Replace the live database content from the staged copy using the SQLite backup API.
+/// Step 6: Replace the live database content from the staged copy using the `SQLite` backup API.
 pub(crate) fn step_copy(live_db: &mut Db, staged_path: &Path) -> Result<()> {
     let src = Connection::open_with_flags(staged_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
@@ -324,7 +324,13 @@ pub(crate) fn step_cleanup(
     Ok(())
 }
 
-fn verify_live_db(conn: &Connection) -> Result<()> {
+/// Enforce the post-restore domain invariants on `conn`: no foreign-key violations, no integrity
+/// issues, a profile row, and exactly one non-archived owner (the same owner rule the import
+/// validator applies).
+///
+/// # Errors
+/// [`AppError::Restore`] on any violated invariant.
+pub(crate) fn verify_live_db(conn: &Connection) -> Result<()> {
     let fk_violations: i64 = conn
         .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
             r.get(0)
@@ -341,10 +347,30 @@ fn verify_live_db(conn: &Connection) -> Result<()> {
         return Err(AppError::Restore(RestoreError::Invalid(issues)));
     }
     match profile_repo::load(conn) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(AppError::Restore(RestoreError::NotAthena)),
-        Err(err) => Err(AppError::Restore(RestoreError::Failed(err.to_string()))),
+        Ok(Some(profile)) if !profile.onboarding_complete => return Ok(()),
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(AppError::Restore(RestoreError::NotAthena)),
+        Err(err) => return Err(AppError::Restore(RestoreError::Failed(err.to_string()))),
     }
+    let (owners, archived_owners): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN archived <> 0 THEN 1 ELSE 0 END), 0)
+             FROM people WHERE kind = 'owner'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|err| AppError::Restore(RestoreError::Failed(err.to_string())))?;
+    if owners != 1 {
+        return Err(AppError::Restore(RestoreError::Failed(format!(
+            "expected exactly one owner, found {owners}"
+        ))));
+    }
+    if archived_owners != 0 {
+        return Err(AppError::Restore(RestoreError::Failed(
+            "the owner row must not be archived".into(),
+        )));
+    }
+    Ok(())
 }
 
 fn map_sqlite_backup_err(err: &rusqlite::Error) -> AppError {
@@ -766,6 +792,66 @@ mod tests {
             transactions_repo::list(db.conn(), &crate::domain::transaction::TxFilter::default())
                 .unwrap();
         assert_eq!(rows[0].title, "Oldest Source");
+    }
+
+    #[test]
+    fn verify_live_db_accepts_unfinished_setup_without_an_owner() {
+        let db = Db::open_in_memory().unwrap();
+        let mut profile = crate::shared::test_fixtures::profile();
+        profile.onboarding_complete = false;
+        profile_repo::save(db.conn(), &profile).unwrap();
+        assert!(verify_live_db(db.conn()).is_ok());
+    }
+
+    #[test]
+    fn verify_live_db_requires_exactly_one_active_owner() {
+        let active_profile = || Profile {
+            start_balance: Money::ZERO,
+            theme: Theme::Dark,
+            language: Language::En,
+            onboarding_complete: true,
+        };
+
+        // Zero owners: rejected.
+        let db = Db::open_in_memory().unwrap();
+        profile_repo::save(db.conn(), &active_profile()).unwrap();
+        assert!(matches!(
+            verify_live_db(db.conn()),
+            Err(AppError::Restore(RestoreError::Failed(ref msg)))
+                if msg.contains("exactly one owner")
+        ));
+
+        // Archived owner (the shipped schema CHECK forbids it, so rebuild the table): rejected.
+        let db = Db::open_in_memory().unwrap();
+        profile_repo::save(db.conn(), &active_profile()).unwrap();
+        db.conn()
+            .pragma_update(None, "foreign_keys", false)
+            .unwrap();
+        db.conn()
+            .execute_batch(
+                "DROP TABLE people;
+                 CREATE TABLE people (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    archived INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                 );
+                 INSERT INTO people (id, name, kind, archived, created_at)
+                 VALUES (1, 'A3', 'owner', 1, '2026-01-01T00:00:00Z');",
+            )
+            .unwrap();
+        assert!(matches!(
+            verify_live_db(db.conn()),
+            Err(AppError::Restore(RestoreError::Failed(ref msg)))
+                if msg.contains("must not be archived")
+        ));
+
+        // Exactly one active owner: accepted.
+        let db = Db::open_in_memory().unwrap();
+        profile_repo::save(db.conn(), &active_profile()).unwrap();
+        let _ = seed_people(db.conn());
+        assert!(verify_live_db(db.conn()).is_ok());
     }
 
     #[test]

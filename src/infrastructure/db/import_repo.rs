@@ -11,7 +11,7 @@ use crate::domain::transaction::Transaction as DomainTx;
 use crate::shared::error::{AppError, ImportError, Result};
 
 /// Replace all user data (profile, people, categories, live and trashed transactions, and
-/// allocations) inside a single SQLite transaction (`§10.5` step 5).
+/// allocations) inside a single `SQLite` transaction (`§10.5` step 5).
 ///
 /// Any failure — including `PRAGMA foreign_key_check` or [`integrity::check`] violations — rolls
 /// back the transaction and leaves the database untouched.
@@ -202,6 +202,7 @@ mod tests {
                 language: Language::PtBr,
                 onboarding_complete: true,
             },
+            widened_categories: Vec::new(),
             people: vec![
                 Person {
                     id: 10,

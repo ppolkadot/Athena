@@ -6,7 +6,8 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.0.2. English and Brazilian Portuguese. Windows is the primary target.
+The crate remains version 1.0.2; this branch implements the 1.1.0 Safe Data features.
+Release packaging and native smoke verification are pending. English and Brazilian Portuguese. Windows is the primary target.
 
 Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
 license and provenance live in `assets/fonts/`.
@@ -23,7 +24,7 @@ cargo run --release          # build and run from source
 cargo build --release        # produces target\release\athena.exe
 ```
 
-Building needs a current stable Rust (1.95 or newer).
+Building needs a Rust 1.95 (pinned in `rust-toolchain.toml`).
 
 ## Where your data lives
 
@@ -49,17 +50,28 @@ Settings, then Data, shows the exact path and opens the folder.
 | `Ctrl+N` | New transaction, from any screen |
 | `Enter` | Save in the open form |
 | `Esc` | Close the open form or dialog |
-| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Month, Calendar, Settings |
+| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` | Month, Calendar, Settings, Trash |
+| `Ctrl+Z` | Undo a visible deletion, except while typing |
 
 After saving a new entry the form stays open with the amount field focused, ready for the next one.
 
 ## Backups and exports
 
-- **Automatic snapshots.** At most once a day, when Athena starts, it writes
-  `backups\auto-YYYY-MM-DD.db` and keeps the newest seven. Before any upgrade of an existing
-  database it also writes `backups\pre-migration-vN-<time>.db`.
-- **Export JSON** (Settings, Data) is the complete profile: settings, people, categories and every
-  transaction with its per-person split. Money is in integer cents.
+- **Automatic snapshots.** After setup, each launch saves at most one verified
+  `backups\auto-YYYY-MM-DD.db` for the local day and keeps the newest seven.
+- **Manual backups.** Settings > Data & backups > Back up now creates a verified
+  `manual-<time>.db`. Manual backups can be deleted individually after confirmation.
+- **Safety snapshots.** Before restore, import, or automatic Trash purging, Athena saves a
+  `pre-restore-`, `pre-import-`, or `pre-purge-` snapshot and keeps the newest five of each kind.
+  `pre-migration-vN-<time>.db` snapshots protect upgrades. Manual and migration backups are
+  never automatically pruned. All backups live in `backups\` inside the data folder.
+- **Restore** accepts a listed backup or an external Athena database. It replaces everything,
+  including Trash, after validation and a safety snapshot, then opens Month with cleared filters.
+- **Export JSON** writes Format 2: settings, people, categories, live transactions, settlements,
+  record timestamps, and per-person splits. Money is in integer cents. JSON excludes Trash.
+- **Import JSON** accepts Format 1 (1.0.2) and Format 2 exports. Preview shows counts and any
+  category scopes widened for legacy history. Import replaces all data and empties Trash after
+  saving a safety snapshot; use a database backup when you need Trash restored too.
 - **Export CSV** is the readable report for one month or all time. It uses `;` as the delimiter and
   a decimal comma, with a byte order mark, so it opens correctly in Excel in Brazil. Text that
   starts with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet never runs it as a formula.
@@ -72,10 +84,9 @@ After saving a new entry the form stays open with the amount field focused, read
 
 **"The database file ... could not be read."** The file is damaged.
 
-1. Close Athena.
-2. Rename `athena.db` to `athena.db.bad`. Also remove `athena.db-wal` and `athena.db-shm` if they exist.
-3. Copy the newest file from `backups\` (for example `auto-2026-11-12.db`) to `athena.db`.
-4. Start Athena. You lose only what was entered since that backup.
+Athena opens a recovery screen with the available backups, the data folder, and Quit.
+Restoring validates the backup first and preserves the damaged database and its sidecars as
+`broken-<time>.db`, `broken-<time>.db-wal`, and `broken-<time>.db-shm` before reopening the app.
 
 **"This data was created by a newer version of Athena."** Install the newer version. Athena does not
 open or change a database it does not understand.
@@ -88,14 +99,20 @@ A failed upgrade is rolled back and leaves the previous data intact; the message
 Athena makes no network connections. Everything stays on this computer. Back up the data folder
 (or the exports) yourself if you want a copy elsewhere.
 
-## What 1.0 does and does not do
+## Settlement and recoverable deletion
 
-Included: onboarding, people (owner, partner, others), who paid and who is responsible, shared
-expenses split exactly to the cent, refunds, categories, search and filters, month register, year
-calendar, settings, JSON and CSV export, dark and light themes, English and Portuguese.
+The Month settlement card shows cumulative shared balances through that month's end. Record a
+suggested payback to prefill a Settlement entry with From/To people; saving it reduces the debt.
+Settlements do not count as spending, income, or refunds.
 
-Not in 1.0: multiple accounts or transfers, bank import, sync, budgets, recurring entries, goals,
-attachments, multi-currency. Deleting a transaction is permanent (a trash and undo arrive in 1.1).
+Deleting an entry moves it to Trash. Undo restores a recent deletion; Trash lets you restore or
+permanently delete individual entries, or empty Trash after confirmation. Entries older than
+30 days are purged at startup only after a verified safety snapshot. Backups can retain older data.
+
+Onboarding, people, exact shared splits, categories, search, the year calendar, CSV export,
+themes, and both languages remain available. Bank import, sync, budgets, recurring entries,
+goals, attachments, and multi-currency remain future work. The local `v1.0.2` tag points to
+`ef63d23`; 1.1.0 is not tagged or released.
 
 ## Development
 

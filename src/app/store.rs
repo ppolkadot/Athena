@@ -51,27 +51,41 @@ impl Store {
     /// Automatic >30d trash purging (backed by verified pre-purge snapshots and Task 8 restore UI).
     pub(crate) const AUTO_TRASH_RETENTION_ENABLED: bool = true;
 
-    /// Once per launch: the daily snapshot (a failure is logged, never fatal), Trash 30-day
-    /// retention (skipped if the snapshot failed or if the clock rolled back before
-    /// `max(deleted_at)`), and, in debug builds, an integrity check whose findings are logged as a
-    /// count only.
+    /// Once per launch: the daily snapshot, Trash 30-day retention (skipped if the snapshot failed
+    /// or if the clock rolled back before `max(deleted_at)`), and, in debug builds, an integrity
+    /// check whose findings are logged as a count only. Both backup tasks are skipped entirely
+    /// until onboarding has completed: a fresh install has nothing to protect.
     pub fn run_startup_tasks(&self, today: NaiveDate, now_utc: DateTime<Utc>) {
         if let Err(err) = backup::clear_staging(&self.dirs) {
             tracing::warn!("could not clear staging folder: {err}");
         }
-        match backup::daily_snapshot(self.db.conn(), &self.dirs, today) {
-            Ok(Some(_)) => {
-                tracing::info!("daily snapshot written");
-                if Self::AUTO_TRASH_RETENTION_ENABLED {
-                    self.run_trash_retention(now_utc);
-                }
+        let onboarded = match profile_repo::load(self.db.conn()) {
+            Ok(Some(profile)) => profile.onboarding_complete,
+            Ok(None) => false,
+            Err(err) => {
+                tracing::warn!("could not read the profile before startup tasks: {err}");
+                false
             }
-            Ok(None) => {
-                if Self::AUTO_TRASH_RETENTION_ENABLED {
-                    self.run_trash_retention(now_utc);
+        };
+        if onboarded {
+            match backup::daily_snapshot(self.db.conn(), &self.dirs, today) {
+                Ok(Some(_)) => {
+                    tracing::info!("daily snapshot written");
+                    if Self::AUTO_TRASH_RETENTION_ENABLED {
+                        self.run_trash_retention(now_utc);
+                    }
                 }
+                Ok(None) => {
+                    if Self::AUTO_TRASH_RETENTION_ENABLED {
+                        self.run_trash_retention(now_utc);
+                    }
+                }
+                Err(err) => tracing::warn!("daily snapshot failed, skipping trash purge: {err}"),
             }
-            Err(err) => tracing::warn!("daily snapshot failed, skipping trash purge: {err}"),
+        } else {
+            tracing::debug!(
+                "profile is missing or not onboarded yet: skipping daily snapshot and trash retention"
+            );
         }
         if cfg!(debug_assertions) {
             match integrity::check(self.db.conn()) {
@@ -171,6 +185,14 @@ impl Store {
                     }),
                 });
             }
+            AppAction::DeleteBackup(path) => {
+                backup::delete_manual(&self.dirs.backups_dir, &path)?;
+                return Ok(outcome(
+                    None,
+                    Some(ToastKey::BackupDeleted),
+                    RefreshScope::Backups,
+                ));
+            }
             AppAction::RestoreBackup(source) => {
                 let receipt =
                     restore::restore_backup(&mut self.db, &self.dirs, &source, Utc::now())?;
@@ -213,7 +235,10 @@ impl Store {
             | AppAction::RestorePerson(_)
             | AppAction::SaveCategory(_)
             | AppAction::ArchiveCategory(_) => Self::run_settings_action(conn, action),
-            AppAction::CreateBackup | AppAction::RestoreBackup(_) | AppAction::ImportProfile(_) => {
+            AppAction::CreateBackup
+            | AppAction::DeleteBackup(_)
+            | AppAction::RestoreBackup(_)
+            | AppAction::ImportProfile(_) => {
                 unreachable!()
             }
         }
@@ -414,6 +439,41 @@ mod tests {
         )
     }
 
+    fn onboarded_profile() -> crate::domain::settings::Profile {
+        crate::domain::settings::Profile {
+            start_balance: Money::ZERO,
+            theme: crate::domain::settings::Theme::Dark,
+            language: crate::domain::settings::Language::En,
+            onboarding_complete: true,
+        }
+    }
+
+    #[test]
+    fn delete_backup_allows_only_local_manual_files_and_refreshes_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let db = Db::open(&dirs.db_path).unwrap();
+        let manual = dirs.backups_dir.join("manual-2026-11-16_12-00-00.db");
+        let auto = dirs.backups_dir.join("auto-2026-11-16.db");
+        let outside = dirs.root.join("manual-2026-11-16_12-00-00.db");
+        for path in [&manual, &auto, &outside] {
+            std::fs::write(path, b"snapshot").unwrap();
+        }
+        let mut store = Store::new(db, dirs);
+        for path in [&auto, &outside] {
+            assert!(store.apply(AppAction::DeleteBackup(path.clone())).is_err());
+            assert_eq!(store.data_version(), 0);
+            assert!(path.exists());
+        }
+        let outcome = store
+            .apply(AppAction::DeleteBackup(manual.clone()))
+            .unwrap();
+        assert_eq!(outcome.refresh, RefreshScope::Backups);
+        assert_eq!(outcome.toast, Some(ToastKey::BackupDeleted));
+        assert!(!manual.exists());
+    }
+
     #[test]
     fn create_returns_a_delete_inverse_that_undoes_it() {
         let mut store = store();
@@ -540,6 +600,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = AppDirs::from_root(dir.path().to_path_buf());
         let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
+        profile_repo::save(store.db().conn(), &onboarded_profile()).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 11, 12).unwrap();
         let now_utc = DateTime::parse_from_rfc3339("2026-11-12T12:00:00Z")
             .unwrap()
@@ -548,6 +609,50 @@ mod tests {
         store.run_startup_tasks(today, now_utc);
         let snapshots = std::fs::read_dir(&dirs.backups_dir).unwrap().count();
         assert_eq!(snapshots, 1);
+    }
+
+    #[test]
+    fn startup_tasks_skip_snapshot_before_onboarding() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        dirs.ensure().unwrap();
+        let store = Store::new(Db::open(&dirs.db_path).unwrap(), dirs.clone());
+        let today = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        let now_utc = DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let expired = transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
+        store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE transactions SET deleted_at = '2026-10-01T00:00:00Z' WHERE id = ?1",
+                [expired],
+            )
+            .unwrap();
+
+        store.run_startup_tasks(today, now_utc);
+        let autos = || {
+            std::fs::read_dir(&dirs.backups_dir)
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with("auto-"))
+                .count()
+        };
+        assert_eq!(autos(), 0, "no daily snapshot before onboarding");
+        assert_eq!(
+            trash_repo::count(store.db().conn()).unwrap(),
+            1,
+            "trash retention must not purge before onboarding"
+        );
+
+        profile_repo::save(store.db().conn(), &onboarded_profile()).unwrap();
+        store.run_startup_tasks(today, now_utc);
+        assert!(
+            dirs.backups_dir.join("auto-2026-11-16.db").exists(),
+            "the snapshot is written once onboarding is complete"
+        );
     }
 
     #[test]
@@ -779,6 +884,7 @@ mod tests {
             let dirs = AppDirs::from_root(dir.path().to_path_buf());
             dirs.ensure().unwrap();
             let store = Store::new(Db::open_in_memory().unwrap(), dirs.clone());
+            profile_repo::save(store.db().conn(), &onboarded_profile()).unwrap();
             let expired =
                 transactions_repo::create(store.db().conn(), &draft_with(vec![])).unwrap();
             store
@@ -923,6 +1029,7 @@ mod tests {
                 created_at: "2026-11-01T00:00:00Z".into(),
             }],
             transactions: vec![],
+            widened_categories: Vec::new(),
         }
     }
 

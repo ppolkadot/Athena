@@ -4,7 +4,8 @@ use chrono::{DateTime, Local, Utc};
 
 use crate::application::services::import::ImportPlan;
 use crate::i18n::{
-    PluralKey, ToastKey, format_date, format_import_errors, plural, restore_error_message, strings,
+    PluralKey, ToastKey, backup_delete_error_message, format_date, format_import_errors, plural,
+    restore_error_message, strings,
 };
 use crate::infrastructure::db::{restore::RestoreSource, transactions_repo, trash_repo};
 use crate::shared::error::{AppError, Result};
@@ -122,6 +123,23 @@ pub fn empty_trash_confirmation(core: &AppCore) -> ConfirmDialog {
     }
 }
 
+/// The "delete this backup?" dialog for a manual backup the user picked from the list.
+#[must_use]
+pub fn delete_backup_confirmation(core: &AppCore, path: &std::path::Path) -> ConfirmDialog {
+    let s = strings(core.vm.language());
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    ConfirmDialog {
+        title: s.confirm_delete_backup_title.to_string(),
+        body: s.confirm_delete_backup_body.replace("{name}", &name),
+        confirm_label: s.backup_delete.to_string(),
+        danger: true,
+        action: AppAction::DeleteBackup(path.to_path_buf()),
+    }
+}
+
 /// The "restore this backup?" dialog naming the source, local backup date, full-replacement
 /// consequence, and safety-snapshot folder (`§9.3`).
 #[must_use]
@@ -200,12 +218,16 @@ pub fn apply_confirmed_outcome(
     let is_delete = matches!(action, AppAction::DeleteTransaction(_));
     let is_restore = matches!(action, AppAction::RestoreBackup(_));
     let is_import = matches!(action, AppAction::ImportProfile(_));
+    let is_backup_delete = matches!(action, AppAction::DeleteBackup(_));
     let deleted_title = match &action {
         AppAction::DeleteTransaction(id) => core.store.transaction(*id).ok().map(|tx| tx.title),
         _ => None,
     };
     match core.apply(action) {
         Ok(outcome) => {
+            if is_backup_delete {
+                core.ui.settings.backup_error = None;
+            }
             let language = core.vm.language();
             let text = if let Some(title) = deleted_title {
                 Some(
@@ -250,7 +272,7 @@ pub fn apply_confirmed_outcome(
                 .map(ToastAction::Undo);
             Some((text, toast_action))
         }
-        Err(err) => record_confirmed_error(core, is_restore, is_import, &err),
+        Err(err) => record_confirmed_error(core, is_restore, is_import, is_backup_delete, &err),
     }
 }
 
@@ -258,6 +280,7 @@ fn record_confirmed_error(
     core: &mut AppCore,
     is_restore: bool,
     is_import: bool,
+    is_backup_delete: bool,
     err: &AppError,
 ) -> Option<(String, Option<ToastAction>)> {
     use crate::shared::error::{ImportError, RestoreError};
@@ -291,6 +314,12 @@ fn record_confirmed_error(
             core.ui.settings.import_error = Some(message.clone());
             Some((message, None))
         }
+        other if is_backup_delete => {
+            tracing::warn!("could not delete the backup: {other}");
+            let message = backup_delete_error_message(other, language);
+            core.ui.settings.backup_error = Some(message.clone());
+            Some((message, None))
+        }
         other => {
             tracing::warn!("confirmed action failed: {other}");
             None
@@ -318,7 +347,10 @@ pub fn apply_settings_action(core: &mut AppCore, action: AppAction) -> (Option<S
         }
         Err(err) => {
             tracing::warn!("settings change refused: {err}");
-            core.ui.settings.error = Some(SettingsError::SaveRejected);
+            core.ui.settings.error = Some(match err {
+                AppError::CategoryScopeInUse => SettingsError::ScopeInUse,
+                _ => SettingsError::SaveRejected,
+            });
             (None, false)
         }
     }
@@ -330,11 +362,32 @@ mod tests {
     use crate::infrastructure::db::Db;
 
     #[test]
+    fn scope_in_use_is_routed_to_the_specific_settings_error() {
+        use crate::domain::category::CategoryScope;
+        use crate::shared::test_fixtures::{seed_month, seed_people};
+        let db = Db::open_in_memory().unwrap();
+        seed_people(db.conn());
+        seed_month(&db);
+        let mut core = AppCore::empty_for_test(db);
+        let id = core
+            .vm
+            .transactions
+            .iter()
+            .find_map(|t| t.category_id)
+            .unwrap();
+        let mut category = core.vm.category(id).unwrap().clone();
+        category.applies_to = CategoryScope::Income;
+        let (_, ok) = apply_settings_action(&mut core, AppAction::SaveCategory(category));
+        assert!(!ok);
+        assert_eq!(core.ui.settings.error, Some(SettingsError::ScopeInUse));
+    }
+
+    #[test]
     fn untyped_restore_and_import_errors_still_surface_in_toast_and_settings() {
         let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
         let io_err = AppError::Io(std::io::Error::other("disk full"));
 
-        let restore_toast = record_confirmed_error(&mut core, true, false, &io_err);
+        let restore_toast = record_confirmed_error(&mut core, true, false, false, &io_err);
         let (msg, _) = restore_toast.expect("restore error must produce toast");
         assert!(msg.contains("disk full"), "{msg}");
         assert_eq!(
@@ -342,7 +395,7 @@ mod tests {
             Some(msg.as_str())
         );
 
-        let import_toast = record_confirmed_error(&mut core, false, true, &io_err);
+        let import_toast = record_confirmed_error(&mut core, false, true, false, &io_err);
         let (msg, _) = import_toast.expect("import error must produce toast");
         assert!(msg.contains("disk full"), "{msg}");
         assert_eq!(core.ui.settings.import_error.as_deref(), Some(msg.as_str()));
