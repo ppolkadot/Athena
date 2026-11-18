@@ -158,6 +158,8 @@ pub enum AppError {
         "the database at {path} could not be read. Rename it and restore a backup from the backups folder"
     )]
     Corrupt { path: String },
+    #[error("the live database is missing or empty")]
+    LiveDatabaseMissingOrEmpty,
     #[error("invalid amount: {0}")]
     Money(String),
     #[error("invalid data: {0}")]
