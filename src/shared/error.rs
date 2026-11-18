@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::domain::template::TemplateError;
 use crate::infrastructure::db::integrity::IntegrityIssue;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -124,6 +125,32 @@ pub enum ImportError {
     InvalidSettlementShape { id: i64 },
     #[error("transaction #{id} has an invalid timestamp")]
     InvalidTransactionTimestamp { id: i64 },
+    #[error("template at index {index} has a non-positive id ({id})")]
+    NonPositiveTemplateId { index: usize, id: i64 },
+    #[error("duplicate template id {id}")]
+    DuplicateTemplateId { id: i64 },
+    #[error("template #{id} has a blank name")]
+    BlankTemplateName { id: i64 },
+    #[error("duplicate template name \"{name}\"")]
+    DuplicateTemplateName { name: String },
+    #[error("template #{id} has a blank title")]
+    BlankTemplateTitle { id: i64 },
+    #[error("template #{id} has a non-positive amount")]
+    NonPositiveTemplateAmount { id: i64 },
+    #[error("template #{id} has an unknown or unsupported kind")]
+    InvalidTemplateKind { id: i64 },
+    #[error("template #{id} has an unknown responsibility mode")]
+    InvalidTemplateResponsibility { id: i64 },
+    #[error("template #{id} references unknown category #{category_id}")]
+    TemplateMissingCategory { id: i64, category_id: i64 },
+    #[error("template #{id} references unknown payer #{payer_id}")]
+    TemplateMissingPayer { id: i64, payer_id: i64 },
+    #[error("template #{id} references unknown person #{person_id} in its shares")]
+    TemplateMissingPerson { id: i64, person_id: i64 },
+    #[error("template #{id} has inconsistent shares or responsibility")]
+    InvalidTemplateShape { id: i64 },
+    #[error("template #{id} has an invalid timestamp")]
+    InvalidTemplateTimestamp { id: i64 },
     #[error("imported totals exceed the 64-bit integer limit")]
     Overflow,
     #[error("could not create a pre-import safety snapshot: {0}")]
@@ -172,6 +199,8 @@ pub enum AppError {
     Validation(String),
     #[error("this category is used by entries that its scope would exclude")]
     CategoryScopeInUse,
+    #[error("the template is invalid ({} issue(s))", .0.len())]
+    TemplateInvalid(Vec<TemplateError>),
     #[error("export failed: {0}")]
     Export(String),
     #[error("interface error: {0}")]

@@ -13,6 +13,7 @@ pub struct ImportPreviewDialog {
     pub current_people: usize,
     pub current_categories: usize,
     pub current_transactions: usize,
+    pub current_templates: usize,
     pub current_trash: usize,
     pub snapshot_dir: String,
 }
@@ -35,10 +36,10 @@ pub fn show(
     let p = palette(theme);
     let s = strings(language);
     let mut choice = None;
-    let format_label = if dialog.plan.format_version == 1 {
-        s.import_preview_format_v1
-    } else {
-        s.import_preview_format_v2
+    let format_label = match dialog.plan.format_version {
+        1 => s.import_preview_format_v1,
+        2 => s.import_preview_format_v2,
+        _ => s.import_preview_format_v3,
     };
     let meta = s
         .import_preview_meta
@@ -54,6 +55,8 @@ pub fn show(
             "{in_transactions}",
             &dialog.plan.transactions.len().to_string(),
         )
+        .replace("{in_templates}", &dialog.plan.templates.len().to_string())
+        .replace("{cur_templates}", &dialog.current_templates.to_string())
         .replace("{cur_people}", &dialog.current_people.to_string())
         .replace("{cur_categories}", &dialog.current_categories.to_string())
         .replace(
@@ -156,10 +159,12 @@ mod tests {
                 }],
                 categories: vec![],
                 transactions: vec![],
+                templates: vec![],
             }),
             current_people: 3,
             current_categories: 12,
             current_transactions: 18,
+            current_templates: 2,
             current_trash: 4,
             snapshot_dir: "C:/Athena/backups".into(),
         }
@@ -223,7 +228,7 @@ mod tests {
         assert!(
             harness_en
                 .query_by_label(
-                    "Incoming: 1 people · 0 categories · 0 entries\nCurrent: 3 people · 12 categories · 18 entries · 4 in Trash (will be emptied)"
+                    "Incoming: 1 people · 0 categories · 0 entries · 0 templates\nCurrent: 3 people · 12 categories · 18 entries · 2 templates · 4 in Trash (will be emptied)"
                 )
                 .is_some()
         );
@@ -264,7 +269,7 @@ mod tests {
         assert!(
             harness_pt
                 .query_by_label(
-                    "Novo: 1 pessoas · 0 categorias · 0 lançamentos\nAtual: 3 pessoas · 12 categorias · 18 lançamentos · 4 na Lixeira (será esvaziada)"
+                    "Novo: 1 pessoas · 0 categorias · 0 lançamentos · 0 modelos\nAtual: 3 pessoas · 12 categorias · 18 lançamentos · 2 modelos · 4 na Lixeira (será esvaziada)"
                 )
                 .is_some()
         );

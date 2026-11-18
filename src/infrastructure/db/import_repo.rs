@@ -2,11 +2,12 @@
 
 use rusqlite::{Connection, Transaction, params};
 
-use super::{integrity, now_rfc3339, transactions_repo::date_text};
+use super::{integrity, now_rfc3339, templates_repo, transactions_repo::date_text};
 use crate::application::services::import::ImportPlan;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
 use crate::domain::settings::Profile;
+use crate::domain::template::Template;
 use crate::domain::transaction::Transaction as DomainTx;
 use crate::shared::error::{AppError, ImportError, Result};
 
@@ -40,6 +41,7 @@ where
     after_people_hook(&tx)?;
     insert_categories(&tx, &plan.categories)?;
     insert_transactions(&tx, &plan.transactions)?;
+    insert_templates(&tx, &plan.templates)?;
     verify_tx(&tx)?;
     tx.commit()?;
     Ok(())
@@ -49,6 +51,8 @@ fn clear_tables(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "DELETE FROM allocations;
          DELETE FROM transactions;
+         DELETE FROM template_allocations;
+         DELETE FROM templates;
          DELETE FROM people;
          DELETE FROM categories;",
     )?;
@@ -155,6 +159,13 @@ fn insert_transactions(tx: &Transaction<'_>, transactions: &[DomainTx]) -> Resul
     Ok(())
 }
 
+fn insert_templates(tx: &Transaction<'_>, templates: &[Template]) -> Result<()> {
+    for template in templates {
+        templates_repo::insert_imported(tx, template)?;
+    }
+    Ok(())
+}
+
 fn verify_tx(tx: &Transaction<'_>) -> Result<()> {
     let fk_violation: Option<(String, i64, String, i64)> = {
         let mut stmt = tx.prepare("PRAGMA foreign_key_check")?;
@@ -192,7 +203,7 @@ mod tests {
     fn sample_plan() -> ImportPlan {
         ImportPlan {
             source_name: "incoming.json".into(),
-            format_version: 2,
+            format_version: 3,
             app_version: "1.1.0".into(),
             exported_at: "2026-11-15T10:00:00Z".into(),
             used_timestamp_fallback: false,
@@ -252,6 +263,7 @@ mod tests {
                     },
                 ],
             }],
+            templates: vec![],
         }
     }
 

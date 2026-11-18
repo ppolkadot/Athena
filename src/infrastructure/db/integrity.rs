@@ -14,6 +14,8 @@ pub enum IntegrityIssue {
     SplitModeWithoutAllocations { tx_id: i64 },
     /// A settlement row violates its shape constraints.
     SettlementShape { tx_id: i64 },
+    /// A template's responsibility mode, payer or allocations disagree with its amount and kind.
+    TemplateShape { template_id: i64 },
 }
 
 fn ids(conn: &Connection, sql: &str) -> Result<Vec<i64>> {
@@ -66,6 +68,23 @@ pub fn check(conn: &Connection) -> Result<Vec<IntegrityIssue>> {
         ) ORDER BY t.id",
     )? {
         issues.push(IntegrityIssue::SettlementShape { tx_id });
+    }
+    for template_id in ids(
+        conn,
+        "SELECT t.id FROM templates t WHERE
+            (t.kind = 'income' AND (t.payer_id IS NOT NULL OR t.responsibility <> 'none'))
+            OR (t.responsibility = 'none'
+                AND EXISTS (SELECT 1 FROM template_allocations a WHERE a.template_id = t.id))
+            OR (t.responsibility = 'person'
+                AND (SELECT COUNT(*) FROM template_allocations a WHERE a.template_id = t.id) <> 1)
+            OR (t.responsibility IN ('even', 'custom')
+                AND (SELECT COUNT(*) FROM template_allocations a WHERE a.template_id = t.id) < 2)
+            OR (t.responsibility <> 'none'
+                AND COALESCE((SELECT SUM(a.amount_cents) FROM template_allocations a
+                              WHERE a.template_id = t.id), 0) <> t.amount_cents)
+         ORDER BY t.id",
+    )? {
+        issues.push(IntegrityIssue::TemplateShape { template_id });
     }
     Ok(issues)
 }

@@ -7,7 +7,9 @@ use crate::i18n::{
     PluralKey, ToastKey, backup_delete_error_message, format_date, format_import_errors, plural,
     restore_error_message, strings,
 };
-use crate::infrastructure::db::{restore::RestoreSource, transactions_repo, trash_repo};
+use crate::infrastructure::db::{
+    restore::RestoreSource, templates_repo, transactions_repo, trash_repo,
+};
 use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::ConfirmDialog;
 use crate::ui::components::import_preview::ImportPreviewDialog;
@@ -192,6 +194,7 @@ pub fn restore_confirmation(
 pub fn import_preview_dialog(core: &AppCore, plan: ImportPlan) -> ImportPreviewDialog {
     let conn = core.store.db().conn();
     let current_transactions = transactions_repo::count_live(conn).unwrap_or(0);
+    let current_templates = templates_repo::count(conn).unwrap_or(0);
     let current_trash = trash_repo::count(conn).unwrap_or(core.vm.trash_count);
     let snapshot_dir = if core.vm.backups_dir.is_empty() {
         core.store.dirs().backups_dir.display().to_string()
@@ -203,6 +206,7 @@ pub fn import_preview_dialog(core: &AppCore, plan: ImportPlan) -> ImportPreviewD
         current_people: core.vm.all_people.len(),
         current_categories: core.vm.all_categories.len(),
         current_transactions,
+        current_templates,
         current_trash,
         snapshot_dir,
     }

@@ -11,6 +11,7 @@ pub mod recovery;
 pub mod reports_repo;
 pub mod restore;
 pub mod settlement_repo;
+pub mod templates_repo;
 pub mod transactions_repo;
 pub mod trash_repo;
 

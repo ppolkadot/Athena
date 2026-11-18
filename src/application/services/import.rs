@@ -1,5 +1,5 @@
-//! Import service: bounded file read, envelope dispatch, Format 1 -> 2 adaptation, and complete
-//! §10.4 + D-P5 validation returning up to 50 collected [`ImportError`]s.
+//! Import service: bounded file read, envelope dispatch, Format 1 and 2 adaptation to the Format 3
+//! shape, and complete §10.4 + D-P5 validation returning up to 50 collected [`ImportError`]s.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -14,11 +14,15 @@ use crate::domain::export::ExportScope;
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
 use crate::domain::settings::{Language, Profile, Theme};
+use crate::domain::template::{ResponsibilityMode, Template, TemplateDraft, name_key};
 use crate::domain::text::fold;
 use crate::domain::transaction::{Allocation, SplitMode, Transaction, TransactionType};
-use crate::infrastructure::db::{categories_repo, people_repo, transactions_repo};
+use crate::infrastructure::db::{categories_repo, people_repo, templates_repo, transactions_repo};
 use crate::infrastructure::export::format_v1::DocumentV1;
-use crate::infrastructure::export::format_v2::DocumentV2;
+use crate::infrastructure::export::format_v2::{
+    CategoryV2, DocumentV2, PersonV2, ProfileV2, TransactionV2,
+};
+use crate::infrastructure::export::format_v3::DocumentV3;
 use crate::infrastructure::export::json::{FORMAT_NAME, FORMAT_VERSION};
 use crate::shared::error::{AppError, ImportError, Result};
 
@@ -41,6 +45,8 @@ pub struct ImportPlan {
     pub people: Vec<Person>,
     pub categories: Vec<Category>,
     pub transactions: Vec<Transaction>,
+    /// Entry templates (format 3); empty for formats 1 and 2.
+    pub templates: Vec<Template>,
 }
 
 impl ImportPlan {
@@ -58,6 +64,8 @@ impl ImportPlan {
         for tx in &mut transactions {
             tx.allocations.sort_by_key(|a| a.person_id);
         }
+        let mut templates = templates_repo::list(conn)?;
+        templates.sort_by_key(|t| t.id);
         Ok(Self {
             source_name: String::new(),
             format_version: FORMAT_VERSION,
@@ -69,6 +77,7 @@ impl ImportPlan {
             people,
             categories,
             transactions,
+            templates,
         })
     }
 }
@@ -104,6 +113,7 @@ struct RawDocument {
     people: Vec<RawPerson>,
     categories: Vec<RawCategory>,
     transactions: Vec<RawTransaction>,
+    templates: Vec<RawTemplate>,
 }
 
 struct RawPerson {
@@ -137,6 +147,21 @@ struct RawTransaction {
     split_mode: Option<String>,
     created_at: String,
     updated_at: String,
+    allocations: Vec<(i64, i64)>,
+}
+
+struct RawTemplate {
+    id: i64,
+    name: String,
+    title: String,
+    amount_cents: i64,
+    kind: String,
+    category_id: Option<i64>,
+    payer_id: Option<i64>,
+    responsibility: String,
+    description: Option<String>,
+    created_at: String,
+    last_used_at: Option<String>,
     allocations: Vec<(i64, i64)>,
 }
 
@@ -213,6 +238,12 @@ fn dispatch_value(value: serde_json::Value, errors: &mut ErrorCollector) -> Resu
                     AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
                 })?;
                 Ok(adapt_v2(doc))
+            }
+            3 => {
+                let doc: DocumentV3 = serde_json::from_value(value).map_err(|e| {
+                    AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
+                })?;
+                Ok(adapt_v3(doc))
             }
             _ => Err(AppError::Import(vec![ImportError::InvalidVersion])),
         };
@@ -302,22 +333,80 @@ fn adapt_v1(doc: DocumentV1, errors: &mut ErrorCollector) -> RawDocument {
                     .collect(),
             })
             .collect(),
+        templates: Vec::new(),
     }
 }
 
 fn adapt_v2(doc: DocumentV2) -> RawDocument {
+    let mut raw = adapt_shared(
+        doc.format_version,
+        doc.app_version,
+        doc.exported_at,
+        doc.profile,
+        doc.people,
+        doc.categories,
+        doc.transactions,
+    );
+    raw.templates = Vec::new();
+    raw
+}
+
+fn adapt_v3(doc: DocumentV3) -> RawDocument {
+    let mut raw = adapt_shared(
+        doc.format_version,
+        doc.app_version,
+        doc.exported_at,
+        doc.profile,
+        doc.people,
+        doc.categories,
+        doc.transactions,
+    );
+    raw.templates = doc
+        .templates
+        .into_iter()
+        .map(|t| RawTemplate {
+            id: t.id,
+            name: t.name,
+            title: t.title,
+            amount_cents: t.amount_cents,
+            kind: t.kind,
+            category_id: t.category_id,
+            payer_id: t.payer_id,
+            responsibility: t.responsibility,
+            description: t.description,
+            created_at: t.created_at,
+            last_used_at: t.last_used_at,
+            allocations: t
+                .allocations
+                .into_iter()
+                .map(|a| (a.person_id, a.amount_cents))
+                .collect(),
+        })
+        .collect();
+    raw
+}
+
+/// The record shapes format 2 and 3 share, as a [`RawDocument`] without templates.
+fn adapt_shared(
+    format_version: u32,
+    app_version: String,
+    exported_at: String,
+    profile: ProfileV2,
+    people: Vec<PersonV2>,
+    categories: Vec<CategoryV2>,
+    transactions: Vec<TransactionV2>,
+) -> RawDocument {
     RawDocument {
-        format_version: doc.format_version,
-        app_version: doc.app_version,
-        exported_at: doc.exported_at,
+        format_version,
+        app_version,
+        exported_at,
         used_timestamp_fallback: false,
         is_format_1: false,
-        start_balance_cents: doc.profile.start_balance_cents,
-        theme: doc.profile.theme,
-        language: doc.profile.language,
-        onboarding_complete: doc.profile.onboarding_complete,
-        people: doc
-            .people
+        start_balance_cents: profile.start_balance_cents,
+        theme: profile.theme,
+        language: profile.language,
+        onboarding_complete: profile.onboarding_complete,
+        people: people
             .into_iter()
             .map(|p| RawPerson {
                 id: p.id,
@@ -327,8 +416,7 @@ fn adapt_v2(doc: DocumentV2) -> RawDocument {
                 created_at: p.created_at,
             })
             .collect(),
-        categories: doc
-            .categories
+        categories: categories
             .into_iter()
             .map(|c| RawCategory {
                 id: c.id,
@@ -341,8 +429,7 @@ fn adapt_v2(doc: DocumentV2) -> RawDocument {
                 created_at: c.created_at,
             })
             .collect(),
-        transactions: doc
-            .transactions
+        transactions: transactions
             .into_iter()
             .map(|t| RawTransaction {
                 id: t.id,
@@ -363,6 +450,7 @@ fn adapt_v2(doc: DocumentV2) -> RawDocument {
                     .collect(),
             })
             .collect(),
+        templates: Vec::new(),
     }
 }
 
@@ -422,6 +510,13 @@ fn validate_raw(
         &mut errors,
     );
 
+    let mut templates = validate_templates(
+        &raw.templates,
+        &seen_person_ids,
+        &seen_category_ids,
+        &mut errors,
+    );
+
     if !check_aggregates_and_settlement(raw.start_balance_cents, &transactions) {
         errors.push(ImportError::Overflow);
     }
@@ -437,6 +532,10 @@ fn validate_raw(
     transactions.sort_by_key(|t| (t.date, t.id));
     for tx in &mut transactions {
         tx.allocations.sort_by_key(|a| a.person_id);
+    }
+    templates.sort_by_key(|t| t.id);
+    for template in &mut templates {
+        template.draft.allocations.sort_by_key(|a| a.person_id);
     }
 
     Ok(ImportPlan {
@@ -455,6 +554,7 @@ fn validate_raw(
         people,
         categories,
         transactions,
+        templates,
     })
 }
 
@@ -643,6 +743,143 @@ fn validate_transactions(
                 created_at: t.created_at.clone(),
                 updated_at: t.updated_at.clone(),
                 allocations,
+            });
+        }
+    }
+    out
+}
+
+/// Participant existence and internal share consistency (no duplicates, no negatives, a checked
+/// total equal to the amount). Returns `(people_exist, shape_ok)`.
+fn check_template_allocations(
+    t: &RawTemplate,
+    seen_person_ids: &HashSet<i64>,
+    errors: &mut ErrorCollector,
+) -> (bool, bool) {
+    let mut people = HashSet::new();
+    let mut sum: Option<i64> = Some(0);
+    let (mut exist, mut shape_ok) = (true, true);
+    for &(person_id, cents) in &t.allocations {
+        if !seen_person_ids.contains(&person_id) {
+            errors.push(ImportError::TemplateMissingPerson {
+                id: t.id,
+                person_id,
+            });
+            exist = false;
+        }
+        if !people.insert(person_id) || cents < 0 {
+            shape_ok = false;
+        }
+        sum = sum.and_then(|acc| acc.checked_add(cents));
+    }
+    if !t.allocations.is_empty() && sum != Some(t.amount_cents) {
+        shape_ok = false;
+    }
+    (exist, shape_ok)
+}
+
+/// Template references and shape (contract §14.1). Archived references and category scope drift
+/// are portable history, so only ids and internal allocation shape are checked here.
+fn validate_templates(
+    raw_templates: &[RawTemplate],
+    seen_person_ids: &HashSet<i64>,
+    seen_category_ids: &HashSet<i64>,
+    errors: &mut ErrorCollector,
+) -> Vec<Template> {
+    let mut seen_ids = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut out = Vec::with_capacity(raw_templates.len());
+    for (index, t) in raw_templates.iter().enumerate() {
+        let mut ok = true;
+        if t.id <= 0 {
+            errors.push(ImportError::NonPositiveTemplateId { index, id: t.id });
+            ok = false;
+        } else if !seen_ids.insert(t.id) {
+            errors.push(ImportError::DuplicateTemplateId { id: t.id });
+            ok = false;
+        }
+        let name = t.name.trim();
+        if name.is_empty() {
+            errors.push(ImportError::BlankTemplateName { id: t.id });
+            ok = false;
+        } else if !seen_names.insert(name_key(name)) {
+            errors.push(ImportError::DuplicateTemplateName {
+                name: t.name.clone(),
+            });
+            ok = false;
+        }
+        if t.title.trim().is_empty() {
+            errors.push(ImportError::BlankTemplateTitle { id: t.id });
+            ok = false;
+        }
+        if t.amount_cents <= 0 {
+            errors.push(ImportError::NonPositiveTemplateAmount { id: t.id });
+            ok = false;
+        }
+        let kind =
+            TransactionType::from_code(&t.kind).filter(|k| *k != TransactionType::Settlement);
+        if kind.is_none() {
+            errors.push(ImportError::InvalidTemplateKind { id: t.id });
+            ok = false;
+        }
+        let mode = ResponsibilityMode::from_code(&t.responsibility);
+        if mode.is_none() {
+            errors.push(ImportError::InvalidTemplateResponsibility { id: t.id });
+            ok = false;
+        }
+        if let Some(category_id) = t.category_id
+            && !seen_category_ids.contains(&category_id)
+        {
+            errors.push(ImportError::TemplateMissingCategory {
+                id: t.id,
+                category_id,
+            });
+            ok = false;
+        }
+        if let Some(payer_id) = t.payer_id
+            && !seen_person_ids.contains(&payer_id)
+        {
+            errors.push(ImportError::TemplateMissingPayer { id: t.id, payer_id });
+            ok = false;
+        }
+        let (people_ok, shape_ok) = check_template_allocations(t, seen_person_ids, errors);
+        ok &= people_ok;
+        if !is_rfc3339(&t.created_at) || t.last_used_at.as_deref().is_some_and(|s| !is_rfc3339(s)) {
+            errors.push(ImportError::InvalidTemplateTimestamp { id: t.id });
+            ok = false;
+        }
+        let (Some(kind), Some(mode)) = (kind, mode) else {
+            continue;
+        };
+        let draft = TemplateDraft {
+            name: name.to_string(),
+            title: t.title.trim().to_string(),
+            amount: Money::from_cents(t.amount_cents),
+            kind,
+            category_id: t.category_id,
+            payer_id: t.payer_id,
+            description: t.description.clone(),
+            responsibility: mode,
+            allocations: t
+                .allocations
+                .iter()
+                .map(|&(person_id, cents)| Allocation {
+                    person_id,
+                    amount: Money::from_cents(cents),
+                })
+                .collect(),
+        };
+        // Shape rules run only on internally consistent numbers, so they cannot overflow.
+        if ok && (!shape_ok || t.amount_cents <= 0 || draft.validate().is_err()) {
+            errors.push(ImportError::InvalidTemplateShape { id: t.id });
+            ok = false;
+        }
+        if ok {
+            out.push(Template {
+                id: t.id,
+                draft,
+                created_at: t.created_at.clone(),
+                last_used_at: t.last_used_at.clone(),
             });
         }
     }
@@ -1533,7 +1770,7 @@ mod tests {
             );
         }
 
-        for future_ver in [3u64, 4, 99] {
+        for future_ver in [4u64, 5, 99] {
             let mut doc = valid_v2_value();
             doc["format_version"] = json!(future_ver);
             assert_eq!(
@@ -1554,11 +1791,11 @@ mod tests {
             );
         }
 
-        valid_v1["schema_version"] = json!(3);
+        valid_v1["schema_version"] = json!(4);
         assert_eq!(
             parse_val(&valid_v1).unwrap_err(),
             vec![ImportError::TooNew {
-                found: 3,
+                found: 4,
                 supported: FORMAT_VERSION,
             }]
         );
@@ -1625,6 +1862,32 @@ mod tests {
         v2_plan.exported_at.clear();
         v2_plan.app_version.clear();
         from_db.app_version.clear();
+        from_db.format_version = v2_plan.format_version;
         assert_eq!(v2_plan, from_db);
+
+        // Format 3 (1.2): same data plus templates, canonical in the current format.
+        let v3_bytes = include_bytes!("../../../tests/fixtures/format3-1.2.0.json");
+        assert!(
+            !v3_bytes.windows(2).any(|w| w
+                == b"
+"),
+            "format3-1.2.0.json must stay pinned to LF"
+        );
+        let mut v3_plan = parse_and_validate(v3_bytes, "format3-1.2.0.json").unwrap();
+        assert_eq!(v3_plan.format_version, 3);
+        assert_eq!(v3_plan.templates.len(), 5);
+        let db3 = Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db3.conn(), &v3_plan).unwrap();
+        assert!(
+            crate::infrastructure::db::integrity::check(db3.conn())
+                .unwrap()
+                .is_empty()
+        );
+        let mut from_db3 = ImportPlan::from_db(db3.conn(), &v3_plan.profile).unwrap();
+        v3_plan.source_name.clear();
+        v3_plan.exported_at.clear();
+        v3_plan.app_version.clear();
+        from_db3.app_version.clear();
+        assert_eq!(v3_plan, from_db3);
     }
 }

@@ -1,5 +1,5 @@
-//! The complete structured export (Format 2): integer cents, ISO dates, record timestamps, and
-//! each live transaction with its allocations. Written bytes are re-read and verified before
+//! The complete structured export (Format 3): integer cents, ISO dates, record timestamps, each
+//! live transaction with its allocations, and the entry templates. Written bytes are re-read and verified before
 //! replacing the destination.
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7,17 +7,18 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use super::format_v2::{AllocationV2, CategoryV2, DocumentV2, PersonV2, ProfileV2, TransactionV2};
+use super::format_v2::{AllocationV2, CategoryV2, PersonV2, ProfileV2, TransactionV2};
+use super::format_v3::{DocumentV3, TemplateV3};
 use super::{ExportReceipt, atomic_write, ordered_transactions, people_by_id};
 use crate::domain::export::ExportScope;
 use crate::domain::settings::Profile;
-use crate::infrastructure::db::categories_repo;
+use crate::infrastructure::db::{categories_repo, templates_repo};
 use crate::shared::error::{AppError, Result};
 
 pub const FORMAT_NAME: &str = "athena-profile";
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
-/// Collect everything into a Format 2 document, in the shared deterministic order.
+/// Collect everything into a Format 3 document, in the shared deterministic order.
 ///
 /// # Errors
 /// Database errors.
@@ -25,13 +26,15 @@ pub fn build_document(
     conn: &Connection,
     profile: &Profile,
     exported_at: &str,
-) -> Result<DocumentV2> {
+) -> Result<DocumentV3> {
     let mut categories = categories_repo::list(conn, true)?;
     categories.sort_by_key(|c| c.id);
     let people = people_by_id(conn)?;
     let transactions = ordered_transactions(conn, &ExportScope::All.filter())?;
 
-    Ok(DocumentV2 {
+    let mut templates = templates_repo::list(conn)?;
+    templates.sort_by_key(|t| t.id);
+    Ok(DocumentV3 {
         format: FORMAT_NAME.to_string(),
         format_version: FORMAT_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -89,6 +92,33 @@ pub fn build_document(
                     .collect(),
             })
             .collect(),
+        templates: templates
+            .into_iter()
+            .map(|t| {
+                let mut allocations = t.draft.allocations;
+                allocations.sort_by_key(|a| a.person_id);
+                TemplateV3 {
+                    id: t.id,
+                    name: t.draft.name,
+                    title: t.draft.title,
+                    amount_cents: t.draft.amount.cents(),
+                    kind: t.draft.kind.code().to_string(),
+                    category_id: t.draft.category_id,
+                    payer_id: t.draft.payer_id,
+                    responsibility: t.draft.responsibility.code().to_string(),
+                    description: t.draft.description,
+                    created_at: t.created_at,
+                    last_used_at: t.last_used_at,
+                    allocations: allocations
+                        .into_iter()
+                        .map(|a| AllocationV2 {
+                            person_id: a.person_id,
+                            amount_cents: a.amount.cents(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
     })
 }
 
@@ -112,7 +142,7 @@ pub fn write_json(
         file.seek(SeekFrom::Start(0))?;
         let mut text = String::new();
         file.read_to_string(&mut text)?;
-        let parsed: DocumentV2 = serde_json::from_str(&text)
+        let parsed: DocumentV3 = serde_json::from_str(&text)
             .map_err(|e| AppError::Export(format!("written file is not valid: {e}")))?;
         if parsed != document {
             return Err(AppError::Export(
