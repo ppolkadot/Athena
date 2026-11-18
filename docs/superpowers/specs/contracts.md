@@ -1,6 +1,6 @@
 # Athena contracts
 
-**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md). Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
+**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md); §14.1 is **Frozen for 1.2**. Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
 **Created:** 2026-11-16, from the [roadmap decisions](2026-11-13-athena-roadmap-revision.md), the [1.1](2026-11-13-athena-1.1.0-revision-brief.md) / [1.2](2026-11-13-athena-1.2.0-revision-brief.md) briefs, and the [readiness review](2026-11-16-athena-readiness-and-appearance-review.md), checked against source at `2093257`.
 
 ## §0 Authority and change rules
@@ -29,7 +29,7 @@
 |---|---|---|---|
 | 1.0.x | Shipped foundation | `0001_init` (1) | 1 (written, never read) |
 | **1.1.0** | Safe data | `0002_settlement_kind`, `0003_trash` (3) | **2** |
-| 1.2.0 | Daily speed | reserved `0004_templates` (4) | reserved 3 |
+| **1.2.0** | Daily speed | `0004_templates` (4) | **3** (frozen for 1.2, §14.1) |
 | 1.3.0 | Appearance | reserved `0005_appearance` (5) | reserved 4 |
 | 1.4.0 | Goals & closings | reserved `0006_goals`, `0007_closings` (7) | reserved 5 |
 
@@ -270,6 +270,8 @@ pub struct SuggestedTransfer { pub from: i64, pub to: i64, pub amount: Money }
 | `ImportProfile(Box<ImportPlan>)` | `None` | `All` | §10; the plan was validated at preview |
 | `RestorePerson(i64)` | `None` | `People` | checks active name uniqueness |
 | existing profile/people/category actions | unchanged | unchanged | |
+| `SaveTemplate` / `UpdateTemplate` / `DeleteTemplate` (1.2, §14.1) | `None` | `Templates` | Settings and Quick Add |
+| `SaveTransactionFromTemplate(TxDraft, i64)` (1.2) | `DeleteTransaction(id)` | `Month` + `Templates` | one transaction, one timestamp |
 
 - `RestoreSource` is `Listed(PathBuf)` (inside `backups_dir`) or `External(PathBuf)` (picked file).
 - `ImportPlan` derives `Clone` and `PartialEq` because `AppAction` does.
@@ -408,6 +410,10 @@ Restore is synchronous on the UI thread in 1.1, with a measured budget of < 1 s 
 - Ordering follows the existing deterministic order (people and categories by id; transactions by the existing export order).
 - The writer still re-reads and compares the written bytes, as today.
 
+### §10.2.1 Format 3 (written by 1.2)
+
+Format 3 is format 2 plus a required `templates` array (`id, name, title, amount_cents, kind, category_id, payer_id, responsibility, description, created_at, last_used_at, allocations: [{ person_id, amount_cents }]`), ordered by id. Formats 1 and 2 import with no templates. A version above 3 is `TooNew` before any body parsing. Import replaces templates in the same transaction (children and parents before people and categories, inserted after them). <!-- lint:allow -->
+
 ### §10.3 Format 1 adapter
 
 `format_v1.rs` freezes the 1.0 shapes (domain-derived serde as of `2093257`, `schema_version: 1`).
@@ -494,6 +500,7 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - the latest operation notice
   - Changing a category's scope is refused with its own message (`SettingsError::ScopeInUse`) when entries already use it and the new scope would hide them; the generic save failure is reserved for everything else.
 - Successful restore/import clears filters and opens Month.
+- **1.2 additions (§14.1):** Create Quick Add gains a Templates picker, Save as template and a one-line entry field with a Review button; Settings gains a Templates page; the sidebar becomes a labeled icon rail when content would be narrower than 480 pt; Calendar and Month expose a day grid with a shared day detail panel; Settings → Data & backups gains XLSX export for the viewed month and all history.
 - **Dialogs** return keyboard focus to the control that opened them.
 - **All new copy** is added to both languages in the same commit, including error variants for every `RestoreError` and `ImportError`.
 
@@ -520,20 +527,29 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
 
 These reserve names and rules. They are not frozen.
 
-### §14.1 1.2 Daily speed (Draft)
+### §14.1 1.2 Daily speed — Frozen for 1.2
+
+Implementation design for 1.2.0 (schema 4, document format 3). Rationale and test lists live in the [Daily Speed plan](../plans/2026-11-18-athena-1.2.0-daily-speed.md) and the [roadmap](../plans/2026-11-18-athena-stalled-ui-roadmap-plan.md).
 
 - **`0004_templates.sql`:**
-  - `templates` table: `id, name, title, amount_cents, kind (expense|income|refund), category_id, payer_id, responsibility ('none'|'person'|'even'|'custom'), description, created_at, last_used_at`
+  - `templates`: `id, name, title, amount_cents (> 0), kind (expense|income|refund), category_id → categories ON DELETE RESTRICT, payer_id → people ON DELETE RESTRICT, responsibility ('none'|'person'|'even'|'custom'), description, created_at, last_used_at (nullable)`
   - `template_allocations (template_id → templates ON DELETE CASCADE, person_id → people ON DELETE RESTRICT, amount_cents ≥ 0, UNIQUE(template_id, person_id))` <!-- lint:allow -->
-  - Settlements are not templatable.
-  - Format 3 adds `templates`, and the `Template` domain type replaces the 1.0 placeholder's single `person_id`. <!-- lint:allow -->
-- **Applying a template** fills the form only. The date becomes `vm.today` (visible). Amount edits re-split even splits and require repair for custom ones. Archived references must be reassigned.
-- **One-line entry:** the first Enter parses into a reviewable draft and never saves in the same frame. A negative amount asks for a kind.
-- **Duplicate check** runs in `handle_quick_add` (app layer), never in `quick_add::show`. It excludes the edited row and the trash.
+  - Settlements are not templatable. Migrations `0001`–`0003` are untouched.
+  - Format 3 adds a required `templates` array with nested allocations, and the `Template { id, draft, created_at, last_used_at }` domain type replaces the 1.0 placeholder's single `person_id`. <!-- lint:allow -->
+- **Template rules.** Names and titles are trimmed. Amount is positive cents. Names are unique under the trimmed `domain::text::fold`, enforced on each save and across imported names. `None` has no allocations; `Person` has exactly one full share; `Even` and `Custom` have at least two distinct participants; allocation totals equal the amount. `Even` uses `split_evenly` in ascending person-id order, so remainder cents are stable; `Custom` keeps explicit zeros. Income uses `None` with no payer and a compatible category. Stored or imported archived references stay readable; a new or modified template must use active people and a compatible active category. A category that later changes scope keeps its templates portable; they are listed as needing repair, and import/integrity check only id validity and allocation shape.
+- **Applying a template** fills the form only (no write). The date becomes `vm.today` (visible). Amount edits re-split even splits and require repair for custom ones. Archived or incompatible references must be reassigned before saving a new entry. `SaveTransactionFromTemplate(TxDraft, template_id)` inserts the entry and sets `last_used_at` in one transaction with one timestamp.
+- **Template actions:** `SaveTemplate(TemplateDraft)`, `UpdateTemplate(i64, TemplateDraft)`, `DeleteTemplate(i64)`, `SaveTransactionFromTemplate(TxDraft, i64)`; `RefreshScope::Templates` (the last also refreshes `Month`).
+- **Dirty-draft guard.** Quick Add compares raw field values and participant selections with the snapshot taken at open, confirmed replacement, or successful create. Close, Escape, outside click, and Apply Template / Replace With Parsed Entry route through a modal-owned typed pending intent with Keep Editing / Discard. Window close with a dirty form uses the same confirmation through viewport cancel-close.
+- **One-line entry:** `<amount> <title> [@YYYY-MM-DD]`, parsed by the pure `domain::quick_entry::parse_line`. The first Enter (or the visible Review button) parses into a reviewable Create draft and never saves in the same frame. A negative amount asks for Expense or Refund; zero or unrepresentable amounts are errors.
+- **Duplicate check** runs in `handle_quick_add` (app layer), never in `quick_add::show`, for every Create/Edit submit. It matches live rows (all kinds, independent of filters) by date, positive cents and normalized title (`fold`, trimmed, whitespace collapsed), excludes the edited row and Trash, and offers Keep Editing / Save Anyway bound to the exact pending action and match set. A lookup error blocks saving.
+- **Day drill-down:** `DayActivity { date, spending, activity_count }`; every live kind counts toward activity; spending is expense minus refund only. `TxFilter` gains an exact `day` predicate. Heat reflects only positive net spending.
+- **Insights:** `InsightInputs` in `domain/reports.rs` with the localized messages and half-up `i128` percentage rules of the roadmap.
 - **XLSX:**
-  - choose the writer crate in the plan (a dependency decision); add `calamine` as a dev-dependency to read workbooks back in tests
-  - numeric money cells only for |cents| ≤ 9,999,999,999,999 (verified by cent round-trip); larger values become text cells labeled as exact
-- **Design tokens and an embedded icon set** (licensed, provenance documented) replace the Unicode glyphs.
+  - writer `rust_xlsxwriter`; `calamine` is a dev-dependency used only to read workbooks back in tests
+  - sheets Entries and Allocations, scope row, ISO dates and ids as exact text; user strings are written as explicit strings
+  - numeric money cells only for |cents| ≤ 9,999,999,999,999 (verified by cent round-trip); larger values become exact two-decimal text labeled "Exact text"
+  - published atomically with `atomic_write`
+- **Design tokens (`ui/tokens.rs`) and an embedded icon set (`ui/icons.rs`)**: Lucide 0.468.0 24-unit path data vendored under `assets/icons/` with the upstream license replace the Unicode glyphs. Content narrower than 480 pt collapses the sidebar to a labeled icon rail.
 
 ### §14.2 1.3 Appearance (Draft)
 
@@ -578,3 +594,4 @@ These reserve names and rules. They are not frozen.
 - 2026-11-18 — §11 rejects implicit onboarding after an interrupted recovery, preserves the rollback journal, publishes a complete candidate, and requires explicit confirmation to start fresh.
 - 2026-11-18 — §11 adds a startup recovery probe distinguishing first launch, missing/empty with evidence or scan failures, indeterminate live metadata, and intent conflicts, plus durable `recovery-intent.json` reconciliation with checksum-verified publish and fail-closed rollback.
 - 2026-11-18 — §11 hardens non-clobbering file moves without destructor ownership of existing files, shares post-publish verification across normal and reconciled paths, rechecks live state at move/sidecar boundaries, keeps blocked recoverable directories non-fatal at startup, and documents `athena.lock` and process-kill vs power-loss boundaries.
+- 2026-11-18 — Froze §14.1 for 1.2.0 (schema 4, format 3): templates, dirty-draft guard, one-line entry, duplicate consent, day drill-down, insights, XLSX and tokens/icons. Synced §2 (release ledger), §8 (template actions, `RefreshScope::Templates`), §10 (format 3 envelope: required `templates`, accepted formats 1–3) and §12 (Quick Add template/one-line controls, Settings Templates page, icon rail). Historical 1.1 behavior is unchanged.
