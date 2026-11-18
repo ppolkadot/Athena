@@ -311,4 +311,6 @@ pub const STRINGS: Strings = Strings {
     m_invalid: "Esse valor não é válido.",
     m_too_precise: "Use no máximo duas casas decimais.",
     m_too_large: "Esse valor é grande demais.",
+    settlement_from_to: "De {from} para {to}",
+    clear_filter_chip: "Limpar filtro",
 };

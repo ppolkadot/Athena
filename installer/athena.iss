@@ -34,6 +34,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\fonts\LICENSE.txt"; DestDir: "{app}\licenses\Salted-Flutters-Polaris"; Flags: ignoreversion
+Source: "..\assets\icons\LICENSE.txt"; DestDir: "{app}\licenses\Lucide"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"

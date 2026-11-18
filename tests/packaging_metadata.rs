@@ -29,6 +29,7 @@ fn ci_packaging_emits_build_info_and_checksums_preserving_asset_names() {
         "athena-$env:ATHENA_VERSION-windows-x64.exe",
         "Athena-$env:ATHENA_VERSION-setup.exe",
         "LICENSE.txt",
+        "ICONS-LICENSE.txt",
         "SHA256SUMS.txt",
         "target/package/BUILD-INFO.txt",
         "target/package/SHA256SUMS.txt",

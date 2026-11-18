@@ -126,6 +126,77 @@ fn snapshot_populated_month() {
     results.unwrap();
 }
 
+/// 640 x 410 logical points: the narrow supported viewport.
+const NARROW: egui::Vec2 = egui::Vec2::new(640.0, 410.0);
+
+/// Seed the month plus an entry with a long title and a very large amount.
+fn narrow_core(language: Language, theme: Theme, screen: Screen) -> AppCore {
+    let mut core = onboarded_core(language, theme, true);
+    let mut draft = crate::shared::test_fixtures::draft_with(vec![]);
+    draft.title =
+        "Supermercado com um nome muito longo que precisa quebrar a linha sem cortar".into();
+    draft.amount = Money::from_cents(99_999_999_999);
+    draft.date = today();
+    core.create_transaction(draft).unwrap();
+    core.set_screen(screen);
+    core
+}
+
+#[test]
+fn snapshot_narrow_month_and_calendar() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        for (screen, name) in [(Screen::Month, "month"), (Screen::Calendar, "calendar")] {
+            snapshot(
+                &mut results,
+                &format!("{name}_narrow_{tag}"),
+                AthenaApp::for_test(narrow_core(language, theme, screen)),
+                NARROW,
+            );
+        }
+    }
+    results.unwrap();
+}
+
+#[test]
+fn narrow_viewport_collapses_to_a_labeled_icon_rail() {
+    use egui_kittest::kittest::Queryable;
+    for (language, theme, _) in variants() {
+        let s = crate::i18n::strings(language);
+        for (size, rail) in [(NARROW, true), (SIZE, false)] {
+            let app = AthenaApp::for_test(narrow_core(language, theme, Screen::Month));
+            let mut harness = Harness::builder()
+                .with_size(size)
+                .with_context_setup(theme::typography::install_test_fonts)
+                .build_ui_state(
+                    |ui, app: &mut AthenaApp| {
+                        theme::apply(ui.ctx(), app.theme_for_test());
+                        ui.set_style(ui.ctx().global_style());
+                        app.show_for_test(ui);
+                    },
+                    {
+                        let mut app = app;
+                        app.pin_today(today());
+                        app
+                    },
+                );
+            harness.run_steps(6);
+            // Every screen keeps its localized accessible name in both modes.
+            for name in [s.month, s.calendar, s.trash, s.settings] {
+                assert!(
+                    harness.query_by_label(name).is_some(),
+                    "{language:?} {size:?} missing nav name {name}"
+                );
+            }
+            // The wordmark only shows in the expanded sidebar.
+            assert_eq!(harness.query_by_label(s.app_name).is_some(), !rail);
+            // Icon-only month stepper buttons stay named in the accessibility tree.
+            assert!(harness.query_by_label(s.month_prev).is_some());
+            assert!(harness.query_by_label(s.month_next).is_some());
+        }
+    }
+}
+
 #[test]
 fn snapshot_calendar() {
     let mut results = SnapshotResults::new();

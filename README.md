@@ -13,8 +13,12 @@ Brazilian Portuguese. Windows is the primary target.
 Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
 license and provenance live in `assets/fonts/`.
 
-Portable builds: keep `assets/fonts/LICENSE.txt` beside `athena.exe` when redistributing; the
-font license requires the license file to travel with the fonts.
+Icons: [Lucide](https://lucide.dev) 0.468.0 (ISC), embedded as 24-unit path data in
+`src/ui/icon_paths.rs`; the vendored SVGs, upstream license and provenance live in `assets/icons/`.
+
+Portable builds: keep `assets/fonts/LICENSE.txt` and `assets/icons/LICENSE.txt` beside `athena.exe`
+when redistributing; the font license requires the license file to travel with the fonts, and the
+icon license requires its notice to be preserved (releases publish it as `ICONS-LICENSE.txt`).
 
 ## Running it
 

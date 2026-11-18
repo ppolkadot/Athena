@@ -117,10 +117,12 @@ jobs:
           Copy-Item target\release\athena.exe (Join-Path $dir $exeName)
           Copy-Item (Join-Path 'target\installer' $setupName) $dir
           Copy-Item assets\fonts\LICENSE.txt $dir
+          Copy-Item assets\icons\LICENSE.txt (Join-Path $dir 'ICONS-LICENSE.txt')
           $artifacts = @(
             (Get-Item (Join-Path $dir $exeName)),
             (Get-Item (Join-Path $dir $setupName)),
-            (Get-Item (Join-Path $dir 'LICENSE.txt'))
+            (Get-Item (Join-Path $dir 'LICENSE.txt')),
+            (Get-Item (Join-Path $dir 'ICONS-LICENSE.txt'))
           )
           $artifactLines = foreach ($f in $artifacts) {
             $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
@@ -162,6 +164,7 @@ jobs:
             target/package/athena-*-windows-x64.exe
             target/package/Athena-*-setup.exe
             target/package/LICENSE.txt
+            target/package/ICONS-LICENSE.txt
             target/package/BUILD-INFO.txt
             target/package/SHA256SUMS.txt
           if-no-files-found: error
@@ -177,6 +180,7 @@ jobs:
             "target/package/athena-$env:ATHENA_VERSION-windows-x64.exe",
             "target/package/Athena-$env:ATHENA_VERSION-setup.exe",
             "target/package/LICENSE.txt",
+            "target/package/ICONS-LICENSE.txt",
             "target/package/BUILD-INFO.txt",
             "target/package/SHA256SUMS.txt"
           )

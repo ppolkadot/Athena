@@ -17,6 +17,10 @@ pub struct Palette {
     pub positive: Color32,
     pub negative: Color32,
     pub warning: Color32,
+    /// Keyboard focus ring and essential icon boundary color (>= 3:1 on every surface).
+    pub focus: Color32,
+    /// Text and icons on a filled accent (primary button).
+    pub on_accent: Color32,
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -39,6 +43,8 @@ pub fn palette(theme: Theme) -> Palette {
             positive: rgb(0x3D_DC_97),
             negative: rgb(0xFF_6B_7A),
             warning: rgb(0xF5_C4_51),
+            focus: rgb(0x6C_8C_FF),
+            on_accent: rgb(0x05_06_08),
         },
         Theme::Light => Palette {
             bg: rgb(0xF6_F7_FB),
@@ -49,9 +55,11 @@ pub fn palette(theme: Theme) -> Palette {
             text: rgb(0x14_18_21),
             muted: rgb(0x5C_64_76),
             accent: rgb(0x3F_55_C6),
-            positive: rgb(0x14_7D_52),
-            negative: rgb(0xB8_32_47),
+            positive: rgb(0x10_6E_48),
+            negative: rgb(0xB0_2F_43),
             warning: rgb(0x7A_5B_00),
+            focus: rgb(0x3F_55_C6),
+            on_accent: rgb(0xF6_F7_FB),
         },
     }
 }
