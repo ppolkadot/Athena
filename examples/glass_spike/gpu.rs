@@ -91,6 +91,20 @@ impl GpuTelemetry {
             f(&mut guard);
         }
     }
+
+    /// Transitions `validation_error` from `None` to `Some(err)` and clears `resources_ready`.
+    /// Returns `true` only on the initial transition so callers trigger one fallback repaint.
+    #[must_use]
+    pub fn record_validation_error(&self, err: String) -> bool {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.resources_ready = false;
+            if guard.validation_error.is_none() {
+                guard.validation_error = Some(err);
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -103,6 +117,7 @@ pub struct GlassPanelCallback {
     pub border_gamma: [f32; 4],
     pub force_reblur: bool,
     pub telemetry: GpuTelemetry,
+    pub egui_ctx: Option<eframe::egui::Context>,
 }
 
 struct BlurTargets {
@@ -196,6 +211,29 @@ fn pop_validation_scope(device: &wgpu::Device, guard: wgpu::ErrorScopeGuard) -> 
     }
 }
 
+fn finish_validation_scope(
+    device: &wgpu::Device,
+    guard: wgpu::ErrorScopeGuard,
+    telemetry: &GpuTelemetry,
+    repaint_ctx: Option<&eframe::egui::Context>,
+) -> bool {
+    if let Some(err) = pop_validation_scope(device, guard) {
+        if telemetry.record_validation_error(err)
+            && let Some(ctx) = repaint_ctx
+        {
+            ctx.request_repaint();
+        }
+        true
+    } else {
+        false
+    }
+}
+
+#[must_use]
+fn can_paint_glass(snapshot: &GpuCounters, has_targets: bool) -> bool {
+    has_targets && snapshot.resources_ready && snapshot.validation_error.is_none()
+}
+
 pub fn init_glass_resources(render_state: &eframe::egui_wgpu::RenderState) -> GpuTelemetry {
     let target_format = render_state.target_format;
     let format_supported = is_supported_target_format(target_format);
@@ -254,11 +292,7 @@ pub fn init_glass_resources(render_state: &eframe::egui_wgpu::RenderState) -> Gp
         mapped_at_creation: false,
     });
 
-    if let Some(err) = pop_validation_scope(device, scope) {
-        telemetry.update(|c| {
-            c.resources_ready = false;
-            c.validation_error = Some(err);
-        });
+    if finish_validation_scope(device, scope, &telemetry, None) {
         return telemetry;
     }
 
@@ -611,14 +645,13 @@ impl GlassCacheResources {
 
     #[allow(clippy::cast_precision_loss)]
     fn run_blur_passes(
-        &mut self,
+        &self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
-        egui_encoder: &mut wgpu::CommandEncoder,
         crop_min: [f32; 2],
         crop_max: [f32; 2],
         blur_extent: [u32; 2],
-        blur_key: (u64, [u32; 2]),
-    ) {
+    ) -> Option<wgpu::CommandEncoder> {
         let h_bytes = blur_uniform_bytes(
             [crop_min[0], crop_min[1], crop_max[0], crop_max[1]],
             [(crop_max[0] - crop_min[0]) / blur_extent[0] as f32, 0.0],
@@ -636,10 +669,13 @@ impl GlassCacheResources {
         queue.write_buffer(&self.blur_vert_uniform_buffer, 0, &v_bytes);
 
         let (Some(src), Some(targets)) = (&self.source_texture, &self.blur_targets) else {
-            return;
+            return None;
         };
+        let mut blur_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("athena_glass_blur_encoder"),
+        });
         {
-            let mut pass_h = egui_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass_h = blur_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("athena_glass_blur_h_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &targets.horiz_view,
@@ -660,7 +696,7 @@ impl GlassCacheResources {
             pass_h.draw(0..3, 0..1);
         }
         {
-            let mut pass_v = egui_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass_v = blur_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("athena_glass_blur_v_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &targets.vert_view,
@@ -680,8 +716,7 @@ impl GlassCacheResources {
             pass_v.set_bind_group(0, &targets.horiz_read_bind_group, &[]);
             pass_v.draw(0..3, 0..1);
         }
-        self.last_blur_key = Some(blur_key);
-        self.telemetry.update(|c| c.blur_runs += 1);
+        Some(blur_encoder)
     }
 }
 
@@ -692,7 +727,7 @@ impl CallbackTrait for GlassPanelCallback {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         screen_descriptor: &ScreenDescriptor,
-        egui_encoder: &mut wgpu::CommandEncoder,
+        _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let start = Instant::now();
@@ -716,27 +751,29 @@ impl CallbackTrait for GlassPanelCallback {
         let Some(cache) = callback_resources.get_mut::<GlassCacheResources>() else {
             return Vec::new();
         };
+        let pre_snapshot = cache.telemetry.snapshot();
+        if !can_paint_glass(&pre_snapshot, true) {
+            return Vec::new();
+        }
 
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         if !cache.ensure_source_texture(device, queue, &self.wallpaper) {
-            let _ = pop_validation_scope(device, scope);
-            self.telemetry.update(|c| c.skipped_zero_area += 1);
+            let _ =
+                finish_validation_scope(device, scope, &cache.telemetry, self.egui_ctx.as_ref());
+            cache.telemetry.update(|c| c.skipped_zero_area += 1);
             return Vec::new();
         }
         cache.ensure_blur_targets(device, blur_extent);
 
         let blur_key = (self.wallpaper.generation, screen_px);
-        if self.force_reblur || cache.last_blur_key != Some(blur_key) {
-            cache.run_blur_passes(
-                queue,
-                egui_encoder,
-                crop.min,
-                crop.max,
-                blur_extent,
-                blur_key,
-            );
-        }
+        let blur_cmd = if self.force_reblur || cache.last_blur_key != Some(blur_key) {
+            cache
+                .run_blur_passes(device, queue, crop.min, crop.max, blur_extent)
+                .map(wgpu::CommandEncoder::finish)
+        } else {
+            None
+        };
 
         let panel_rect_px = [
             self.panel_rect_pt[0] * ppp,
@@ -755,19 +792,26 @@ impl CallbackTrait for GlassPanelCallback {
         );
         queue.write_buffer(&cache.glass_uniform_buffer, 0, &glass_bytes);
 
-        if let Some(err) = pop_validation_scope(device, scope) {
-            cache.telemetry.update(|c| {
-                c.validation_error = Some(err);
-                c.resources_ready = false;
-            });
-        }
+        let validation_failed =
+            finish_validation_scope(device, scope, &cache.telemetry, self.egui_ctx.as_ref());
 
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
         cache.telemetry.update(|c| {
             c.last_prepare_cpu_ms = elapsed_ms;
         });
 
-        Vec::new()
+        if validation_failed {
+            drop(blur_cmd);
+            return Vec::new();
+        }
+
+        if let Some(cmd) = blur_cmd {
+            cache.last_blur_key = Some(blur_key);
+            cache.telemetry.update(|c| c.blur_runs += 1);
+            vec![cmd]
+        } else {
+            Vec::new()
+        }
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -784,7 +828,7 @@ impl CallbackTrait for GlassPanelCallback {
             return;
         };
         let snapshot = cache.telemetry.snapshot();
-        if !snapshot.resources_ready || snapshot.validation_error.is_some() {
+        if !can_paint_glass(&snapshot, true) {
             return;
         }
 
@@ -812,5 +856,195 @@ impl CallbackTrait for GlassPanelCallback {
         render_pass.draw(0..3, 0..1);
 
         cache.telemetry.update(|c| c.paint_draws += 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+
+    use super::*;
+    use crate::math::{
+        EffectiveSurface, FallbackReason, GlassGateInput, SurfaceMode, resolve_effective_surface,
+    };
+
+    fn poll_ready<F: Future>(fut: F) -> Option<F::Output> {
+        let mut pinned = pin!(fut);
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..1000 {
+            if let Poll::Ready(val) = pinned.as_mut().poll(&mut cx) {
+                return Some(val);
+            }
+            std::thread::yield_now();
+        }
+        None
+    }
+
+    #[test]
+    fn real_wgpu_validation_error_blocks_paint_and_selects_solid_fallback() {
+        let instance = wgpu::Instance::default();
+        let adapter = poll_ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            ..Default::default()
+        }))
+        .and_then(Result::ok)
+        .or_else(|| {
+            poll_ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+                ..Default::default()
+            }))
+            .and_then(Result::ok)
+        });
+
+        let Some(adapter) = adapter else {
+            eprintln!(
+                "SKIP real_wgpu_validation_error_blocks_paint_and_selects_solid_fallback: no wgpu adapter available in headless runner"
+            );
+            return;
+        };
+
+        let Some(Ok((device, _queue))) =
+            poll_ready(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            eprintln!(
+                "SKIP real_wgpu_validation_error_blocks_paint_and_selects_solid_fallback: could not acquire wgpu device"
+            );
+            return;
+        };
+
+        let telemetry = GpuTelemetry::new(true);
+        let healthy = telemetry.snapshot();
+        assert!(can_paint_glass(&healthy, true));
+
+        // 1. Trigger a real wgpu bind-group validation error inside `ErrorFilter::Validation`.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (_blur_bgl, glass_bgl) = create_bind_group_layouts(&device);
+        let undersized_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("undersized_uniform_test"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dummy_tex_test"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: BLUR_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let dummy_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        let _invalid_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("invalid_bind_group_test"),
+            layout: &glass_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: undersized_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&dummy_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&dummy_sampler),
+                },
+            ],
+        });
+
+        assert!(
+            finish_validation_scope(&device, scope, &telemetry, None),
+            "expected wgpu validation scope to capture undersized uniform binding error"
+        );
+
+        let failed = telemetry.snapshot();
+        assert!(!failed.resources_ready);
+        assert!(
+            failed
+                .validation_error
+                .as_deref()
+                .is_some_and(|msg| !msg.is_empty())
+        );
+        // On the failing frame itself, `paint` refuses to draw over the spike-only Tint underlay.
+        assert!(!can_paint_glass(&failed, true));
+        // On the next frame, `resolve_effective_surface` locks in Solid fallback with the error reason.
+        assert_eq!(
+            resolve_effective_surface(
+                GlassGateInput {
+                    requested: SurfaceMode::Glass,
+                    has_wgpu_state: true,
+                    is_software_adapter: false,
+                    resources_ready: failed.resources_ready,
+                    forced_unavailable: false,
+                    target_format_supported: true,
+                    gpu_validation_failed: failed.validation_error.is_some(),
+                    zero_area: false,
+                },
+                None,
+            ),
+            EffectiveSurface::Solid {
+                fallback: Some(FallbackReason::ValidationError),
+            }
+        );
+
+        // 2. Also prove separate blur encoder finishing catches render-pass validation errors
+        // before any command buffer would be returned to `egui-wgpu`.
+        let encoder_telemetry = GpuTelemetry::new(true);
+        let encoder_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut bad_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("invalid_blur_encoder_test"),
+        });
+        {
+            // Render pass with no color/depth attachments is invalid in wgpu when finished.
+            let _pass = bad_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("empty_invalid_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        let _discarded = bad_encoder.finish();
+        assert!(
+            finish_validation_scope(&device, encoder_scope, &encoder_telemetry, None),
+            "expected wgpu validation scope to capture invalid encoder finish"
+        );
+        assert!(!can_paint_glass(&encoder_telemetry.snapshot(), true));
+    }
+
+    #[test]
+    fn validation_error_transition_requests_fallback_repaint_once() {
+        let telemetry = GpuTelemetry::new(true);
+        assert!(can_paint_glass(&telemetry.snapshot(), true));
+
+        // Initial None -> Some transition triggers one fallback repaint.
+        assert!(telemetry.record_validation_error("first validation error".into()));
+        let first = telemetry.snapshot();
+        assert!(!first.resources_ready);
+        assert_eq!(
+            first.validation_error.as_deref(),
+            Some("first validation error")
+        );
+        assert!(!can_paint_glass(&first, true));
+
+        // Repeated validation errors do not trigger additional fallback repaints or overwrite root cause.
+        assert!(!telemetry.record_validation_error("second error".into()));
+        assert_eq!(
+            telemetry.snapshot().validation_error.as_deref(),
+            Some("first validation error")
+        );
     }
 }

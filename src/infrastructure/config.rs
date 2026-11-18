@@ -54,19 +54,35 @@ impl AppDirs {
         Ok(Self::resolve_with(exe_dir, base.data_dir()))
     }
 
+    /// Create the root and log folders required to take `athena.lock` and initialize logging.
+    ///
     /// # Errors
-    /// Returns [`AppError::Io`] when a folder cannot be created.
-    pub fn ensure(&self) -> Result<()> {
-        for dir in [
-            &self.root,
-            &self.log_dir,
-            &self.exports_dir,
-            &self.backups_dir,
-            &self.staging_dir,
-        ] {
+    /// Returns [`AppError::Io`] when an essential folder cannot be created.
+    pub fn ensure_essential(&self) -> Result<()> {
+        for dir in [&self.root, &self.log_dir] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
+    }
+
+    /// Create the secondary data folders (`exports`, `backups`, `staging`) after recovery probing.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Io`] when a recoverable folder cannot be created.
+    pub fn ensure_recoverable(&self) -> Result<()> {
+        for dir in [&self.exports_dir, &self.backups_dir, &self.staging_dir] {
+            std::fs::create_dir_all(dir)?;
+        }
+        Ok(())
+    }
+
+    /// Create every data folder.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Io`] when a folder cannot be created.
+    pub fn ensure(&self) -> Result<()> {
+        self.ensure_essential()?;
+        self.ensure_recoverable()
     }
 }
 

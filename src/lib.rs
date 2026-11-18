@@ -19,12 +19,7 @@ use crate::shared::error::{AppError, Result};
 /// of them: see [`open_session`].
 pub fn run() -> Result<()> {
     let dirs = AppDirs::resolve()?;
-    dirs.ensure()?;
-    let _instance = app::instance::acquire(&dirs.root)?;
-    let _log_guard = init_tracing(&dirs)?;
-    tracing::info!("athena {} starting", env!("CARGO_PKG_VERSION"));
-
-    let session = open_session(dirs)?;
+    let (_instance, _log_guard, session) = boot_session_with_dirs(dirs, true)?;
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -42,6 +37,27 @@ pub fn run() -> Result<()> {
     .map_err(|e| AppError::Ui(e.to_string()))
 }
 
+fn boot_session_with_dirs(
+    dirs: AppDirs,
+    initialize_tracing: bool,
+) -> Result<(
+    app::instance::InstanceGuard,
+    Option<tracing_appender::non_blocking::WorkerGuard>,
+    AppSession,
+)> {
+    dirs.ensure_essential()?;
+    let instance = app::instance::acquire(&dirs.root)?;
+    let log_guard = if initialize_tracing {
+        let guard = init_tracing(&dirs)?;
+        tracing::info!("athena {} starting", env!("CARGO_PKG_VERSION"));
+        Some(guard)
+    } else {
+        None
+    };
+    let session = open_session(dirs)?;
+    Ok((instance, log_guard, session))
+}
+
 /// Whether a startup failure leaves the app usable through the recovery session (`§11`).
 ///
 /// `AlreadyRunning` and `Dirs` stay fatal: no restore can fix a second copy of Athena or a folder
@@ -52,9 +68,13 @@ pub fn is_recoverable(error: &AppError) -> bool {
         error,
         AppError::Corrupt { .. }
             | AppError::LiveDatabaseMissingOrEmpty
+            | AppError::RecoveryScanUncertain(_)
+            | AppError::LiveMetadataIndeterminate(_)
+            | AppError::RecoveryConflict(_)
             | AppError::Migration(_)
             | AppError::SchemaTooNew { .. }
             | AppError::Db(_)
+            | AppError::Io(_)
     )
 }
 
@@ -63,10 +83,22 @@ pub fn is_recoverable(error: &AppError) -> bool {
 /// # Errors
 /// Startup failures that the recovery screen cannot help with, such as [`AppError::Dirs`].
 pub fn open_session(dirs: AppDirs) -> Result<AppSession> {
-    let opened = if db_recovery::needs_recovery_before_open(&dirs)? {
-        Err(AppError::LiveDatabaseMissingOrEmpty)
-    } else {
-        Db::open(&dirs.db_path).and_then(|db| AppCore::new(db, dirs.clone()))
+    let opened = match db_recovery::probe_startup(&dirs) {
+        db_recovery::StartupProbe::FirstLaunch | db_recovery::StartupProbe::ReadyToOpen => dirs
+            .ensure_recoverable()
+            .and_then(|()| Db::open(&dirs.db_path))
+            .and_then(|db| AppCore::new(db, dirs.clone())),
+        db_recovery::StartupProbe::MissingOrEmpty {
+            scan_error: None, ..
+        } => Err(AppError::LiveDatabaseMissingOrEmpty),
+        db_recovery::StartupProbe::MissingOrEmpty {
+            scan_error: Some(detail),
+            ..
+        } => Err(AppError::RecoveryScanUncertain(detail)),
+        db_recovery::StartupProbe::IndeterminateLive(detail) => {
+            Err(AppError::LiveMetadataIndeterminate(detail))
+        }
+        db_recovery::StartupProbe::Conflict(detail) => Err(AppError::RecoveryConflict(detail)),
     };
     match opened {
         Ok(core) => Ok(AppSession::Active(Box::new(core))),
@@ -123,6 +155,8 @@ fn window_icon() -> eframe::egui::IconData {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn temp_dirs() -> (tempfile::TempDir, AppDirs) {
@@ -200,5 +234,127 @@ mod tests {
             AppSession::Recovery(_)
         ));
         assert_eq!(std::fs::metadata(&dirs.db_path).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn scan_failures_indeterminate_live_and_conflicts_enter_recovery_with_strict_start_fresh_gating()
+     {
+        assert!(is_recoverable(&AppError::RecoveryScanUncertain(
+            "io".into()
+        )));
+        assert!(is_recoverable(&AppError::LiveMetadataIndeterminate(
+            "dir".into()
+        )));
+        assert!(is_recoverable(&AppError::RecoveryConflict(
+            "mismatch".into()
+        )));
+        assert!(is_recoverable(&AppError::Io(std::io::Error::other("io"))));
+
+        // Indeterminate live path enters Recovery without Start fresh.
+        {
+            let (_dir, dirs) = temp_dirs();
+            std::fs::create_dir(&dirs.db_path).unwrap();
+            let AppSession::Recovery(state) = open_session(dirs).unwrap() else {
+                panic!("directory at db_path must enter Recovery");
+            };
+            assert!(matches!(
+                state.error,
+                AppError::LiveMetadataIndeterminate(_)
+            ));
+            assert!(!state.can_start_fresh());
+        }
+
+        // Scan failure with missing DB enters Recovery with Start fresh allowed.
+        {
+            let (_dir, dirs) = temp_dirs();
+            std::fs::remove_dir(&dirs.backups_dir).unwrap();
+            std::fs::write(&dirs.backups_dir, b"not a directory").unwrap();
+            let AppSession::Recovery(state) = open_session(dirs).unwrap() else {
+                panic!("unreadable backups_dir must enter Recovery");
+            };
+            assert!(matches!(state.error, AppError::RecoveryScanUncertain(_)));
+            assert!(state.can_start_fresh());
+        }
+    }
+
+    #[test]
+    fn production_startup_sequence_reaches_recovery_when_backups_or_staging_is_a_regular_file() {
+        // 1. Backups replaced by a regular file with missing DB enters Recovery with Start fresh.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let dirs = AppDirs::from_root(dir.path().to_path_buf());
+            std::fs::write(&dirs.backups_dir, b"not a directory").unwrap();
+
+            let (_guard, _log, session) = boot_session_with_dirs(dirs, false).unwrap();
+            let AppSession::Recovery(state) = session else {
+                panic!("backups replaced by regular file must reach Recovery via startup sequence");
+            };
+            assert!(matches!(state.error, AppError::RecoveryScanUncertain(_)));
+            assert!(state.can_start_fresh());
+        }
+
+        // 2. Staging replaced by a regular file with missing DB enters Recovery with Start fresh.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let dirs = AppDirs::from_root(dir.path().to_path_buf());
+            std::fs::write(&dirs.staging_dir, b"not a directory").unwrap();
+
+            let (_guard, _log, session) = boot_session_with_dirs(dirs, false).unwrap();
+            let AppSession::Recovery(state) = session else {
+                panic!("staging replaced by regular file must reach Recovery via startup sequence");
+            };
+            assert!(matches!(state.error, AppError::RecoveryScanUncertain(_)));
+            assert!(state.can_start_fresh());
+        }
+
+        // 3. Backups replaced by a regular file alongside a valid live DB enters Recovery without Start fresh.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let dirs = AppDirs::from_root(dir.path().to_path_buf());
+            dirs.ensure().unwrap();
+            drop(Db::open(&dirs.db_path).unwrap());
+            std::fs::remove_dir(&dirs.backups_dir).unwrap();
+            std::fs::write(&dirs.backups_dir, b"not a directory").unwrap();
+
+            let (_guard, _log, session) = boot_session_with_dirs(dirs, false).unwrap();
+            let AppSession::Recovery(state) = session else {
+                panic!("blocked backups dir alongside valid DB must reach Recovery");
+            };
+            assert!(matches!(state.error, AppError::Io(_)));
+            assert!(!state.can_start_fresh());
+        }
+    }
+
+    #[test]
+    fn child_startup_sequence_with_tracing_survives_blocked_backups_file() {
+        const ENV_ROOT: &str = "ATHENA_TEST_BOOT_ROOT";
+        if let Ok(root) = std::env::var(ENV_ROOT) {
+            let dirs = AppDirs::from_root(PathBuf::from(root));
+            let (_guard, _log_guard, session) = boot_session_with_dirs(dirs, true).unwrap();
+            assert!(matches!(session, AppSession::Recovery(_)));
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::from_root(dir.path().to_path_buf());
+        std::fs::write(&dirs.backups_dir, b"regular file blocking backups dir").unwrap();
+
+        let exe = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "tests::child_startup_sequence_with_tracing_survives_blocked_backups_file",
+                "--nocapture",
+            ])
+            .env(ENV_ROOT, &dirs.root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child startup failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(dirs.log_dir.is_dir());
     }
 }

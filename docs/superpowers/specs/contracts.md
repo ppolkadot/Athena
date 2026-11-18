@@ -461,15 +461,16 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
 
 `AthenaApp` holds the session. `Store.db` stays a non-optional `Db`.
 
-- **Entered when** `Db::open` fails with `Corrupt`, `Migration`, `SchemaTooNew`, or `Db`, or before opening when the live database is empty, or when it is missing alongside a recognized backup, SQLite sidecar, or moved-aside database file. A missing database without any of those files is first launch. `AlreadyRunning` and `Dirs` keep the message-box path.
+- **Entered when** `Db::open` fails with `Corrupt`, `Migration`, `SchemaTooNew`, `Db`, or `Io`, when `recovery-intent.json` validation/reconciliation hits a conflict, when live database metadata is indeterminate (unreadable or non-regular file), or before opening when the live database is missing/empty alongside a recognized backup, SQLite sidecar, staged file, moved-aside `broken-*` file, or folder scan failure. Only a confirmed absent live database with zero remnants and clean scans is first launch. `AlreadyRunning` and `Dirs` keep the message-box path.
 - **The recovery screen** (solid surface, no wallpaper in later releases) shows the localized error, the data folder, and the backups list (read-only listing). Actions: **Open data folder**, **Quit**, and **Restore this backup**. For `SchemaTooNew`, restore warns that newer data will be replaced.
 - **Restore from recovery:**
-  1. Validate as in §9.3 steps 1–4. The `page_size` comparison has no live database to match, so it is skipped; identity, integrity, version, migrations, and the domain invariants still run.
-  2. Make the upgraded candidate a standalone database and flush it. Rename the broken `athena.db` and its `-wal`, `-shm` and `-journal` sidecars to a unique `broken-<ts>.db…` set.
-  3. Publish the complete candidate at the live path without overwriting an occupied destination.
-  4. `Db::open`, then switch to `Active`.
-  - If moving the originals or publishing the candidate fails, restore the original names where possible and retain files at their saved paths when rollback cannot finish. A restart with the live path still empty or missing and evidence of an earlier database returns to recovery.
-- **Start fresh** is offered only for the missing/empty database recovery state. Confirm the choice before creating an empty profile, recheck the live path, and preserve existing backups.
+  1. Reconcile any prior `recovery-intent.json` first; fail closed on any conflict. Validate as in §9.3 steps 1–4 (`page_size` skipped).
+  2. Make the upgraded candidate a standalone database and flush it. Record a validated relative-filename `recovery-intent.json` containing the candidate length/SHA-256 and each live original's suffix (`""`, `"-wal"`, `"-shm"`, `"-journal"`) length/SHA-256.
+  3. Move original live files aside without clobbering (`broken-<ts>.db…`), advance the durable intent phase, and publish the complete candidate at the live path without overwriting an occupied destination.
+  4. Re-confirm published identity (never treating live path presence alone as proof of publication), clean staging/intent, `Db::open`, then switch to `Active`.
+  - If moving the originals or publishing the candidate is interrupted or fails, verified reconciliation puts originals back (main database first, never attaching old sidecars to an unexpected DB) and fails closed while preserving all bytes on any conflict.
+- **Start fresh** is offered only when the live database path is confirmed missing or empty (not when live metadata is indeterminate or a recovery conflict exists). Confirm the choice before creating an empty profile, recheck the live path at the actual move boundary (never moving an unexpected non-empty live database), and preserve existing backups.
+- **Scope & durability boundary:** `athena.lock` serializes concurrent Athena instances. Concurrent external writers are outside lock guarantees and trigger fail-closed `RecoveryConflict` preservation if live/staged/backup files diverge. Publication/rollback protects against process interruption (`SIGKILL`/crash); surviving sudden OS/disk power loss additionally depends on Windows filesystem metadata/journal ordering because directory entries are not flushed directly via directory handles on Windows.
 
 ## §12 UI and copy — Frozen for 1.1
 
@@ -575,3 +576,5 @@ These reserve names and rules. They are not frozen.
 - 2026-11-17 - Final review: restore owner validation applies after onboarding; daily snapshot dates display as calendar dates even across timezone/DST changes; recovery cleans staging and rolls back partial broken-file moves. Successful restore/import opens Month with cleared filters.
 
 - 2026-11-18 — §11 rejects implicit onboarding after an interrupted recovery, preserves the rollback journal, publishes a complete candidate, and requires explicit confirmation to start fresh.
+- 2026-11-18 — §11 adds a startup recovery probe distinguishing first launch, missing/empty with evidence or scan failures, indeterminate live metadata, and intent conflicts, plus durable `recovery-intent.json` reconciliation with checksum-verified publish and fail-closed rollback.
+- 2026-11-18 — §11 hardens non-clobbering file moves without destructor ownership of existing files, shares post-publish verification across normal and reconciled paths, rechecks live state at move/sidecar boundaries, keeps blocked recoverable directories non-fatal at startup, and documents `athena.lock` and process-kill vs power-loss boundaries.

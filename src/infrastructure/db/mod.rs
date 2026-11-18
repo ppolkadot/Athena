@@ -163,6 +163,14 @@ fn peek_version(path: &Path) -> Result<i64> {
     let corrupt = || AppError::Corrupt {
         path: path.display().to_string(),
     };
+    let mut header = [0_u8; 100];
+    let mut file = std::fs::File::open(path)?;
+    if std::io::Read::read_exact(&mut file, &mut header).is_err()
+        || &header[..16] != b"SQLite format 3\0"
+    {
+        return Err(corrupt());
+    }
+    drop(file);
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|_| corrupt())?;
     migrations::schema_version(&conn).map_err(|err| match err {

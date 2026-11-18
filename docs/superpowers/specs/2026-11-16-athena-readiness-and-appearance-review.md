@@ -1,5 +1,7 @@
 # Athena next-step readiness and appearance review
 
+> **Version assignment note:** [Canonical contracts](contracts.md) D9 later split the pre-split release numbering used below: **1.1.0** = Safe data (`0002`–`0003`, format `2`), **1.2.0** = Daily speed (`0004_templates`, format `3`, see [1.2.0 Daily speed plan](../plans/2026-11-18-athena-1.2.0-daily-speed.md)), **1.3.0** = Appearance (`0005_appearance`, format `4`), and **1.4.0** = Goals & closings (`0006_goals`, `0007_closings`, format `5`). Obsolete `1.2`/`0003`/format-`3` Goals assignments below are superseded by `1.4.0`.
+
 **Date:** 2026-11-16
 **Scope:** Review the 1.0.2 foundation, 1.1 workflow/design plan, 1.2 goals/closings plan, and the supplied JavaScript/WebGL and CSS references. This is a review and requirements supplement, not a replacement executable implementation plan.
 **Verdict:** Proceed with foundation verification, plan reconciliation, and a bounded native rendering experiment. Do not execute the existing 1.1/1.2 task examples unchanged or describe those releases as ready to ship.

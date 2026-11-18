@@ -160,6 +160,12 @@ pub enum AppError {
     Corrupt { path: String },
     #[error("the live database is missing or empty")]
     LiveDatabaseMissingOrEmpty,
+    #[error("the live database is missing or empty, and inspecting recovery files failed: {0}")]
+    RecoveryScanUncertain(String),
+    #[error("the active database metadata could not be verified: {0}")]
+    LiveMetadataIndeterminate(String),
+    #[error("a previous recovery attempt left conflicting files: {0}")]
+    RecoveryConflict(String),
     #[error("invalid amount: {0}")]
     Money(String),
     #[error("invalid data: {0}")]
