@@ -20,6 +20,7 @@ use crate::ui::theme::{Palette, palette, typography};
 pub enum RecoveryEvent {
     OpenDataFolder,
     Quit,
+    StartFresh,
     Restore(std::path::PathBuf),
 }
 
@@ -70,6 +71,9 @@ pub fn show(ui: &mut egui::Ui, state: &RecoveryState) -> Vec<RecoveryEvent> {
             ui.horizontal(|ui| {
                 if ui.button(s.open_data_folder).clicked() {
                     events.push(RecoveryEvent::OpenDataFolder);
+                }
+                if state.can_start_fresh() && ui.button(s.recovery_start_fresh).clicked() {
+                    events.push(RecoveryEvent::StartFresh);
                 }
                 if ui.button(s.recovery_quit).clicked() {
                     events.push(RecoveryEvent::Quit);

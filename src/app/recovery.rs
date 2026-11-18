@@ -63,8 +63,13 @@ impl RecoveryState {
     pub fn detail(&self, language: Language) -> String {
         match &self.error {
             AppError::Corrupt { path } => strings(language).startup_corrupt.replace("{path}", path),
+            AppError::LiveDatabaseMissingOrEmpty => strings(language).recovery_missing.into(),
             other => other.to_string(),
         }
+    }
+
+    pub(crate) fn can_start_fresh(&self) -> bool {
+        matches!(self.error, AppError::LiveDatabaseMissingOrEmpty)
     }
 
     /// The warning shown before a restore when the data is newer than this build, which a restore
@@ -87,6 +92,7 @@ impl RecoveryState {
 /// [`AppCore`] the caller swaps in.
 pub struct RecoveryApp {
     state: RecoveryState,
+    confirm_start_fresh: bool,
 }
 
 impl RecoveryApp {
@@ -94,7 +100,10 @@ impl RecoveryApp {
     pub fn new(ctx: &egui::Context, state: RecoveryState) -> Self {
         theme::install_fonts(ctx);
         theme::apply(ctx, Theme::Dark);
-        Self { state }
+        Self {
+            state,
+            confirm_start_fresh: false,
+        }
     }
 
     #[must_use]
@@ -109,6 +118,7 @@ impl RecoveryApp {
             match event {
                 RecoveryEvent::OpenDataFolder => open_folder(&self.state.dirs.root),
                 RecoveryEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                RecoveryEvent::StartFresh => self.confirm_start_fresh = true,
                 RecoveryEvent::Restore(path) => {
                     if let Some(core) = restore_and_activate(&mut self.state, &path) {
                         return Some(core);
@@ -116,7 +126,44 @@ impl RecoveryApp {
                 }
             }
         }
+        if self.confirm_start_fresh {
+            let s = strings(self.state.language);
+            let modal =
+                egui::Modal::new(egui::Id::unique("recovery-start-fresh")).show(&ctx, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.heading(s.recovery_start_fresh);
+                    ui.label(s.recovery_start_fresh_confirm);
+                    ui.horizontal(|ui| {
+                        (
+                            ui.button(s.cancel).clicked(),
+                            ui.button(s.recovery_start_fresh).clicked(),
+                        )
+                    })
+                    .inner
+                });
+            if modal.inner.0 || modal.should_close() {
+                self.confirm_start_fresh = false;
+            } else if modal.inner.1 {
+                self.confirm_start_fresh = false;
+                return start_fresh_and_activate(&mut self.state);
+            }
+        }
         None
+    }
+}
+
+fn start_fresh_and_activate(state: &mut RecoveryState) -> Option<AppCore> {
+    let result = recovery::start_fresh(&state.dirs, Utc::now())
+        .and_then(|()| Db::open(&state.dirs.db_path))
+        // An explicit fresh start must not rotate or replace the user's old backups.
+        .and_then(|db| AppCore::open(db, state.dirs.clone(), false));
+    match result {
+        Ok(core) => Some(core),
+        Err(err) => {
+            tracing::warn!("could not start a fresh profile: {err}");
+            state.restore_error = Some(strings(state.language).recovery_start_fresh_failed.into());
+            None
+        }
     }
 }
 
@@ -250,6 +297,28 @@ mod tests {
             strings(Language::En).recovery_restore_failed,
             "the message keeps its detail"
         );
+    }
+
+    #[test]
+    fn start_fresh_keeps_backups_and_enters_onboarding_only_after_confirmation() {
+        let (_dir, dirs) = temp_dirs();
+        let backup = dirs.backups_dir.join("manual-2026-11-16_12-00-00.db");
+        write_valid_db(&backup);
+        let backup_bytes = std::fs::read(&backup).unwrap();
+        let AppSession::Recovery(mut state) = crate::open_session(dirs.clone()).unwrap() else {
+            panic!("existing backups must prompt for recovery");
+        };
+        assert!(state.can_start_fresh());
+        assert!(!dirs.db_path.exists());
+        let core = start_fresh_and_activate(&mut state).unwrap();
+        assert!(!core.vm.onboarding_complete());
+        assert_eq!(std::fs::read(&backup).unwrap(), backup_bytes);
+        assert_eq!(std::fs::read_dir(&dirs.backups_dir).unwrap().count(), 1);
+        drop(core);
+        assert!(matches!(
+            crate::open_session(dirs).unwrap(),
+            AppSession::Active(_)
+        ));
     }
 
     #[test]

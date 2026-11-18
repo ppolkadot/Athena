@@ -60,13 +60,19 @@ impl AppCore {
     /// # Errors
     /// Database errors loading the first view.
     pub fn new(db: Db, dirs: AppDirs) -> Result<Self> {
+        Self::open(db, dirs, true)
+    }
+
+    fn open(db: Db, dirs: AppDirs, run_startup_tasks: bool) -> Result<Self> {
         let mut core = Self {
             store: Store::new(db, dirs),
             vm: ViewModel::new(Language::from_system()),
             ui: UiState::default(),
         };
-        core.store
-            .run_startup_tasks(chrono::Local::now().date_naive(), chrono::Utc::now());
+        if run_startup_tasks {
+            core.store
+                .run_startup_tasks(chrono::Local::now().date_naive(), chrono::Utc::now());
+        }
         core.sync()?;
         Ok(core)
     }

@@ -461,14 +461,15 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
 
 `AthenaApp` holds the session. `Store.db` stays a non-optional `Db`.
 
-- **Entered when** `Db::open` fails with `Corrupt`, `Migration`, `SchemaTooNew`, or `Db`. `AlreadyRunning` and `Dirs` keep the message-box path.
+- **Entered when** `Db::open` fails with `Corrupt`, `Migration`, `SchemaTooNew`, or `Db`, or before opening when the live database is empty, or when it is missing alongside a recognized backup, SQLite sidecar, or moved-aside database file. A missing database without any of those files is first launch. `AlreadyRunning` and `Dirs` keep the message-box path.
 - **The recovery screen** (solid surface, no wallpaper in later releases) shows the localized error, the data folder, and the backups list (read-only listing). Actions: **Open data folder**, **Quit**, and **Restore this backup**. For `SchemaTooNew`, restore warns that newer data will be replaced.
 - **Restore from recovery:**
   1. Validate as in §9.3 steps 1–4. The `page_size` comparison has no live database to match, so it is skipped; identity, integrity, version, migrations, and the domain invariants still run.
-  2. Rename the broken `athena.db`, `-wal` and `-shm` to `broken-<ts>.db…`, which frees the live path.
-  3. Write the staged, upgraded copy to the live path with the backup API.
+  2. Make the upgraded candidate a standalone database and flush it. Rename the broken `athena.db` and its `-wal`, `-shm` and `-journal` sidecars to a unique `broken-<ts>.db…` set.
+  3. Publish the complete candidate at the live path without overwriting an occupied destination.
   4. `Db::open`, then switch to `Active`.
-  - A failure at any step leaves the broken files renamed but intact, and stays in recovery.
+  - If moving the originals or publishing the candidate fails, restore the original names where possible and retain files at their saved paths when rollback cannot finish. A restart with the live path still empty or missing and evidence of an earlier database returns to recovery.
+- **Start fresh** is offered only for the missing/empty database recovery state. Confirm the choice before creating an empty profile, recheck the live path, and preserve existing backups.
 
 ## §12 UI and copy — Frozen for 1.1
 
@@ -572,3 +573,5 @@ These reserve names and rules. They are not frozen.
 - 2026-11-17 — Review pass. `§9.1`: added `BackupFile.suffix` for two backups in one second; `§9.2`: added `delete_manual`. `§9.3`: identity is established before the `TooNew` check, and upgrade also enforces the single non-archived owner. `§10.4`: names compared after a Unicode fold, active names unique, `OnboardingIncomplete`, and legacy scope mismatches widen the category instead of failing (removed `CategoryScopeMismatch`); preview names the widened categories. `§11`: recovery restore skips the page-size comparison. `§12`: manual-row Delete…, inline backup failure that keeps drafts, and `SettingsError::ScopeInUse`.
 
 - 2026-11-17 - Final review: restore owner validation applies after onboarding; daily snapshot dates display as calendar dates even across timezone/DST changes; recovery cleans staging and rolls back partial broken-file moves. Successful restore/import opens Month with cleared filters.
+
+- 2026-11-18 — §11 rejects implicit onboarding after an interrupted recovery, preserves the rollback journal, publishes a complete candidate, and requires explicit confirmation to start fresh.

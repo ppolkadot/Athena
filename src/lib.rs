@@ -9,7 +9,7 @@ pub mod ui;
 use crate::app::recovery::{AppSession, RecoveryApp, RecoveryState};
 use crate::app::{AppCore, AthenaApp};
 use crate::infrastructure::config::{AppDirs, init_tracing};
-use crate::infrastructure::db::Db;
+use crate::infrastructure::db::{Db, recovery as db_recovery};
 use crate::shared::error::{AppError, Result};
 
 /// Resolve folders, take the single-instance lock, start logging, open the window.
@@ -51,6 +51,7 @@ pub fn is_recoverable(error: &AppError) -> bool {
     matches!(
         error,
         AppError::Corrupt { .. }
+            | AppError::LiveDatabaseMissingOrEmpty
             | AppError::Migration(_)
             | AppError::SchemaTooNew { .. }
             | AppError::Db(_)
@@ -62,7 +63,11 @@ pub fn is_recoverable(error: &AppError) -> bool {
 /// # Errors
 /// Startup failures that the recovery screen cannot help with, such as [`AppError::Dirs`].
 pub fn open_session(dirs: AppDirs) -> Result<AppSession> {
-    let opened = Db::open(&dirs.db_path).and_then(|db| AppCore::new(db, dirs.clone()));
+    let opened = if db_recovery::needs_recovery_before_open(&dirs)? {
+        Err(AppError::LiveDatabaseMissingOrEmpty)
+    } else {
+        Db::open(&dirs.db_path).and_then(|db| AppCore::new(db, dirs.clone()))
+    };
     match opened {
         Ok(core) => Ok(AppSession::Active(Box::new(core))),
         Err(err) if is_recoverable(&err) => {
@@ -172,5 +177,28 @@ mod tests {
         let session = open_session(dirs).unwrap();
 
         assert!(matches!(session, AppSession::Active(_)));
+    }
+    #[test]
+    fn interrupted_recovery_does_not_create_a_fresh_profile_on_restart() {
+        let (_dir, dirs) = temp_dirs();
+        let broken = dirs.root.join("broken-2026-11-17_12-00-00.db");
+        std::fs::write(&broken, b"original database").unwrap();
+        assert!(matches!(
+            open_session(dirs.clone()).unwrap(),
+            AppSession::Recovery(_)
+        ));
+        assert!(!dirs.db_path.exists());
+        assert_eq!(std::fs::read(broken).unwrap(), b"original database");
+    }
+
+    #[test]
+    fn recovery_does_not_initialize_a_zero_byte_database() {
+        let (_dir, dirs) = temp_dirs();
+        std::fs::write(&dirs.db_path, []).unwrap();
+        assert!(matches!(
+            open_session(dirs.clone()).unwrap(),
+            AppSession::Recovery(_)
+        ));
+        assert_eq!(std::fs::metadata(&dirs.db_path).unwrap().len(), 0);
     }
 }
