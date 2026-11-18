@@ -2798,7 +2798,7 @@ mod tests {
         let cur_cats = harness.state().core.vm.all_categories.len();
         assert!(cur_cats > 0);
         let expected_counts = format!(
-            "Incoming: 2 people · 2 categories · 3 entries\nCurrent: 2 people · {cur_cats} categories · 1 entries · 1 in Trash (will be emptied)"
+            "Incoming: 2 people · 2 categories · 3 entries · 0 templates\nCurrent: 2 people · {cur_cats} categories · 1 entries · 0 templates · 1 in Trash (will be emptied)"
         );
         assert!(harness.query_by_label(expected_counts.as_str()).is_some());
         assert!(

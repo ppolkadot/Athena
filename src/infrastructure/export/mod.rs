@@ -4,6 +4,7 @@
 pub mod csv;
 pub mod format_v1;
 pub mod format_v2;
+pub mod format_v3;
 pub mod json;
 
 use std::fs::File;

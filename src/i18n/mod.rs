@@ -12,6 +12,7 @@ use chrono::{Datelike as _, NaiveDate, Weekday};
 use crate::domain::date::YearMonth;
 use crate::domain::money::MoneyError;
 use crate::domain::settings::Language;
+use crate::domain::template::TemplateError;
 use crate::domain::transaction::{TransactionType, ValidationError};
 use crate::infrastructure::db::backup::BackupKind;
 use crate::shared::error::{AppError, ImportError, RestoreError};
@@ -348,6 +349,35 @@ strings! {
     m_too_large,
     settlement_from_to,
     clear_filter_chip,
+    err_import_non_positive_template_id,
+    err_import_duplicate_template_id,
+    err_import_blank_template_name,
+    err_import_duplicate_template_name,
+    err_import_blank_template_title,
+    err_import_non_positive_template_amount,
+    err_import_invalid_template_kind,
+    err_import_invalid_template_responsibility,
+    err_import_template_missing_category,
+    err_import_template_missing_payer,
+    err_import_template_missing_person,
+    err_import_invalid_template_shape,
+    err_import_invalid_template_timestamp,
+    tpl_err_name_empty,
+    tpl_err_title_empty,
+    tpl_err_amount,
+    tpl_err_settlement,
+    tpl_err_income_shape,
+    tpl_err_none_has_shares,
+    tpl_err_person_full,
+    tpl_err_shared_two,
+    tpl_err_even_shares,
+    tpl_err_name_taken,
+    tpl_err_person_missing,
+    tpl_err_person_archived,
+    tpl_err_category_missing,
+    tpl_err_category_archived,
+    tpl_err_category_incompatible,
+    import_preview_format_v3,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -626,6 +656,31 @@ pub fn startup_error_message(error: &AppError, language: Language) -> String {
     format!("{}\n\n{specific}", s.startup_failed)
 }
 
+/// Localized message for a template validation failure.
+#[must_use]
+pub fn template_error_message(error: &TemplateError, language: Language) -> String {
+    let s = strings(language);
+    match error {
+        TemplateError::NameEmpty => s.tpl_err_name_empty,
+        TemplateError::TitleEmpty => s.tpl_err_title_empty,
+        TemplateError::AmountNotPositive => s.tpl_err_amount,
+        TemplateError::SettlementNotAllowed => s.tpl_err_settlement,
+        TemplateError::IncomeShape => s.tpl_err_income_shape,
+        TemplateError::NoneHasShares => s.tpl_err_none_has_shares,
+        TemplateError::PersonNeedsOneFullShare => s.tpl_err_person_full,
+        TemplateError::SharedNeedsTwoPeople => s.tpl_err_shared_two,
+        TemplateError::EvenSharesNotCanonical => s.tpl_err_even_shares,
+        TemplateError::NameTaken => s.tpl_err_name_taken,
+        TemplateError::PersonMissing(_) => s.tpl_err_person_missing,
+        TemplateError::PersonArchived(_) => s.tpl_err_person_archived,
+        TemplateError::CategoryMissing => s.tpl_err_category_missing,
+        TemplateError::CategoryArchived => s.tpl_err_category_archived,
+        TemplateError::CategoryIncompatible => s.tpl_err_category_incompatible,
+        TemplateError::Shares(inner) => return validation_message(inner, language),
+    }
+    .to_string()
+}
+
 /// Localized message for a money-input failure.
 #[must_use]
 pub fn money_error_message(error: MoneyError, language: Language) -> &'static str {
@@ -824,6 +879,49 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
             .replace("{id}", &id.to_string()),
         ImportError::InvalidTransactionTimestamp { id } => s
             .err_import_invalid_transaction_timestamp
+            .replace("{id}", &id.to_string()),
+        ImportError::NonPositiveTemplateId { index, id } => s
+            .err_import_non_positive_template_id
+            .replace("{index}", &index.to_string())
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicateTemplateId { id } => s
+            .err_import_duplicate_template_id
+            .replace("{id}", &id.to_string()),
+        ImportError::BlankTemplateName { id } => s
+            .err_import_blank_template_name
+            .replace("{id}", &id.to_string()),
+        ImportError::DuplicateTemplateName { name } => {
+            s.err_import_duplicate_template_name.replace("{name}", name)
+        }
+        ImportError::BlankTemplateTitle { id } => s
+            .err_import_blank_template_title
+            .replace("{id}", &id.to_string()),
+        ImportError::NonPositiveTemplateAmount { id } => s
+            .err_import_non_positive_template_amount
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidTemplateKind { id } => s
+            .err_import_invalid_template_kind
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidTemplateResponsibility { id } => s
+            .err_import_invalid_template_responsibility
+            .replace("{id}", &id.to_string()),
+        ImportError::TemplateMissingCategory { id, category_id } => s
+            .err_import_template_missing_category
+            .replace("{id}", &id.to_string())
+            .replace("{category_id}", &category_id.to_string()),
+        ImportError::TemplateMissingPayer { id, payer_id } => s
+            .err_import_template_missing_payer
+            .replace("{id}", &id.to_string())
+            .replace("{payer_id}", &payer_id.to_string()),
+        ImportError::TemplateMissingPerson { id, person_id } => s
+            .err_import_template_missing_person
+            .replace("{id}", &id.to_string())
+            .replace("{person_id}", &person_id.to_string()),
+        ImportError::InvalidTemplateShape { id } => s
+            .err_import_invalid_template_shape
+            .replace("{id}", &id.to_string()),
+        ImportError::InvalidTemplateTimestamp { id } => s
+            .err_import_invalid_template_timestamp
             .replace("{id}", &id.to_string()),
         ImportError::Overflow => s.err_import_overflow.to_string(),
         ImportError::SnapshotFailed(detail) => {

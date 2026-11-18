@@ -1029,6 +1029,7 @@ mod tests {
                 created_at: "2026-11-01T00:00:00Z".into(),
             }],
             transactions: vec![],
+            templates: vec![],
             widened_categories: Vec::new(),
         }
     }
