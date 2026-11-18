@@ -41,6 +41,9 @@ jobs:
       - name: Run locked test suite
         run: cargo test --locked
 
+      - name: Run hardware-independent spike example tests
+        run: cargo test --locked --example glass_spike -- --skip real_wgpu_
+
       - name: Run document lint
         shell: bash
         run: bash docs/superpowers/doc-lint.sh
@@ -84,6 +87,8 @@ jobs:
           $iscc = Join-Path $compilerDir 'ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "ISCC.exe not found at $iscc" }
           "ATHENA_ISCC=$iscc" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "ATHENA_INNO_URL=$url" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "ATHENA_INNO_SHA256=$expected" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
 
       - name: Compile installer
         shell: pwsh
@@ -101,20 +106,48 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "ATHENA_VERSION=$version" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
 
-      - name: Generate SHA256SUMS.txt
+      - name: Generate BUILD-INFO.txt and SHA256SUMS.txt
         shell: pwsh
         run: |
           $dir = New-Item -ItemType Directory -Force target\package
-          Copy-Item target\release\athena.exe (Join-Path $dir "athena-$env:ATHENA_VERSION-windows-x64.exe")
-          Copy-Item "target\installer\Athena-$env:ATHENA_VERSION-setup.exe" $dir
+          $exeName = "athena-$env:ATHENA_VERSION-windows-x64.exe"
+          $setupName = "Athena-$env:ATHENA_VERSION-setup.exe"
+          Copy-Item target\release\athena.exe (Join-Path $dir $exeName)
+          Copy-Item (Join-Path 'target\installer' $setupName) $dir
           Copy-Item assets\fonts\LICENSE.txt $dir
-          $files = @(
-            (Get-Item (Join-Path $dir "athena-$env:ATHENA_VERSION-windows-x64.exe")),
-            (Get-Item (Join-Path $dir "Athena-$env:ATHENA_VERSION-setup.exe")),
+          $artifacts = @(
+            (Get-Item (Join-Path $dir $exeName)),
+            (Get-Item (Join-Path $dir $setupName)),
             (Get-Item (Join-Path $dir 'LICENSE.txt'))
           )
-          $lines = foreach ($f in $files) {
-            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+          $artifactLines = foreach ($f in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+            "$($f.Name) sha256=$hash bytes=$($f.Length)"
+          }
+          $runUrl = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+          $buildInfo = @(
+            "version=$env:ATHENA_VERSION"
+            "git_ref=$env:GITHUB_REF"
+            "git_ref_name=$env:GITHUB_REF_NAME"
+            "git_sha=$env:GITHUB_SHA"
+            "event_name=$env:GITHUB_EVENT_NAME"
+            "workflow=$env:GITHUB_WORKFLOW"
+            "run_id=$env:GITHUB_RUN_ID"
+            "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+            "run_url=$runUrl"
+            "rustc_version=$(rustc --version)"
+            "cargo_version=$(cargo --version)"
+            "inno_setup_url=$env:ATHENA_INNO_URL"
+            "inno_setup_sha256=$env:ATHENA_INNO_SHA256"
+            ""
+            "[artifacts]"
+          ) + $artifactLines
+          $buildInfoPath = Join-Path $dir 'BUILD-INFO.txt'
+          $buildInfo | Set-Content -LiteralPath $buildInfoPath -Encoding utf8
+
+          $checksumFiles = $artifacts + @((Get-Item $buildInfoPath))
+          $lines = foreach ($f in $checksumFiles) {
+            $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
             "$hash  $($f.Name)"
           }
           $lines | Set-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt') -Encoding ascii
@@ -127,5 +160,6 @@ jobs:
             target/package/athena-*-windows-x64.exe
             target/package/Athena-*-setup.exe
             target/package/LICENSE.txt
+            target/package/BUILD-INFO.txt
             target/package/SHA256SUMS.txt
           if-no-files-found: error

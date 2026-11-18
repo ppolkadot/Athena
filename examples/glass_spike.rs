@@ -417,6 +417,21 @@ impl AthenaGlassSpikeApp {
         self.draw_panel_contents(ctx, panel_rect, theme, effective);
     }
 
+    fn paint_tint_underlay(
+        panel_bg_painter: &egui::Painter,
+        panel_rect: Rect,
+        corner: CornerRadius,
+        theme: SpikeTheme,
+    ) {
+        panel_bg_painter.rect_filled(panel_rect, corner, theme.tint_color());
+        panel_bg_painter.rect_stroke(
+            panel_rect,
+            corner,
+            Stroke::new(1.0, theme.border),
+            StrokeKind::Inside,
+        );
+    }
+
     fn paint_panel_surface(
         &self,
         ctx: &egui::Context,
@@ -440,15 +455,15 @@ impl AthenaGlassSpikeApp {
                 );
             }
             EffectiveSurface::Tint => {
-                panel_bg_painter.rect_filled(panel_rect, corner, theme.tint_color());
-                panel_bg_painter.rect_stroke(
-                    panel_rect,
-                    corner,
-                    Stroke::new(1.0, theme.border),
-                    StrokeKind::Inside,
-                );
+                Self::paint_tint_underlay(&panel_bg_painter, panel_rect, corner, theme);
             }
             EffectiveSurface::Glass => {
+                // Spike-only Tint underlay: `fs_glass` outputs premultiplied alpha = 1.0 inside
+                // the rounded panel, replacing this underlay cleanly in normal frames. If a
+                // post-UI `wgpu` validation error causes `GlassPanelCallback::paint` to skip on
+                // this frame, text keeps a WCAG-AA tinted backdrop until the next frame switches
+                // to `EffectiveSurface::Solid { fallback: Some(FallbackReason::ValidationError) }`.
+                Self::paint_tint_underlay(&panel_bg_painter, panel_rect, corner, theme);
                 if let Some(telemetry) = &self.telemetry {
                     let callback = eframe::egui_wgpu::Callback::new_paint_callback(
                         panel_rect,
@@ -466,6 +481,7 @@ impl AthenaGlassSpikeApp {
                             border_gamma: theme.border_gamma_f32(),
                             force_reblur: self.bench.should_force_reblur(),
                             telemetry: telemetry.clone(),
+                            egui_ctx: Some(ctx.clone()),
                         },
                     );
                     panel_bg_painter.add(callback);

@@ -11,13 +11,15 @@ Capture the repository review as one brief per version, including correctness fi
 - [Canonical contracts](contracts.md)
 - [Phase 0 plan: finish 1.0.2 and prepare for 1.1](../plans/2026-11-16-athena-phase-0-foundation.md)
 - [1.1.0 Safe data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md)
+- [1.2.0 Daily speed plan](../plans/2026-11-18-athena-1.2.0-daily-speed.md) (`0004_templates.sql`, document format `3`)
+- [1.3.0 Native appearance plan](../plans/2026-11-17-athena-native-appearance.md) (`0005_appearance.sql`, document format `4`)
 - [1.0.1: shipped foundation and remaining patch work](2026-11-13-athena-1.0.1-revision-brief.md)
 - [1.0.2: contrast and foundation follow-up](2026-11-13-athena-1.0.2-revision-brief.md)
 - [1.1.0: reliable daily workflows and Apple/Onyx design](2026-11-13-athena-1.1.0-revision-brief.md)
-- [1.2.0: goals and trustworthy closing snapshots](2026-11-13-athena-1.2.0-revision-brief.md)
+- [Goals and closings revision brief](2026-11-13-athena-1.2.0-revision-brief.md) (originally numbered `1.2.0`; version/migration/format assignments superseded by **1.4.0** / `0006`–`0007` / format `5` per `contracts.md` D9)
 - [2026-11-16 readiness and native appearance review](2026-11-16-athena-readiness-and-appearance-review.md)
 
-The original [1.0.0 plan](../plans/2026-11-11-athena-1.0.0.md) remains historical baseline documentation. The existing 1.0.1, 1.1.0, and 1.2.0 implementation plans link to these briefs and distinguish shipped history from required revisions. Older task snippets still need reconciliation; a reference to this brief alone does not make them executable.
+The original [1.0.0 plan](../plans/2026-11-11-athena-1.0.0.md) remains historical baseline documentation. Where the older 2026-11-13 briefs assign templates/XLSX to `1.1.0` or Goals/closings to `1.2.0` (`0003` / format `3`), [Canonical contracts](contracts.md) D9 supersedes those version numbers: **1.1.0** is Safe data (`0002`–`0003`, format `2`), **1.2.0** is Daily speed (`0004_templates`, format `3`), **1.3.0** is Appearance (`0005_appearance`, format `4`), and **1.4.0** is Goals & closings (`0006_goals`, `0007_closings`, format `5`). Older task snippets still need reconciliation; a reference to this brief alone does not make them executable.
 
 Current source is evidence of implementation, not proof that every release check passed. In particular, the smoke record includes checks performed before the most recent font/layout rebuild; those observations must not silently be attributed to a different executable hash.
 

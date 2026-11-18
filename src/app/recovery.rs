@@ -64,12 +64,74 @@ impl RecoveryState {
         match &self.error {
             AppError::Corrupt { path } => strings(language).startup_corrupt.replace("{path}", path),
             AppError::LiveDatabaseMissingOrEmpty => strings(language).recovery_missing.into(),
+            AppError::RecoveryScanUncertain(detail) => strings(language)
+                .recovery_scan_uncertain
+                .replace("{detail}", detail),
+            AppError::LiveMetadataIndeterminate(detail) => strings(language)
+                .recovery_live_indeterminate
+                .replace("{detail}", detail),
+            AppError::RecoveryConflict(detail) => strings(language)
+                .recovery_conflict
+                .replace("{detail}", detail),
             other => other.to_string(),
         }
     }
 
     pub(crate) fn can_start_fresh(&self) -> bool {
-        matches!(self.error, AppError::LiveDatabaseMissingOrEmpty)
+        matches!(
+            self.error,
+            AppError::LiveDatabaseMissingOrEmpty | AppError::RecoveryScanUncertain(_)
+        )
+    }
+
+    /// Re-probe disk recovery state and backup list after a failed recovery operation so UI copy
+    /// and `Start fresh` eligibility reflect the current disk state.
+    pub(crate) fn refresh_after_error(&mut self, operation_err: &AppError) {
+        self.backups = backup::list(&self.dirs.backups_dir).unwrap_or_else(|err| {
+            tracing::warn!("could not list backups for recovery: {err}");
+            Vec::new()
+        });
+        match recovery::probe_startup(&self.dirs) {
+            recovery::StartupProbe::Conflict(detail) => {
+                self.error = AppError::RecoveryConflict(detail);
+            }
+            recovery::StartupProbe::IndeterminateLive(detail) => {
+                self.error = AppError::LiveMetadataIndeterminate(detail);
+            }
+            recovery::StartupProbe::MissingOrEmpty {
+                scan_error: Some(detail),
+                ..
+            } => {
+                self.error = AppError::RecoveryScanUncertain(detail);
+            }
+            recovery::StartupProbe::MissingOrEmpty {
+                scan_error: None, ..
+            }
+            | recovery::StartupProbe::FirstLaunch => {
+                self.error = AppError::LiveDatabaseMissingOrEmpty;
+            }
+            recovery::StartupProbe::ReadyToOpen => {
+                self.error = match operation_err {
+                    AppError::Corrupt { path } => AppError::Corrupt { path: path.clone() },
+                    AppError::Migration(msg) => AppError::Migration(msg.clone()),
+                    AppError::SchemaTooNew { found, supported } => AppError::SchemaTooNew {
+                        found: *found,
+                        supported: *supported,
+                    },
+                    AppError::RecoveryConflict(detail) => {
+                        AppError::RecoveryConflict(detail.clone())
+                    }
+                    AppError::LiveMetadataIndeterminate(detail) => {
+                        AppError::LiveMetadataIndeterminate(detail.clone())
+                    }
+                    _ if self.can_start_fresh() => AppError::RecoveryConflict(format!(
+                        "{} is no longer missing or empty",
+                        self.dirs.db_path.display()
+                    )),
+                    _ => return,
+                };
+            }
+        }
     }
 
     /// The warning shown before a restore when the data is newer than this build, which a restore
@@ -158,10 +220,14 @@ fn start_fresh_and_activate(state: &mut RecoveryState) -> Option<AppCore> {
         // An explicit fresh start must not rotate or replace the user's old backups.
         .and_then(|db| AppCore::open(db, state.dirs.clone(), false));
     match result {
-        Ok(core) => Some(core),
+        Ok(core) => {
+            state.restore_error = None;
+            Some(core)
+        }
         Err(err) => {
             tracing::warn!("could not start a fresh profile: {err}");
             state.restore_error = Some(strings(state.language).recovery_start_fresh_failed.into());
+            state.refresh_after_error(&err);
             None
         }
     }
@@ -209,6 +275,7 @@ fn record_failure(state: &mut RecoveryState, err: &AppError) {
             .recovery_restore_failed
             .replace("{detail}", &detail),
     );
+    state.refresh_after_error(err);
 }
 
 #[cfg(test)]
@@ -341,5 +408,72 @@ mod tests {
             Money::from_cents(10_000)
         );
         assert!(state.restore_error.is_none());
+    }
+
+    #[test]
+    fn start_fresh_gating_and_localized_details_cover_probe_and_conflict_states() {
+        let (_dir, dirs) = temp_dirs();
+        let scan = RecoveryState::new(
+            dirs.clone(),
+            AppError::RecoveryScanUncertain("permission denied".into()),
+        );
+        assert!(scan.can_start_fresh());
+
+        let indeterminate = RecoveryState::new(
+            dirs.clone(),
+            AppError::LiveMetadataIndeterminate("not a regular file".into()),
+        );
+        assert!(!indeterminate.can_start_fresh());
+
+        let conflict = RecoveryState::new(
+            dirs,
+            AppError::RecoveryConflict("unexpected live file".into()),
+        );
+        assert!(!conflict.can_start_fresh());
+
+        for state in [&scan, &indeterminate, &conflict] {
+            let en = state.detail(Language::En);
+            let pt = state.detail(Language::PtBr);
+            assert!(!en.trim().is_empty() && !pt.trim().is_empty());
+            assert_ne!(en, pt);
+            assert!(!en.contains('{') && !pt.contains('{'));
+        }
+    }
+
+    #[test]
+    fn failed_recovery_operations_refresh_eligibility_and_error_state() {
+        // 1. Start fresh fails when a non-empty live database appears -> Start fresh becomes disabled.
+        {
+            let (_dir, dirs) = temp_dirs();
+            let backup = dirs.backups_dir.join("manual-2026-11-16_12-00-00.db");
+            write_valid_db(&backup);
+            let AppSession::Recovery(mut state) = crate::open_session(dirs.clone()).unwrap() else {
+                panic!("existing backup must enter Recovery");
+            };
+            assert!(state.can_start_fresh());
+
+            std::fs::write(&dirs.db_path, b"unexpected nonempty live db").unwrap();
+            assert!(start_fresh_and_activate(&mut state).is_none());
+            assert!(state.restore_error.is_some());
+            assert!(!state.can_start_fresh());
+            assert!(matches!(state.error, AppError::RecoveryConflict(_)));
+        }
+
+        // 2. Restore fails because a conflicting intent appeared on disk -> state refreshes to Conflict.
+        {
+            let (_dir, dirs) = temp_dirs();
+            let backup = dirs.backups_dir.join("manual-2026-11-16_12-00-00.db");
+            write_valid_db(&backup);
+            let AppSession::Recovery(mut state) = crate::open_session(dirs.clone()).unwrap() else {
+                panic!("existing backup must enter Recovery");
+            };
+            assert!(state.can_start_fresh());
+
+            std::fs::write(dirs.root.join("recovery-intent.json"), b"corrupt json").unwrap();
+            assert!(restore_and_activate(&mut state, &backup).is_none());
+            assert!(state.restore_error.is_some());
+            assert!(!state.can_start_fresh());
+            assert!(matches!(state.error, AppError::RecoveryConflict(_)));
+        }
     }
 }

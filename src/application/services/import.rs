@@ -207,12 +207,15 @@ fn dispatch_value(value: serde_json::Value, errors: &mut ErrorCollector) -> Resu
                 supported: FORMAT_VERSION,
             }]));
         }
-        if ver != u64::from(FORMAT_VERSION) {
-            return Err(AppError::Import(vec![ImportError::InvalidVersion]));
-        }
-        let doc: DocumentV2 = serde_json::from_value(value)
-            .map_err(|e| AppError::Import(vec![ImportError::MalformedJson(e.to_string())]))?;
-        return Ok(adapt_v2(doc));
+        return match ver {
+            2 => {
+                let doc: DocumentV2 = serde_json::from_value(value).map_err(|e| {
+                    AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
+                })?;
+                Ok(adapt_v2(doc))
+            }
+            _ => Err(AppError::Import(vec![ImportError::InvalidVersion])),
+        };
     }
     if let Some(schema_val) = obj.get("schema_version") {
         let Some(ver) = schema_val.as_u64() else {
@@ -224,12 +227,15 @@ fn dispatch_value(value: serde_json::Value, errors: &mut ErrorCollector) -> Resu
                 supported: FORMAT_VERSION,
             }]));
         }
-        if ver != 1 {
-            return Err(AppError::Import(vec![ImportError::InvalidVersion]));
-        }
-        let doc: DocumentV1 = serde_json::from_value(value)
-            .map_err(|e| AppError::Import(vec![ImportError::MalformedJson(e.to_string())]))?;
-        return Ok(adapt_v1(doc, errors));
+        return match ver {
+            1 => {
+                let doc: DocumentV1 = serde_json::from_value(value).map_err(|e| {
+                    AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
+                })?;
+                Ok(adapt_v1(doc, errors))
+            }
+            _ => Err(AppError::Import(vec![ImportError::InvalidVersion])),
+        };
     }
     Err(AppError::Import(vec![ImportError::NotAthena]))
 }
@@ -1504,5 +1510,121 @@ mod tests {
         from_file.app_version.clear();
         from_db.app_version.clear();
         assert_eq!(from_file, from_db);
+    }
+
+    #[test]
+    fn explicit_version_dispatch_covers_accepted_and_rejected_versions() {
+        let mut valid_v1: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/format1-1.0.2.json"))
+                .unwrap();
+        assert_eq!(parse_val(&valid_v1).unwrap().format_version, 1);
+
+        let v2_fixture: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/format2-1.1.0.json"))
+                .unwrap();
+        assert_eq!(parse_val(&v2_fixture).unwrap().format_version, 2);
+
+        for bad_v2_ver in [json!(0), json!(1), json!("2"), json!(null)] {
+            let mut doc = valid_v2_value();
+            doc["format_version"] = bad_v2_ver;
+            assert_eq!(
+                parse_val(&doc).unwrap_err(),
+                vec![ImportError::InvalidVersion]
+            );
+        }
+
+        for future_ver in [3u64, 4, 99] {
+            let mut doc = valid_v2_value();
+            doc["format_version"] = json!(future_ver);
+            assert_eq!(
+                parse_val(&doc).unwrap_err(),
+                vec![ImportError::TooNew {
+                    found: future_ver,
+                    supported: FORMAT_VERSION,
+                }]
+            );
+        }
+
+        for bad_v1_ver in [json!(0), json!(2), json!("1"), json!(null)] {
+            let mut doc = valid_v1.clone();
+            doc["schema_version"] = bad_v1_ver;
+            assert_eq!(
+                parse_val(&doc).unwrap_err(),
+                vec![ImportError::InvalidVersion]
+            );
+        }
+
+        valid_v1["schema_version"] = json!(3);
+        assert_eq!(
+            parse_val(&valid_v1).unwrap_err(),
+            vec![ImportError::TooNew {
+                found: 3,
+                supported: FORMAT_VERSION,
+            }]
+        );
+    }
+
+    #[test]
+    fn every_shipped_fixture_imports_and_round_trips() {
+        // Fixture provenance & reproducibility (`tests/fixtures/format2-1.1.0.json`, pinned LF in `.gitattributes`):
+        // Generated via `application::services::export::export_json` on shipped `v1.1.0` (`e09f49f`;
+        // GUI binary has no CLI export flag) from a disposable DB (`Db::open`) seeded at `2026-11-18T11:50:27Z`:
+        // - Profile: `start_balance = 100_000` (`$1,000.00`), `theme = dark`, `language = en`,
+        //   `onboarding_complete = true`
+        // - People (3): `A3` (owner), `Ana` (partner), `Bia` (other, archived)
+        // - Categories (13): 12 defaults from `Db::open` (`Food`..`Other income`) + `Legacy`
+        //   (`#607D8B`, expense, archived)
+        // - Transactions (5): `Paycheck` (`income` 300000), `Groceries` (`expense` 15000, even split
+        //   between A3/Ana, description `"Weekly food"`), `Archived dinner` (`expense` 4000, custom split
+        //   using archived `Legacy`/`Bia`), `Store refund` (`refund` 2500), `Ana -> A3` (`settlement` 5000)
+        // - Fixed `exported_at = "2026-11-17T12:00:00Z"` (`app_version = "1.1.0"`).
+        let v1_bytes = include_bytes!("../../../tests/fixtures/format1-1.0.2.json");
+        let v2_bytes = include_bytes!("../../../tests/fixtures/format2-1.1.0.json");
+        assert!(
+            !v2_bytes.windows(2).any(|w| w == b"\r\n"),
+            "format2-1.1.0.json must stay pinned to LF"
+        );
+
+        let v1_plan = parse_and_validate(v1_bytes, "format1-1.0.2.json").unwrap();
+        assert_eq!(v1_plan.format_version, 1);
+        let db1 = Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db1.conn(), &v1_plan).unwrap();
+        assert!(
+            crate::infrastructure::db::integrity::check(db1.conn())
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut v2_plan = parse_and_validate(v2_bytes, "format2-1.1.0.json").unwrap();
+        assert_eq!(v2_plan.format_version, 2);
+        assert_eq!(v2_plan.app_version, "1.1.0");
+        assert!(!v2_plan.used_timestamp_fallback);
+        assert!(v2_plan.widened_categories.is_empty());
+        assert_eq!(v2_plan.people.len(), 3);
+        assert_eq!(v2_plan.categories.len(), 13);
+        assert_eq!(v2_plan.transactions.len(), 5);
+        assert!(
+            v2_plan
+                .transactions
+                .iter()
+                .any(|t| t.kind == TransactionType::Settlement)
+        );
+        assert!(v2_plan.people.iter().any(|p| p.archived));
+        assert!(v2_plan.categories.iter().any(|c| c.archived));
+
+        let db2 = Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db2.conn(), &v2_plan).unwrap();
+        assert!(
+            crate::infrastructure::db::integrity::check(db2.conn())
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut from_db = ImportPlan::from_db(db2.conn(), &v2_plan.profile).unwrap();
+        v2_plan.source_name.clear();
+        v2_plan.exported_at.clear();
+        v2_plan.app_version.clear();
+        from_db.app_version.clear();
+        assert_eq!(v2_plan, from_db);
     }
 }

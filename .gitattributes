@@ -1,3 +1,4 @@
 docs/design/athena-designer-brief.md text eol=lf
+tests/fixtures/format2-1.1.0.json text eol=lf
 assets/fonts/*.otf -text
 assets/fonts/LICENSE.txt -text
