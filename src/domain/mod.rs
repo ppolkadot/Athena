@@ -3,6 +3,7 @@ pub mod date;
 pub mod export;
 pub mod money;
 pub mod person;
+pub mod quick_entry;
 pub mod reports;
 pub mod settings;
 pub mod settlement;

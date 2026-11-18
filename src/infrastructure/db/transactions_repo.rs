@@ -261,6 +261,29 @@ fn check_references(
 /// [`AppError::Validation`] for an invalid draft or stale references; [`AppError::NotFound`] when
 /// updating a missing row. Nothing is written on error.
 pub fn save_with_allocations(conn: &Connection, id: Option<i64>, draft: &TxDraft) -> Result<i64> {
+    save_with_hook(conn, id, draft, |_, _| Ok(()))
+}
+
+/// Insert an entry and record the template it came from in one SQL transaction, with one
+/// timestamp for the row's `created_at`/`updated_at` and the template's `last_used_at`. A failed
+/// usage update (for example a deleted template) rolls the entry back.
+///
+/// # Errors
+/// As [`save_with_allocations`], plus [`AppError::NotFound`] for a missing template.
+pub fn create_from_template(conn: &Connection, draft: &TxDraft, template_id: i64) -> Result<i64> {
+    save_with_hook(conn, None, draft, |tx, now| {
+        super::templates_repo::touch_last_used(tx, template_id, now)
+    })
+}
+
+/// The shared transactional body of every entry save. `after` runs inside the SQL transaction,
+/// after the rows are written and before the commit, with the transaction's timestamp.
+fn save_with_hook(
+    conn: &Connection,
+    id: Option<i64>,
+    draft: &TxDraft,
+    after: impl FnOnce(&Connection, &str) -> Result<()>,
+) -> Result<i64> {
     if let Err(errors) = draft.validate() {
         let text: Vec<String> = errors.iter().map(ToString::to_string).collect();
         return Err(invalid(text.join("; ")));
@@ -319,8 +342,44 @@ pub fn save_with_allocations(conn: &Connection, id: Option<i64>, draft: &TxDraft
             params![tx_id, allocation.person_id, allocation.amount.cents()],
         )?;
     }
+    after(&tx, &now)?;
     tx.commit()?;
     Ok(tx_id)
+}
+
+/// Live entries (any kind) on `date` with exactly `amount_cents`, in id order, whose normalized
+/// title (folded, trimmed, whitespace collapsed) equals `title`'s. `exclude` skips the entry being
+/// edited. Independent of every register filter; Trash never matches.
+///
+/// # Errors
+/// Database errors.
+pub fn find_duplicates(
+    conn: &Connection,
+    date: NaiveDate,
+    amount_cents: i64,
+    title: &str,
+    exclude: Option<i64>,
+) -> Result<Vec<Transaction>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM live_transactions t WHERE t.date = ?1 AND t.amount_cents = ?2 ORDER BY t.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![date_text(date), amount_cents], from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let wanted = normalize_title(title);
+    let mut matches: Vec<Transaction> = rows
+        .into_iter()
+        .filter(|t| Some(t.id) != exclude && normalize_title(&t.title) == wanted)
+        .collect();
+    load_allocations(conn, &mut matches)?;
+    Ok(matches)
+}
+
+/// Fold, trim and collapse internal whitespace: the duplicate-title comparison key.
+#[must_use]
+pub fn normalize_title(title: &str) -> String {
+    crate::domain::template::collapse_whitespace(&fold(title))
 }
 
 /// # Errors
@@ -759,5 +818,116 @@ mod tests {
         assert_eq!(tx.allocations[0].person_id, partner);
         assert_eq!(tx.payer_id, Some(partner));
         assert_consistent(&db);
+    }
+
+    #[test]
+    fn create_from_template_inserts_and_touches_usage_with_one_timestamp() {
+        use crate::domain::template::{ResponsibilityMode, TemplateDraft};
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let template_id = crate::infrastructure::db::templates_repo::create(
+            db.conn(),
+            &TemplateDraft {
+                name: "Coffee".into(),
+                title: "Coffee".into(),
+                amount: Money::from_cents(900),
+                kind: TransactionType::Expense,
+                category_id: None,
+                payer_id: Some(owner),
+                description: None,
+                responsibility: ResponsibilityMode::None,
+                allocations: vec![],
+            },
+        )
+        .unwrap();
+        let mut draft = draft_with(vec![]);
+        draft.amount = Money::from_cents(900);
+        let id = create_from_template(db.conn(), &draft, template_id).unwrap();
+        let stored = get(db.conn(), id).unwrap();
+        let used = crate::infrastructure::db::templates_repo::get(db.conn(), template_id)
+            .unwrap()
+            .last_used_at;
+        assert_eq!(used.as_deref(), Some(stored.created_at.as_str()));
+        assert_eq!(stored.created_at, stored.updated_at);
+        assert!(integrity::check(db.conn()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_usage_update_rolls_the_entry_back() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let draft = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(100),
+        }]);
+        let err = create_from_template(db.conn(), &draft, 999).unwrap_err();
+        assert!(matches!(err, AppError::NotFound("template")));
+        assert_eq!(count_live(db.conn()).unwrap(), 0, "no entry is left behind");
+        let allocations: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM allocations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(allocations, 0);
+        // The standalone wrapper is unchanged.
+        let id = save_with_allocations(db.conn(), None, &draft).unwrap();
+        assert!(get(db.conn(), id).is_ok());
+    }
+
+    #[test]
+    fn duplicates_match_date_cents_and_normalized_title_across_kinds_and_filters() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let alloc = |cents| Allocation {
+            person_id: owner,
+            amount: Money::from_cents(cents),
+        };
+        let mut a = draft_with(vec![alloc(4_590)]);
+        a.title = "Café  da   manhã".into();
+        a.amount = Money::from_cents(4_590);
+        a.date = date(2026, 11, 5);
+        let a_id = create(db.conn(), &a).unwrap();
+        // Same key but another kind and another day / amount / title do not collide, except kind.
+        let mut refund = a.clone();
+        refund.kind = TransactionType::Refund;
+        let refund_id = create(db.conn(), &refund).unwrap();
+        let mut other_day = a.clone();
+        other_day.date = date(2026, 11, 6);
+        create(db.conn(), &other_day).unwrap();
+        let mut other_title = a.clone();
+        other_title.title = "Jantar".into();
+        create(db.conn(), &other_title).unwrap();
+
+        let found =
+            find_duplicates(db.conn(), date(2026, 11, 5), 4_590, " CAFE da manha ", None).unwrap();
+        assert_eq!(
+            found.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![a_id, refund_id],
+            "all live kinds, deterministic id order"
+        );
+        // An edited row never matches itself.
+        let found =
+            find_duplicates(db.conn(), date(2026, 11, 5), 4_590, &a.title, Some(a_id)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, refund_id);
+        // Trashed rows do not match; restoring brings them back.
+        delete(db.conn(), a_id).unwrap();
+        assert_eq!(
+            find_duplicates(db.conn(), date(2026, 11, 5), 4_590, &a.title, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        crate::infrastructure::db::trash_repo::restore(db.conn(), a_id).unwrap();
+        assert_eq!(
+            find_duplicates(db.conn(), date(2026, 11, 5), 4_590, &a.title, None)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            find_duplicates(db.conn(), date(2026, 11, 5), 4_591, &a.title, None)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

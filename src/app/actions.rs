@@ -8,6 +8,7 @@ use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
 use crate::domain::settings::Profile;
+use crate::domain::template::TemplateDraft;
 use crate::domain::transaction::TxDraft;
 use crate::i18n::ToastKey;
 
@@ -18,6 +19,11 @@ pub enum AppAction {
     CompleteOnboarding(OnboardingResult),
     SaveTransaction(TxDraft),
     UpdateTransaction(i64, TxDraft),
+    /// Insert the entry and record the template's `last_used_at` in one transaction.
+    SaveTransactionFromTemplate(TxDraft, i64),
+    SaveTemplate(TemplateDraft),
+    UpdateTemplate(i64, TemplateDraft),
+    DeleteTemplate(i64),
     DeleteTransaction(i64),
     RestoreTransaction(i64),
     PurgeTransaction(i64),
@@ -47,6 +53,8 @@ pub enum RefreshScope {
     Backups,
     People,
     Categories,
+    /// Entry templates only.
+    Templates,
     All,
 }
 
