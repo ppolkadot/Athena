@@ -8,6 +8,9 @@ pub mod store;
 pub mod ui_state;
 pub mod view_model;
 
+#[cfg(test)]
+mod quick_flow_tests;
+
 use eframe::egui::{self, Key, Modifiers};
 
 use crate::application::services::onboarding::OnboardingResult;
@@ -36,7 +39,8 @@ use self::files::{
 };
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
-    delete_backup_confirmation, delete_confirmation, empty_trash_confirmation, handle_quick_add,
+    begin_edit_template, delete_backup_confirmation, delete_confirmation,
+    delete_template_confirmation, empty_trash_confirmation, handle_quick_add,
     import_preview_dialog, purge_confirmation, restore_confirmation,
 };
 use self::navigation::Screen;
@@ -244,6 +248,8 @@ pub struct AthenaApp {
     pending_focus_restore: Option<egui::Id>,
     /// Tests pin the date so they do not depend on when they run.
     pinned_today: Option<chrono::NaiveDate>,
+    /// The user confirmed discarding a dirty Quick Add to quit; the next close request passes.
+    close_confirmed: bool,
 }
 
 impl AthenaApp {
@@ -271,6 +277,7 @@ impl AthenaApp {
             modal_opener: None,
             pending_focus_restore: None,
             pinned_today: None,
+            close_confirmed: false,
         }
     }
 
@@ -286,6 +293,7 @@ impl AthenaApp {
     }
 
     /// Act on what a screen asked for. Returns `false` when an applied action was refused.
+    #[allow(clippy::too_many_lines)]
     fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
         let idle =
             self.quick_add.is_none() && self.confirm.is_none() && self.import_preview.is_none();
@@ -301,6 +309,22 @@ impl AthenaApp {
                 }
                 Err(err) => tracing::warn!("could not open the transaction: {err}"),
             },
+            ScreenEvent::EditTemplate(id) if idle => match begin_edit_template(&self.core, id) {
+                Ok(state) => {
+                    self.remember_modal_opener(ctx);
+                    self.quick_add = Some(state);
+                }
+                Err(err) => tracing::warn!("could not open the template: {err}"),
+            },
+            ScreenEvent::DeleteTemplate(id) if idle => {
+                match delete_template_confirmation(&self.core, id) {
+                    Ok(dialog) => {
+                        self.remember_modal_opener(ctx);
+                        self.confirm = Some(dialog);
+                    }
+                    Err(err) => tracing::warn!("could not open the template: {err}"),
+                }
+            }
             ScreenEvent::DeleteTransaction(id) if idle => match delete_confirmation(&self.core, id)
             {
                 Ok(dialog) => {
@@ -498,6 +522,7 @@ impl AthenaApp {
             modal_opener: None,
             pending_focus_restore: None,
             pinned_today: Some(crate::shared::test_fixtures::today()),
+            close_confirmed: false,
         }
     }
 
@@ -583,6 +608,7 @@ impl AthenaApp {
             theme::apply(ui.ctx(), theme);
             self.applied_theme = theme;
         }
+        self.guard_window_close(ui.ctx());
         if !self.core.vm.onboarding_complete() {
             let theme = self.core.vm.theme();
             if let Some(result) = onboarding::show(ui, theme, &mut self.onboarding) {
@@ -655,9 +681,31 @@ impl AthenaApp {
         }
     }
 
+    /// A native close request with unsaved Quick Add changes is cancelled and routed through the
+    /// same Keep editing / Discard prompt; confirming Discard asks the window to close once.
+    fn guard_window_close(&mut self, ctx: &egui::Context) {
+        if self.close_confirmed || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if let Some(state) = self.quick_add.as_mut()
+            && state.is_dirty()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if state.pending_intent.is_none() {
+                state.pending_intent = Some(quick_add::QuickAddIntent::CloseWindow);
+                state.focus_prompt = true;
+            }
+            ctx.request_repaint();
+        }
+    }
+
     fn handle_modals(&mut self, ctx: &egui::Context) {
         if let Some(mut state) = self.quick_add.take() {
             match quick_add::show(ctx, &mut state, &self.core.vm) {
+                Some(quick_add::QuickAddEvent::QuitConfirmed) => {
+                    self.close_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 Some(event) => {
                     let (after, toast) = handle_quick_add(&mut self.core, &mut state, event);
                     self.raise_toast(ctx, toast);
@@ -1032,7 +1080,22 @@ mod tests {
         let mut core = onboarded(None);
         let mut state = quick_state(&core);
         valid_draft(&mut state);
-        let (after, toast) = handle_quick_add(&mut core, &mut state, QuickAddEvent::Close);
+        // A dirty form never closes silently: the request waits behind the discard prompt, and
+        // only an explicit Discard closes it, without saving.
+        assert!(state.is_dirty());
+        assert_eq!(
+            state.request(quick_add::QuickAddIntent::Close, &core.vm),
+            None
+        );
+        let intent = state
+            .pending_intent
+            .take()
+            .expect("Close waits for the prompt");
+        let event = state
+            .perform_intent(intent, &core.vm)
+            .expect("Discard closes");
+        assert_eq!(event, QuickAddEvent::Close);
+        let (after, toast) = handle_quick_add(&mut core, &mut state, event);
         assert_eq!((after, toast), (ModalAfter::Close, None));
         assert!(core.vm.transactions.is_empty());
     }
@@ -1207,8 +1270,9 @@ mod tests {
             .click();
         harness.run_steps(3);
         // The register's search box comes first in the tree, then the modal's fields.
-        type_into(&mut harness, 1, "12,50");
-        type_into(&mut harness, 2, "Coffee");
+        // After the register's search box: the one-line field, then amount and title.
+        type_into(&mut harness, 2, "12,50");
+        type_into(&mut harness, 3, "Coffee");
         harness.key_press(egui::Key::Enter);
         harness.run_steps(4);
         assert_eq!(harness.state().core.vm.transactions.len(), 1);
@@ -2146,6 +2210,7 @@ mod tests {
         d2.payer_id = Some(owner);
         d2.category_id = None;
         d2.split_mode = None;
+        d2.title = "Paid back".into();
 
         let mut qa = QuickAddState::new(
             &core

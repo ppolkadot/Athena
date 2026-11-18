@@ -31,6 +31,10 @@ pub enum ScreenEvent {
     NewTransaction,
     EditTransaction(i64),
     DeleteTransaction(i64),
+    /// Open the template editor (Quick Add form without a date).
+    EditTemplate(i64),
+    /// Ask to delete a template, by name.
+    DeleteTemplate(i64),
     PurgeTransaction(i64),
     EmptyTrash,
     /// Open the month register for this month.

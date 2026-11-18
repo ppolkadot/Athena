@@ -11,7 +11,7 @@ use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::{
     Db, backup, categories_repo, import_repo, integrity, people_repo, profile_repo, restore,
-    transactions_repo, trash_repo,
+    templates_repo, transactions_repo, trash_repo,
 };
 use crate::shared::error::{AppError, ImportError, Result};
 
@@ -223,7 +223,11 @@ impl Store {
                 onboarding::complete(conn, &result)?;
                 Ok(outcome(None, Some(ToastKey::Welcome), RefreshScope::All))
             }
+            AppAction::SaveTemplate(_)
+            | AppAction::UpdateTemplate(_, _)
+            | AppAction::DeleteTemplate(_) => Self::run_template_action(conn, action),
             AppAction::SaveTransaction(_)
+            | AppAction::SaveTransactionFromTemplate(_, _)
             | AppAction::UpdateTransaction(_, _)
             | AppAction::DeleteTransaction(_)
             | AppAction::RestoreTransaction(_)
@@ -284,6 +288,14 @@ impl Store {
                     RefreshScope::Month,
                 ))
             }
+            AppAction::SaveTransactionFromTemplate(draft, template_id) => {
+                let id = transactions_repo::create_from_template(conn, &draft, template_id)?;
+                Ok(outcome(
+                    Some(AppAction::DeleteTransaction(id)),
+                    Some(ToastKey::TransactionSaved),
+                    RefreshScope::Month,
+                ))
+            }
             AppAction::UpdateTransaction(id, draft) => {
                 let previous = transactions_repo::get(conn, id)?.to_draft();
                 transactions_repo::update(conn, id, &draft)?;
@@ -326,6 +338,39 @@ impl Store {
                     refresh: RefreshScope::Trash,
                     notice: Some(trash_purged_notice()),
                 })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_template_action(
+        conn: &rusqlite::Connection,
+        action: AppAction,
+    ) -> Result<ActionOutcome> {
+        match action {
+            AppAction::SaveTemplate(draft) => {
+                templates_repo::create(conn, &draft)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::TemplateSaved),
+                    RefreshScope::Templates,
+                ))
+            }
+            AppAction::UpdateTemplate(id, draft) => {
+                templates_repo::update(conn, id, &draft)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::TemplateUpdated),
+                    RefreshScope::Templates,
+                ))
+            }
+            AppAction::DeleteTemplate(id) => {
+                templates_repo::delete(conn, id)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::TemplateDeleted),
+                    RefreshScope::Templates,
+                ))
             }
             _ => unreachable!(),
         }
@@ -491,6 +536,81 @@ mod tests {
         assert!(store.transaction(id).is_ok());
         store.apply(AppAction::DeleteTransaction(id)).unwrap();
         assert!(matches!(store.transaction(id), Err(AppError::NotFound(_))));
+    }
+
+    #[test]
+    fn template_actions_save_update_delete_and_record_use_with_an_undoable_entry() {
+        use crate::domain::template::{ResponsibilityMode, TemplateDraft};
+        use crate::domain::transaction::TransactionType;
+        let mut store = store();
+        let (owner, partner) = seed_people(store.db().conn());
+        let share = |person_id, cents| Allocation {
+            person_id,
+            amount: Money::from_cents(cents),
+        };
+        let draft = TemplateDraft {
+            name: "Rent".into(),
+            title: "Rent".into(),
+            amount: Money::from_cents(10_001),
+            kind: TransactionType::Expense,
+            category_id: None,
+            payer_id: Some(owner),
+            description: None,
+            responsibility: ResponsibilityMode::Even,
+            allocations: vec![share(partner, 0), share(owner, 0)],
+        };
+        let outcome = store.apply(AppAction::SaveTemplate(draft)).unwrap();
+        assert_eq!(outcome.refresh, RefreshScope::Templates);
+        assert_eq!(outcome.toast, Some(ToastKey::TemplateSaved));
+        let template = templates_repo::list(store.db().conn()).unwrap().remove(0);
+        assert_eq!(
+            template.draft.allocations,
+            vec![share(owner, 5_001), share(partner, 5_000)]
+        );
+
+        let mut renamed = template.draft.clone();
+        renamed.name = "Flat rent".into();
+        store
+            .apply(AppAction::UpdateTemplate(template.id, renamed))
+            .unwrap();
+
+        // Using the template saves the entry and its usage together; the inverse undoes the entry.
+        let entry = template
+            .draft
+            .to_tx_draft(crate::shared::test_fixtures::today());
+        let version = store.data_version();
+        let outcome = store
+            .apply(AppAction::SaveTransactionFromTemplate(
+                entry.clone(),
+                template.id,
+            ))
+            .unwrap();
+        assert_eq!(store.data_version(), version + 1);
+        assert_eq!(outcome.refresh, RefreshScope::Month);
+        assert!(
+            templates_repo::get(store.db().conn(), template.id)
+                .unwrap()
+                .last_used_at
+                .is_some()
+        );
+        let Some(AppAction::DeleteTransaction(id)) = outcome.inverse else {
+            panic!("expected a delete inverse")
+        };
+        store.apply(AppAction::DeleteTransaction(id)).unwrap();
+
+        // A missing template fails the whole action and changes nothing.
+        let version = store.data_version();
+        assert!(
+            store
+                .apply(AppAction::SaveTransactionFromTemplate(entry, 999))
+                .is_err()
+        );
+        assert_eq!(store.data_version(), version);
+        assert_eq!(transactions_repo::count_live(store.db().conn()).unwrap(), 0);
+
+        store.apply(AppAction::DeleteTemplate(template.id)).unwrap();
+        assert_eq!(templates_repo::count(store.db().conn()).unwrap(), 0);
+        assert!(integrity::check(store.db().conn()).unwrap().is_empty());
     }
 
     #[test]

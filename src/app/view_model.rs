@@ -13,10 +13,11 @@ use crate::domain::person::{Person, PersonKind};
 use crate::domain::reports::{CalendarMonthTotal, CategoryTotal, MonthSummary, PersonTotal};
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::settlement::SettlementView;
+use crate::domain::template::Template;
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
     backup::{self, BackupFile},
-    categories_repo, people_repo, profile_repo, transactions_repo,
+    categories_repo, people_repo, profile_repo, templates_repo, transactions_repo,
     trash_repo::{self, TrashItem},
 };
 use crate::shared::error::Result;
@@ -41,6 +42,8 @@ pub struct ViewModel {
     /// Archived categories included.
     pub all_categories: Vec<Category>,
     pub transactions: Vec<Transaction>,
+    /// Entry templates, alphabetical by folded name then id.
+    pub templates: Vec<Template>,
     pub summary: MonthSummary,
     pub category_totals: Vec<CategoryTotal>,
     pub person_totals: Vec<PersonTotal>,
@@ -83,6 +86,7 @@ impl ViewModel {
             all_people: Vec::new(),
             all_categories: Vec::new(),
             transactions: Vec::new(),
+            templates: Vec::new(),
             summary: MonthSummary::default(),
             category_totals: Vec::new(),
             person_totals: Vec::new(),
@@ -352,6 +356,9 @@ impl ViewModel {
                 let all_categories = categories_repo::list(conn, true)?;
                 self.all_categories = all_categories;
             }
+            RefreshScope::Templates => {
+                self.templates = templates_repo::list(conn)?;
+            }
             RefreshScope::Trash => {
                 let trash_count = trash_repo::count(conn)?;
                 let trash = if ui.screen == Screen::Trash {
@@ -377,6 +384,7 @@ impl ViewModel {
                 let all_people = people_repo::list(conn, true)?;
                 let all_categories = categories_repo::list(conn, true)?;
                 let transactions = transactions_repo::list(conn, &key.filter)?;
+                let templates = templates_repo::list(conn)?;
                 let summary = reports::month_summary(conn, ui.month)?;
                 let category_totals = reports::category_totals(conn, ui.month)?;
                 let person_totals = reports::person_totals(conn, ui.month)?;
@@ -413,6 +421,7 @@ impl ViewModel {
                 self.all_people = all_people;
                 self.all_categories = all_categories;
                 self.transactions = transactions;
+                self.templates = templates;
                 self.summary = summary;
                 self.category_totals = category_totals;
                 self.person_totals = person_totals;

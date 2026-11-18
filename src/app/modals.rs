@@ -3,6 +3,7 @@
 use chrono::{DateTime, Local, Utc};
 
 use crate::application::services::import::ImportPlan;
+use crate::domain::transaction::{Transaction, TxDraft};
 use crate::i18n::{
     PluralKey, ToastKey, backup_delete_error_message, format_date, format_import_errors, plural,
     restore_error_message, strings,
@@ -14,7 +15,10 @@ use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::ConfirmDialog;
 use crate::ui::components::import_preview::ImportPreviewDialog;
 use crate::ui::components::toast::ToastAction;
-use crate::ui::quick_add::{QuickAddError, QuickAddEvent, QuickAddMode, QuickAddState};
+use crate::ui::quick_add::{
+    DuplicateConsent, DuplicateExample, PendingSave, PromptError, QuickAddError, QuickAddEvent,
+    QuickAddMode, QuickAddState,
+};
 use crate::ui::screens::settings::SettingsError;
 
 use super::AppCore;
@@ -29,29 +33,191 @@ pub enum ModalAfter {
 
 /// Apply what the quick-add modal asked for. A new entry saves and leaves the modal open, reset
 /// for the next one; an edit saves and closes it. A refused save keeps the modal and its input.
+///
+/// Every normal create or edit first looks for a possible duplicate here, after validation and
+/// before `Store::apply`; a match asks for explicit consent instead of saving.
 pub fn handle_quick_add(
     core: &mut AppCore,
     state: &mut QuickAddState,
     event: QuickAddEvent,
 ) -> (ModalAfter, Option<ToastKey>) {
-    let draft = match event {
-        QuickAddEvent::Close => return (ModalAfter::Close, None),
-        QuickAddEvent::Submit(draft) => draft,
-    };
-    let action = match state.mode {
-        QuickAddMode::Create => AppAction::SaveTransaction(draft),
-        QuickAddMode::Edit(id) => AppAction::UpdateTransaction(id, draft),
-    };
-    match core.apply(action) {
-        Ok(outcome) => match state.mode {
-            QuickAddMode::Create => {
-                state.reset_for_next();
+    match event {
+        QuickAddEvent::Close | QuickAddEvent::QuitConfirmed => (ModalAfter::Close, None),
+        QuickAddEvent::Submit(draft) => {
+            state.duplicate = None;
+            let save = match state.mode {
+                QuickAddMode::Create => state
+                    .template_id
+                    .map_or(PendingSave::Create, PendingSave::CreateFromTemplate),
+                QuickAddMode::Edit(id) => PendingSave::Edit(id),
+                // Template edits submit through `SubmitTemplate`, never as an entry.
+                QuickAddMode::Template(_) => return (ModalAfter::Keep, None),
+            };
+            guarded_save(core, state, save, draft)
+        }
+        QuickAddEvent::ConfirmDuplicate => confirm_duplicate(core, state),
+        QuickAddEvent::SaveAsTemplate(draft) => match core.apply(AppAction::SaveTemplate(draft)) {
+            Ok(outcome) => {
+                state.template_prompt = None;
                 (ModalAfter::Keep, outcome.toast)
             }
-            QuickAddMode::Edit(_) => (ModalAfter::Close, outcome.toast),
+            Err(err) => {
+                tracing::warn!("could not save the template: {err}");
+                if let Some(prompt) = state.template_prompt.as_mut() {
+                    prompt.error = Some(match err {
+                        AppError::TemplateInvalid(errors) => errors
+                            .into_iter()
+                            .next()
+                            .map_or(PromptError::Failed, PromptError::Template),
+                        _ => PromptError::Failed,
+                    });
+                }
+                (ModalAfter::Keep, None)
+            }
         },
+        QuickAddEvent::SubmitTemplate(draft) => {
+            let QuickAddMode::Template(id) = state.mode else {
+                return (ModalAfter::Keep, None);
+            };
+            match core.apply(AppAction::UpdateTemplate(id, draft)) {
+                Ok(outcome) => (ModalAfter::Close, outcome.toast),
+                Err(err) => {
+                    tracing::warn!("could not update the template: {err}");
+                    state.errors = match err {
+                        AppError::TemplateInvalid(errors) => {
+                            errors.into_iter().map(QuickAddError::Template).collect()
+                        }
+                        _ => vec![QuickAddError::Save],
+                    };
+                    state.focus_first_error();
+                    (ModalAfter::Keep, None)
+                }
+            }
+        }
+    }
+}
+
+fn duplicates_of(core: &AppCore, save: PendingSave, draft: &TxDraft) -> Result<Vec<Transaction>> {
+    let exclude = match save {
+        PendingSave::Edit(id) => Some(id),
+        PendingSave::Create | PendingSave::CreateFromTemplate(_) => None,
+    };
+    transactions_repo::find_duplicates(
+        core.store.db().conn(),
+        draft.date,
+        draft.amount.cents(),
+        &draft.title,
+        exclude,
+    )
+}
+
+fn consent_for(
+    core: &AppCore,
+    save: PendingSave,
+    draft: &TxDraft,
+    matches: &[Transaction],
+) -> DuplicateConsent {
+    DuplicateConsent {
+        save,
+        draft: draft.clone(),
+        match_ids: matches.iter().map(|t| t.id).collect(),
+        first: DuplicateExample {
+            date: matches[0].date,
+            amount: matches[0].amount,
+            title: matches[0].title.clone(),
+        },
+        count: matches.len(),
+        store_version: core.store.data_version(),
+    }
+}
+
+/// Look for duplicates, then save or ask. A lookup error blocks saving and keeps the form.
+fn guarded_save(
+    core: &mut AppCore,
+    state: &mut QuickAddState,
+    save: PendingSave,
+    draft: TxDraft,
+) -> (ModalAfter, Option<ToastKey>) {
+    match duplicates_of(core, save, &draft) {
+        Ok(matches) if matches.is_empty() => commit_save(core, state, save, draft),
+        Ok(matches) => {
+            state.duplicate = Some(consent_for(core, save, &draft, &matches));
+            state.focus_prompt = true;
+            (ModalAfter::Keep, None)
+        }
+        Err(err) => {
+            tracing::warn!("duplicate check failed: {err}");
+            state.errors = vec![QuickAddError::DuplicateLookup];
+            (ModalAfter::Keep, None)
+        }
+    }
+}
+
+/// Save anyway: only for exactly the draft and match set the user was shown. If the store changed
+/// since, look again and ask again when the set differs.
+fn confirm_duplicate(
+    core: &mut AppCore,
+    state: &mut QuickAddState,
+) -> (ModalAfter, Option<ToastKey>) {
+    let Some(consent) = state.duplicate.take() else {
+        return (ModalAfter::Keep, None);
+    };
+    if state.to_draft().ok().as_ref() != Some(&consent.draft) {
+        return (ModalAfter::Keep, None);
+    }
+    if consent.store_version != core.store.data_version() {
+        match duplicates_of(core, consent.save, &consent.draft) {
+            Ok(matches) => {
+                let ids: Vec<i64> = matches.iter().map(|t| t.id).collect();
+                if ids != consent.match_ids {
+                    if matches.is_empty() {
+                        return commit_save(core, state, consent.save, consent.draft);
+                    }
+                    state.duplicate =
+                        Some(consent_for(core, consent.save, &consent.draft, &matches));
+                    state.focus_prompt = true;
+                    return (ModalAfter::Keep, None);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("duplicate re-check failed: {err}");
+                state.errors = vec![QuickAddError::DuplicateLookup];
+                return (ModalAfter::Keep, None);
+            }
+        }
+    }
+    commit_save(core, state, consent.save, consent.draft)
+}
+
+fn commit_save(
+    core: &mut AppCore,
+    state: &mut QuickAddState,
+    save: PendingSave,
+    draft: TxDraft,
+) -> (ModalAfter, Option<ToastKey>) {
+    let action = match save {
+        PendingSave::Create => AppAction::SaveTransaction(draft),
+        PendingSave::CreateFromTemplate(id) => AppAction::SaveTransactionFromTemplate(draft, id),
+        PendingSave::Edit(id) => AppAction::UpdateTransaction(id, draft),
+    };
+    match core.apply(action) {
+        Ok(outcome) => {
+            state.duplicate = None;
+            match save {
+                PendingSave::Edit(_) => (ModalAfter::Close, outcome.toast),
+                PendingSave::Create | PendingSave::CreateFromTemplate(_) => {
+                    if state.from_line {
+                        state.reset_for_line(core.vm.today);
+                    } else {
+                        state.reset_for_next();
+                    }
+                    (ModalAfter::Keep, outcome.toast)
+                }
+            }
+        }
         Err(err) => {
             tracing::warn!("quick add could not save: {err}");
+            state.duplicate = None;
             state.errors = vec![QuickAddError::Save];
             (ModalAfter::Keep, None)
         }
@@ -70,6 +236,51 @@ pub fn begin_edit(core: &AppCore, id: i64) -> Result<QuickAddState> {
         &people,
         core.vm.language(),
     ))
+}
+
+/// Open the template editor: the Quick Add form on a stored template, without a date.
+///
+/// # Errors
+/// [`crate::shared::error::AppError::NotFound`] when the template no longer exists.
+pub fn begin_edit_template(core: &AppCore, id: i64) -> Result<QuickAddState> {
+    let template = core
+        .vm
+        .templates
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or(AppError::NotFound("template"))?;
+    let people: Vec<_> = core.vm.active_people().into_iter().cloned().collect();
+    Ok(QuickAddState::for_template(
+        template,
+        &people,
+        &core.vm.all_people,
+        &core.vm.all_categories,
+        core.vm.today,
+        core.vm.language(),
+    ))
+}
+
+/// The "delete this template?" dialog, naming it.
+///
+/// # Errors
+/// [`crate::shared::error::AppError::NotFound`] when the template no longer exists.
+pub fn delete_template_confirmation(core: &AppCore, id: i64) -> Result<ConfirmDialog> {
+    let template = core
+        .vm
+        .templates
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or(AppError::NotFound("template"))?;
+    let s = strings(core.vm.language());
+    Ok(ConfirmDialog {
+        title: s.settings_template_delete_title.to_string(),
+        body: s
+            .settings_template_delete_body
+            .replace("{name}", &template.draft.name),
+        confirm_label: s.delete.to_string(),
+        danger: true,
+        action: AppAction::DeleteTemplate(id),
+    })
 }
 
 /// The "delete this?" dialog for a transaction, naming it and its amount.

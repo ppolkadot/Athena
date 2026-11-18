@@ -3,7 +3,9 @@
 
 use thiserror::Error;
 
+use super::category::Category;
 use super::money::Money;
+use super::person::Person;
 use super::text::fold;
 use super::transaction::{
     Allocation, SplitMode, TransactionType, TxDraft, ValidationError, split_evenly,
@@ -151,6 +153,20 @@ impl TemplateError {
     }
 }
 
+/// A reference in a stored template that no longer satisfies the rules for a new entry. Such a
+/// template stays portable and readable; the reference must be repaired before the next use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateIssue {
+    CategoryMissing,
+    CategoryArchived,
+    /// The category's scope no longer allows the template's kind.
+    CategoryIncompatible,
+    PayerMissing,
+    PayerArchived,
+    PersonMissing(i64),
+    PersonArchived(i64),
+}
+
 /// Collapse internal whitespace runs to single spaces and trim.
 #[must_use]
 pub fn collapse_whitespace(text: &str) -> String {
@@ -203,6 +219,40 @@ impl TemplateDraft {
             }
         }
         self
+    }
+
+    /// Stored references that would block saving a new entry from this template, checked against
+    /// the current people and categories.
+    #[must_use]
+    pub fn issues(&self, people: &[Person], categories: &[Category]) -> Vec<TemplateIssue> {
+        let mut issues = Vec::new();
+        if let Some(id) = self.category_id {
+            match categories.iter().find(|c| c.id == id) {
+                None => issues.push(TemplateIssue::CategoryMissing),
+                Some(c) if c.archived => issues.push(TemplateIssue::CategoryArchived),
+                Some(c) if !c.applies_to.allows(self.kind) => {
+                    issues.push(TemplateIssue::CategoryIncompatible);
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some(id) = self.payer_id {
+            match people.iter().find(|p| p.id == id) {
+                None => issues.push(TemplateIssue::PayerMissing),
+                Some(p) if p.archived => issues.push(TemplateIssue::PayerArchived),
+                Some(_) => {}
+            }
+        }
+        for allocation in &self.allocations {
+            match people.iter().find(|p| p.id == allocation.person_id) {
+                None => issues.push(TemplateIssue::PersonMissing(allocation.person_id)),
+                Some(p) if p.archived => {
+                    issues.push(TemplateIssue::PersonArchived(allocation.person_id));
+                }
+                Some(_) => {}
+            }
+        }
+        issues
     }
 
     /// The entry this template produces for `date`.
@@ -505,6 +555,57 @@ mod tests {
         assert_eq!(
             TemplateDraft::from_tx_draft("x", &settlement),
             Err(TemplateError::SettlementNotAllowed)
+        );
+    }
+
+    #[test]
+    fn a_template_reports_references_that_need_repair() {
+        use crate::domain::category::CategoryScope;
+        use crate::domain::person::PersonKind;
+        let person = |id, archived| Person {
+            id,
+            name: format!("P{id}"),
+            kind: PersonKind::Other,
+            archived,
+            created_at: String::new(),
+        };
+        let category = |id, scope, archived| Category {
+            id,
+            name: format!("C{id}"),
+            color: "#FFFFFF".into(),
+            icon: None,
+            applies_to: scope,
+            is_default: false,
+            archived,
+            created_at: String::new(),
+        };
+        let mut d = draft(
+            ResponsibilityMode::Custom,
+            vec![share(1, 5_000), share(2, 5_000)],
+        );
+        d.payer_id = Some(1);
+        d.category_id = Some(7);
+        let people = [person(1, false), person(2, false)];
+        let ok = [category(7, CategoryScope::Expense, false)];
+        assert!(d.issues(&people, &ok).is_empty());
+        // Archived person and category, scope drift, and missing rows are each reported.
+        let issues = d.issues(&[person(1, false), person(2, true)], &ok);
+        assert_eq!(issues, vec![TemplateIssue::PersonArchived(2)]);
+        assert_eq!(
+            d.issues(&people, &[category(7, CategoryScope::Expense, true)]),
+            vec![TemplateIssue::CategoryArchived]
+        );
+        assert_eq!(
+            d.issues(&people, &[category(7, CategoryScope::Income, false)]),
+            vec![TemplateIssue::CategoryIncompatible]
+        );
+        assert_eq!(
+            d.issues(&[person(2, false)], &[]),
+            vec![
+                TemplateIssue::CategoryMissing,
+                TemplateIssue::PayerMissing,
+                TemplateIssue::PersonMissing(1)
+            ]
         );
     }
 

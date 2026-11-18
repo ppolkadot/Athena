@@ -251,6 +251,66 @@ fn snapshot_settings_data() {
 }
 
 #[test]
+fn snapshot_settings_templates() {
+    use crate::app::actions::AppAction;
+    use crate::domain::template::{ResponsibilityMode, TemplateDraft};
+    use crate::domain::transaction::{Allocation, TransactionType};
+
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        let mut core = onboarded_core(language, theme, false);
+        let owner = core.vm.all_people[0].id;
+        let partner = core.vm.all_people[1].id;
+        let food = core
+            .vm
+            .all_categories
+            .iter()
+            .find(|c| c.name == "Food")
+            .unwrap()
+            .id;
+        let share = |person_id, cents| Allocation {
+            person_id,
+            amount: Money::from_cents(cents),
+        };
+        for draft in [
+            TemplateDraft {
+                name: "Weekly groceries".into(),
+                title: "Groceries".into(),
+                amount: Money::from_cents(18_450),
+                kind: TransactionType::Expense,
+                category_id: Some(food),
+                payer_id: Some(owner),
+                description: None,
+                responsibility: ResponsibilityMode::Even,
+                allocations: vec![share(owner, 9_225), share(partner, 9_225)],
+            },
+            TemplateDraft {
+                name: "Coffee".into(),
+                title: "Coffee".into(),
+                amount: Money::from_cents(900),
+                kind: TransactionType::Expense,
+                category_id: None,
+                payer_id: Some(owner),
+                description: None,
+                responsibility: ResponsibilityMode::Person,
+                allocations: vec![share(owner, 900)],
+            },
+        ] {
+            core.apply(AppAction::SaveTemplate(draft)).unwrap();
+        }
+        core.ui.settings.page = crate::ui::screens::settings::SettingsPage::Templates;
+        core.set_screen(Screen::Settings);
+        snapshot(
+            &mut results,
+            &format!("settings_templates_{tag}"),
+            AthenaApp::for_test(core),
+            SIZE,
+        );
+    }
+    results.unwrap();
+}
+
+#[test]
 fn snapshot_trash() {
     let mut results = SnapshotResults::new();
     for (language, theme, tag) in variants() {

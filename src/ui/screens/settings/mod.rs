@@ -5,6 +5,7 @@ mod categories;
 mod data;
 mod general;
 mod people;
+mod templates;
 
 use std::collections::HashMap;
 
@@ -28,6 +29,7 @@ pub enum SettingsPage {
     General,
     People,
     Categories,
+    Templates,
     Data,
 }
 
@@ -334,6 +336,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
             (SettingsPage::General, s.settings_tab_general),
             (SettingsPage::People, s.settings_tab_people),
             (SettingsPage::Categories, s.settings_tab_categories),
+            (SettingsPage::Templates, s.settings_templates),
             (SettingsPage::Data, s.settings_tab_data),
         ] {
             if ui
@@ -356,6 +359,9 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
         }
         SettingsPage::Categories => {
             categories::categories_card(ui, vm, ui_state, &mut events);
+        }
+        SettingsPage::Templates => {
+            templates::templates_card(ui, vm, ui_state, &mut events);
         }
         SettingsPage::Data => {
             data::data_card(ui, vm, ui_state, &mut events);
