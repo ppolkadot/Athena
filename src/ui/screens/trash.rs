@@ -14,6 +14,7 @@ use crate::i18n::{format_date, strings};
 use crate::infrastructure::db::trash_repo::TrashItem;
 use crate::ui::components::transaction_row::{amount_text, people_label, type_badge};
 use crate::ui::components::{empty_state, person_pill};
+use crate::ui::icons::{self, Icon};
 use crate::ui::screens::ScreenEvent;
 use crate::ui::theme::{Palette, palette, typography};
 
@@ -89,7 +90,9 @@ fn trash_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon).strong().color(amount_color));
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
+                icons::paint(ui, icon_rect, icon, amount_color);
                 ui.label(
                     RichText::new(label)
                         .text_style(egui::TextStyle::Small)
@@ -179,7 +182,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
         empty_state::show(
             ui,
             vm.theme(),
-            "🗑",
+            Icon::Trash2,
             s.trash_empty_title,
             s.trash_empty_hint,
             None,

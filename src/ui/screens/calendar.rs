@@ -13,6 +13,7 @@ use crate::domain::date::YearMonth;
 use crate::domain::reports::CalendarMonthTotal;
 use crate::i18n::{PluralKey, month_label, month_name, plural, strings};
 use crate::ui::components::summary_card::{plain_brl, signed_brl};
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme::{palette, typography};
 
 const CARD_HEIGHT: f32 = 120.0;
@@ -136,12 +137,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Ca
     let mut event = None;
 
     ui.horizontal(|ui| {
-        let step = |ui: &mut egui::Ui, glyph: &str, name: &str| {
-            let response = ui.add_sized([36.0, 36.0], Button::new(glyph));
-            response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
-            response.on_hover_text(name).clicked()
-        };
-        if step(ui, "‹", s.year_prev) {
+        if icons::button(ui, &p, Icon::ChevronLeft, s.year_prev).clicked() {
             state.set_calendar_year(state.calendar_year - 1);
         }
         ui.label(
@@ -149,7 +145,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Ca
                 .text_style(typography::display())
                 .strong(),
         );
-        if step(ui, "›", s.year_next) {
+        if icons::button(ui, &p, Icon::ChevronRight, s.year_next).clicked() {
             state.set_calendar_year(state.calendar_year + 1);
         }
         let this_year = vm.today.year();

@@ -73,12 +73,36 @@ pub fn show(
                     .text_style(egui::TextStyle::Small)
                     .color(p.muted),
             );
-            ui.label(
-                RichText::new(value)
-                    .font(typography::tabular_font(typography::SECTION))
-                    .strong()
-                    .color(color),
-            );
+            // Shrink a long figure toward the secondary size before truncating, so a maximum amount
+            // never wraps mid-number in a narrow card.
+            let avail = ui.available_width();
+            let width_at = |ui: &egui::Ui, size: f32| {
+                ui.fonts_mut(|f| {
+                    f.layout_no_wrap(
+                        value.to_owned(),
+                        typography::tabular_font(size),
+                        egui::Color32::WHITE,
+                    )
+                    .size()
+                    .x
+                })
+            };
+            let full = width_at(ui, typography::SECTION);
+            let size = if full > avail {
+                (typography::SECTION * avail / full).max(typography::SECONDARY)
+            } else {
+                typography::SECTION
+            };
+            ui.add(
+                egui::Label::new(
+                    RichText::new(value)
+                        .font(typography::tabular_font(size))
+                        .strong()
+                        .color(color),
+                )
+                .truncate(),
+            )
+            .on_hover_text(value);
             if let Some(caption) = caption {
                 ui.label(
                     RichText::new(caption)

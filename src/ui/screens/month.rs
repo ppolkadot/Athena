@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use chrono::{Datelike, NaiveDate};
 use eframe::egui::{
-    self, Align, Button, ComboBox, CornerRadius, Frame, Margin, Rect, RichText, Role, Sense,
-    Stroke, TextEdit, Vec2, WidgetInfo,
+    self, Align, Button, ComboBox, CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke,
+    TextEdit, Vec2,
 };
 
 use crate::app::ui_state::{SEARCH_DEBOUNCE, UiState};
@@ -22,6 +22,7 @@ use crate::ui::components::settlement_card::{self, SettlementEvent};
 use crate::ui::components::summary_card::{self, Tone, plain_brl, signed_brl};
 use crate::ui::components::transaction_row::RowAction;
 use crate::ui::components::{empty_state, transaction_row};
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme::{Palette, palette, parse_hex, typography};
 
 /// Below this width the right rail drops under the register.
@@ -56,12 +57,7 @@ fn header(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, event: &mut Op
     let s = strings(vm.language());
     let p = palette(vm.theme());
     ui.horizontal(|ui| {
-        let step = |ui: &mut egui::Ui, glyph: &str, name: &str| {
-            let response = ui.add_sized([36.0, 36.0], Button::new(glyph));
-            response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
-            response.on_hover_text(name).clicked()
-        };
-        if step(ui, "‹", s.month_prev) {
+        if icons::button(ui, &p, Icon::ChevronLeft, s.month_prev).clicked() {
             state.set_month(state.month.prev());
         }
         ui.vertical(|ui| {
@@ -78,7 +74,7 @@ fn header(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, event: &mut Op
                 .rect_filled(underline, CornerRadius::same(2), p.accent);
             ui.add_space(5.0);
         });
-        if step(ui, "›", s.month_next) {
+        if icons::button(ui, &p, Icon::ChevronRight, s.month_next).clicked() {
             state.set_month(state.month.next());
         }
         if state.month != YearMonth::from_date(vm.today)
@@ -89,8 +85,8 @@ fn header(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, event: &mut Op
             state.set_month(YearMonth::from_date(vm.today));
         }
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            let primary =
-                Button::new(RichText::new(s.new_transaction).color(p.bg).strong()).fill(p.accent);
+            let primary = Button::new(RichText::new(s.new_transaction).color(p.on_accent).strong())
+                .fill(p.accent);
             if ui.add_sized([180.0, 36.0], primary).clicked() {
                 *event = Some(MonthEvent::NewTransaction);
             }
@@ -219,11 +215,13 @@ fn filters(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) {
                 SettlementIssue::UnknownPayer => s.filter_missing_payer_until,
                 SettlementIssue::Unassigned => s.filter_unassigned_until,
             };
-            let chip = format!("{} · ✕", template.replace("{month}", &month_text));
-            if ui
-                .add(Button::new(RichText::new(chip).color(p.accent)))
-                .clicked()
-            {
+            let chip = template.replace("{month}", &month_text);
+            let mut clear = ui
+                .add(Button::new(RichText::new(&chip).color(p.accent)))
+                .clicked();
+            clear |= icons::button(ui, &p, Icon::X, &format!("{} {chip}", s.clear_filter_chip))
+                .clicked();
+            if clear {
                 state.clear_repair_filter();
             }
         }
@@ -253,7 +251,14 @@ fn register(
     let p = palette(vm.theme());
     if vm.transactions.is_empty() {
         if state.has_filters() {
-            if empty_state::show(ui, vm.theme(), "⌕", s.no_matches, "", Some(s.clear_filters)) {
+            if empty_state::show(
+                ui,
+                vm.theme(),
+                Icon::Search,
+                s.no_matches,
+                "",
+                Some(s.clear_filters),
+            ) {
                 state.clear_filters();
             }
         } else {
@@ -263,7 +268,7 @@ fn register(
             if empty_state::show(
                 ui,
                 vm.theme(),
-                "☰",
+                Icon::List,
                 &title,
                 s.empty_month_hint,
                 Some(s.new_transaction),
@@ -625,6 +630,7 @@ mod tests {
 
     #[test]
     fn typed_search_reaches_the_filter_after_a_pause() {
+        use eframe::egui::Role;
         use egui_kittest::kittest::Queryable;
         let core = core_with_month();
         let mut harness = harness(&core);

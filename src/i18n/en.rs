@@ -311,4 +311,6 @@ pub const STRINGS: Strings = Strings {
     m_invalid: "That is not a valid amount.",
     m_too_precise: "Use at most two decimal places.",
     m_too_large: "That amount is too large.",
+    settlement_from_to: "From {from} to {to}",
+    clear_filter_chip: "Clear filter",
 };

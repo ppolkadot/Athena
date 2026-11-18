@@ -4,6 +4,7 @@ use eframe::egui::Key;
 
 use crate::domain::settings::Language;
 use crate::i18n::strings;
+use crate::ui::icons::Icon;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Screen {
@@ -41,14 +42,14 @@ impl Screen {
         }
     }
 
-    /// Small inline glyph for the sidebar.
+    /// Embedded icon for the sidebar and rail.
     #[must_use]
-    pub fn icon(self) -> &'static str {
+    pub fn icon(self) -> Icon {
         match self {
-            Screen::Month => "☰",
-            Screen::Calendar => "▦",
-            Screen::Trash => "🗑",
-            Screen::Settings => "⚙",
+            Screen::Month => Icon::List,
+            Screen::Calendar => Icon::CalendarDays,
+            Screen::Trash => Icon::Trash2,
+            Screen::Settings => Icon::Settings,
         }
     }
 }
@@ -70,7 +71,7 @@ mod tests {
     fn every_screen_has_an_icon_and_the_list_is_complete() {
         assert_eq!(Screen::ALL.len(), 4);
         for screen in Screen::ALL {
-            assert!(!screen.icon().is_empty());
+            assert!(!screen.icon().paths().is_empty());
         }
         assert_eq!(Screen::default(), Screen::Month);
     }

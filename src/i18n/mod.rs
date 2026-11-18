@@ -346,6 +346,8 @@ strings! {
     m_invalid,
     m_too_precise,
     m_too_large,
+    settlement_from_to,
+    clear_filter_chip,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -497,16 +499,16 @@ pub fn weekday_short(language: Language, weekday: Weekday) -> &'static str {
     }
 }
 
-/// Sign plus label for a transaction kind, so meaning never rests on color alone:
-/// `− Expense`, `+ Income`, `↩ Refund`, `⇄ Settlement`.
+/// Localized label for a transaction kind. The embedded kind icon (`Icon::for_kind`) accompanies
+/// it wherever there is room, so meaning never rests on color alone.
 #[must_use]
-pub fn kind_label(kind: TransactionType, language: Language) -> String {
+pub fn kind_label(kind: TransactionType, language: Language) -> &'static str {
     let s = strings(language);
     match kind {
-        TransactionType::Expense => format!("− {}", s.expense),
-        TransactionType::Income => format!("+ {}", s.income),
-        TransactionType::Refund => format!("↩ {}", s.refund),
-        TransactionType::Settlement => format!("⇄ {}", s.settlement),
+        TransactionType::Expense => s.expense,
+        TransactionType::Income => s.income,
+        TransactionType::Refund => s.refund,
+        TransactionType::Settlement => s.settlement,
     }
 }
 
@@ -1106,16 +1108,16 @@ mod tests {
     }
 
     #[test]
-    fn kinds_carry_a_sign_and_a_label() {
+    fn kinds_carry_a_plain_localized_label() {
         assert_eq!(
             kind_label(TransactionType::Expense, Language::En),
-            "− Expense"
+            "Expense"
         );
         assert_eq!(
             kind_label(TransactionType::Income, Language::PtBr),
-            "+ Receita"
+            "Receita"
         );
-        assert!(kind_label(TransactionType::Refund, Language::En).starts_with('↩'));
+        assert_eq!(kind_label(TransactionType::Refund, Language::En), "Refund");
     }
 
     #[test]

@@ -2,3 +2,6 @@ docs/design/athena-designer-brief.md text eol=lf
 tests/fixtures/format2-1.1.0.json text eol=lf
 assets/fonts/*.otf -text
 assets/fonts/LICENSE.txt -text
+tests/fixtures/format3-1.2.0.json text eol=lf
+assets/icons/LICENSE.txt -text
+assets/icons/lucide/*.svg text eol=lf

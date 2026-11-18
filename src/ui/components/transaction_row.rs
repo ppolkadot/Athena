@@ -11,19 +11,24 @@ use crate::domain::settings::Language;
 use crate::domain::transaction::{Transaction, TransactionType};
 use crate::i18n::strings;
 use crate::ui::components::person_pill;
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme::{palette, parse_hex, typography};
 
 /// Icon and label for a kind. Meaning never rests on color alone.
 #[must_use]
-pub fn type_badge(kind: TransactionType, language: Language) -> (&'static str, &'static str) {
+pub fn type_badge(kind: TransactionType, language: Language) -> (Icon, &'static str) {
     let s = strings(language);
-    match kind {
-        TransactionType::Expense => ("−", s.expense),
-        TransactionType::Income => ("+", s.income),
-        TransactionType::Refund => ("↩", s.refund),
-        TransactionType::Settlement => ("⇄", s.settlement),
-    }
+    let label = match kind {
+        TransactionType::Expense => s.expense,
+        TransactionType::Income => s.income,
+        TransactionType::Refund => s.refund,
+        TransactionType::Settlement => s.settlement,
+    };
+    (Icon::for_kind(kind), label)
 }
+
+/// Side of the kind icon in a badge.
+const BADGE_ICON: f32 = 16.0;
 
 /// `−R$ 45,90` for expenses, `+R$ 45,90` for income and refunds, `R$ 45,90` for settlements.
 #[must_use]
@@ -35,7 +40,8 @@ pub fn amount_text(kind: TransactionType, amount: Money) -> String {
     }
 }
 
-/// Names of the people on an entry, `From → To` for settlements, or `No one` when unassigned.
+/// Names of the people on an entry, a localized "From … to …" sentence for settlements, or
+/// `No one` when unassigned.
 #[must_use]
 pub fn people_label(tx: &Transaction, vm: &ViewModel) -> String {
     if tx.kind == TransactionType::Settlement {
@@ -49,7 +55,10 @@ pub fn people_label(tx: &Transaction, vm: &ViewModel) -> String {
             .and_then(|a| vm.person(a.person_id))
             .map(|p| p.name.as_str());
         if let (Some(from), Some(to)) = (from, to) {
-            return format!("{from} → {to}");
+            return strings(vm.language())
+                .settlement_from_to
+                .replace("{from}", from)
+                .replace("{to}", to);
         }
     }
     let names: Vec<String> = tx
@@ -77,7 +86,7 @@ pub enum RowAction {
 struct RowLayout<'a> {
     p: &'a crate::ui::theme::Palette,
     s: &'a crate::i18n::Strings,
-    icon: &'a str,
+    icon: Icon,
     label: &'a str,
     amount_color: egui::Color32,
     category: Option<&'a crate::domain::category::Category>,
@@ -123,9 +132,7 @@ fn measure_row<'a>(
         })
     };
 
-    let badge_w =
-        (measure(ui, icon, &body_font) + measure(ui, label, &small_font) + spacing + 12.0)
-            .max(96.0);
+    let badge_w = (BADGE_ICON + measure(ui, label, &small_font) + spacing + 12.0).max(96.0);
     let delete_w = measure(ui, s.delete, &small_font);
     let edit_w = measure(ui, s.edit, &small_font);
     let actions_w = delete_w + edit_w + spacing + 8.0;
@@ -375,7 +382,7 @@ fn allocate_left_widths(
 fn draw_badge(
     ui: &mut egui::Ui,
     badge_w: f32,
-    icon: &str,
+    icon: Icon,
     label: &str,
     amount_color: egui::Color32,
     muted: egui::Color32,
@@ -384,7 +391,8 @@ fn draw_badge(
         Vec2::new(badge_w, 24.0),
         Layout::left_to_right(Align::Center),
         |ui| {
-            ui.label(RichText::new(icon).strong().color(amount_color));
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(BADGE_ICON), Sense::hover());
+            icons::paint(ui, rect, icon, amount_color);
             ui.label(
                 RichText::new(label)
                     .text_style(egui::TextStyle::Small)
@@ -491,19 +499,23 @@ mod tests {
     fn type_badges_are_not_color_only() {
         assert_eq!(
             type_badge(TransactionType::Expense, Language::En),
-            ("−", "Expense")
+            (Icon::ArrowUpRight, "Expense")
         );
         assert_eq!(
             type_badge(TransactionType::Income, Language::En),
-            ("+", "Income")
+            (Icon::ArrowDownLeft, "Income")
         );
         assert_eq!(
             type_badge(TransactionType::Refund, Language::En),
-            ("↩", "Refund")
+            (Icon::Undo2, "Refund")
         );
         assert_eq!(
             type_badge(TransactionType::Refund, Language::PtBr),
-            ("↩", "Reembolso")
+            (Icon::Undo2, "Reembolso")
+        );
+        assert_eq!(
+            type_badge(TransactionType::Settlement, Language::PtBr),
+            (Icon::ArrowLeftRight, "Acerto")
         );
     }
 
@@ -737,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn register_row_shows_settlement_label_and_glyph() {
+    fn register_row_shows_settlement_label_and_attribution() {
         use egui_kittest::kittest::Queryable;
 
         for (lang, label) in [(Language::En, "Settlement"), (Language::PtBr, "Acerto")] {
@@ -767,9 +779,12 @@ mod tests {
                     show(ui, &vm, &tx);
                 });
             harness.run_steps(2);
-            assert!(harness.query_by_label("⇄").is_some());
             assert!(harness.query_by_label(label).is_some());
-            assert!(harness.query_by_label("Ana → A3").is_some());
+            let sentence = crate::i18n::strings(lang)
+                .settlement_from_to
+                .replace("{from}", "Ana")
+                .replace("{to}", "A3");
+            assert!(harness.query_by_label(&sentence).is_some());
         }
     }
 }
