@@ -6,7 +6,7 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.1.0 (Safe Data): settlement balances and paybacks, Trash with undo, automatic, manual and
+Version 1.1.1 (Safe Data): settlement balances and paybacks, Trash with undo, automatic, manual and
 safety backups with in-app recovery and restore, and Format 2 JSON export and import. English and
 Brazilian Portuguese. Windows is the primary target.
 
@@ -116,7 +116,7 @@ goals, attachments, and multi-currency remain future work.
 
 Release verification: automated checks (format, Clippy, tests, document lint) and the installer
 build pass. The live interactive GUI walk-through, 100/150/200 % Windows scaling checks, and a clean
-Windows machine test were not performed for 1.1.0; see `docs/smoke-1.1.md`.
+Windows machine test remain open; see `docs/smoke-1.1.md`.
 
 ## Development
 

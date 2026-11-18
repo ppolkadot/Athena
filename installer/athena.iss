@@ -1,7 +1,7 @@
 ; Inno Setup script for Athena. Build with:  ISCC installer\athena.iss
 
 #define AppName "Athena"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppExe "athena.exe"
 
 [Setup]

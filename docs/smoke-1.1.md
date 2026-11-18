@@ -28,3 +28,16 @@ Format 2 JSON export and import). Contract: `docs/superpowers/specs/contracts.md
 - [ ] Installer install, launch and uninstall of `Athena-1.1.0-setup.exe`; clean Windows machine test.
 
 These remain open and are not waived by this record.
+
+## 1.1.1 patch release (2026-11-18)
+
+Patch `1.1.1` builds on `1.1.0` with hardened startup recovery (`recovery-intent.json`
+reconciliation, non-clobbering move/publish/rollback, and explicit Start fresh confirmation),
+explicit format-version import dispatch (`1` and `2`), and automated GitHub Release publishing in
+`.github/workflows/ci.yml` (`BUILD-INFO.txt`, `SHA256SUMS.txt`, portable executable, Inno Setup
+installer, and font `LICENSE.txt`).
+
+- Published release assets and SHA-256 digests for `v1.1.1` are produced by the tag CI workflow and
+  recorded in the release's `BUILD-INFO.txt` and `SHA256SUMS.txt`.
+- The interactive Windows smoke items above remain open for `1.1.1` until run against the final
+  `v1.1.1` artifacts.
