@@ -5,7 +5,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use super::actions::{ActionOutcome, AppAction, OperationKind, OperationNotice, RefreshScope};
 use crate::application::services::import::ImportPlan;
-use crate::application::services::onboarding;
+use crate::application::services::{goals, onboarding};
+use crate::domain::goal::GoalTransition;
 use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
@@ -21,6 +22,15 @@ pub struct Store {
     db: Db,
     dirs: AppDirs,
     data_version: u64,
+    clock: Clock,
+}
+
+/// Where the Store reads the local date for write rules (future-dated contributions, completed
+/// months). Tests freeze it.
+#[derive(Debug, Clone, Copy)]
+enum Clock {
+    Local,
+    Fixed(NaiveDate),
 }
 
 impl Store {
@@ -30,6 +40,23 @@ impl Store {
             db,
             dirs,
             data_version: 0,
+            clock: Clock::Local,
+        }
+    }
+
+    /// Freeze the local date the write rules use (tests).
+    #[must_use]
+    pub fn with_fixed_today(mut self, today: NaiveDate) -> Self {
+        self.clock = Clock::Fixed(today);
+        self
+    }
+
+    /// The local calendar date write rules are checked against.
+    #[must_use]
+    pub fn today(&self) -> NaiveDate {
+        match self.clock {
+            Clock::Local => chrono::Local::now().date_naive(),
+            Clock::Fixed(date) => date,
         }
     }
 
@@ -176,6 +203,7 @@ impl Store {
             AppAction::CreateBackup => {
                 let file = backup::create_manual(self.db.conn(), &self.dirs, Utc::now())?;
                 return Ok(ActionOutcome {
+                    created_goal: None,
                     inverse: None,
                     toast: Some(ToastKey::BackupCreated),
                     refresh: RefreshScope::Backups,
@@ -198,6 +226,7 @@ impl Store {
                 let receipt =
                     restore::restore_backup(&mut self.db, &self.dirs, &source, Utc::now())?;
                 return Ok(ActionOutcome {
+                    created_goal: None,
                     inverse: None,
                     toast: Some(ToastKey::Restored),
                     refresh: RefreshScope::All,
@@ -218,6 +247,7 @@ impl Store {
             }
             _ => {}
         }
+        let today = self.today();
         let conn = self.db.conn();
         match action {
             AppAction::CompleteOnboarding(result) => {
@@ -234,6 +264,11 @@ impl Store {
             | AppAction::RestoreTransaction(_)
             | AppAction::PurgeTransaction(_)
             | AppAction::EmptyTrash => Self::run_transaction_action(conn, action),
+            AppAction::CreateGoal(_)
+            | AppAction::UpdateGoal(_, _)
+            | AppAction::ChangeGoalStatus(_, _)
+            | AppAction::AddContribution(_, _)
+            | AppAction::DeleteContribution { .. } => Self::run_goal_action(conn, today, action),
             AppAction::ApplyAppearance(_) | AppAction::ResetAppearance => {
                 Self::run_appearance_action(&self.dirs, conn, action)
             }
@@ -268,6 +303,7 @@ impl Store {
             tracing::warn!("could not prune backups after import: {err}");
         }
         Ok(ActionOutcome {
+            created_goal: None,
             inverse: None,
             toast: Some(ToastKey::Imported),
             refresh: RefreshScope::All,
@@ -328,6 +364,7 @@ impl Store {
             AppAction::PurgeTransaction(id) => {
                 trash_repo::purge(conn, id)?;
                 Ok(ActionOutcome {
+                    created_goal: None,
                     inverse: None,
                     toast: None,
                     refresh: RefreshScope::Trash,
@@ -337,6 +374,7 @@ impl Store {
             AppAction::EmptyTrash => {
                 trash_repo::empty(conn)?;
                 Ok(ActionOutcome {
+                    created_goal: None,
                     inverse: None,
                     toast: Some(ToastKey::TrashEmptied),
                     refresh: RefreshScope::Trash,
@@ -375,6 +413,50 @@ impl Store {
                     Some(ToastKey::TemplateDeleted),
                     RefreshScope::Templates,
                 ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_goal_action(
+        conn: &rusqlite::Connection,
+        today: NaiveDate,
+        action: AppAction,
+    ) -> Result<ActionOutcome> {
+        let refresh = RefreshScope::Goals;
+        match action {
+            AppAction::CreateGoal(draft) => {
+                let id = goals::create(conn, &draft)?;
+                let mut out = outcome(None, Some(ToastKey::GoalCreated), refresh);
+                out.created_goal = Some(id);
+                Ok(out)
+            }
+            AppAction::UpdateGoal(id, draft) => {
+                goals::update(conn, id, &draft)?;
+                Ok(outcome(None, Some(ToastKey::GoalUpdated), refresh))
+            }
+            AppAction::ChangeGoalStatus(id, transition) => {
+                goals::change_status(conn, id, transition)?;
+                let toast = match transition {
+                    GoalTransition::Pause => ToastKey::GoalPaused,
+                    GoalTransition::Resume => ToastKey::GoalResumed,
+                    GoalTransition::Complete => ToastKey::GoalCompleted,
+                    GoalTransition::Reopen => ToastKey::GoalReopened,
+                    GoalTransition::Archive => ToastKey::GoalArchived,
+                    GoalTransition::Restore => ToastKey::GoalRestored,
+                };
+                Ok(outcome(None, Some(toast), refresh))
+            }
+            AppAction::AddContribution(goal_id, draft) => {
+                goals::add_contribution(conn, goal_id, &draft, today)?;
+                Ok(outcome(None, Some(ToastKey::ContributionAdded), refresh))
+            }
+            AppAction::DeleteContribution {
+                goal_id,
+                contribution_id,
+            } => {
+                goals::delete_contribution(conn, goal_id, contribution_id)?;
+                Ok(outcome(None, Some(ToastKey::ContributionDeleted), refresh))
             }
             _ => unreachable!(),
         }
@@ -502,6 +584,7 @@ fn outcome(
     refresh: RefreshScope,
 ) -> ActionOutcome {
     ActionOutcome {
+        created_goal: None,
         inverse,
         toast,
         refresh,
@@ -1291,5 +1374,67 @@ mod tests {
             people_repo::owner(store.db().conn()).unwrap().unwrap().name,
             "A3"
         );
+    }
+
+    #[test]
+    fn goal_actions_run_through_apply_with_a_frozen_local_date() {
+        use crate::domain::goal::{
+            ContributionDraft, Frequency, GoalDraft, GoalStatus, GoalTransition,
+        };
+        use crate::domain::money::Money;
+        let today = NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let mut store = store().with_fixed_today(today);
+        let created = store
+            .apply(AppAction::CreateGoal(GoalDraft {
+                name: "Trip".into(),
+                target: Money::from_cents(1000),
+                target_date: None,
+                frequency: Frequency::Monthly,
+                attribution_id: None,
+            }))
+            .unwrap();
+        assert_eq!(created.refresh, RefreshScope::Goals);
+        let id = created.created_goal.unwrap();
+        let future = ContributionDraft {
+            amount: Money::from_cents(100),
+            date: today.succ_opt().unwrap(),
+            note: None,
+        };
+        let version = store.data_version();
+        assert!(store.apply(AppAction::AddContribution(id, future)).is_err());
+        assert_eq!(store.data_version(), version);
+        let ok = ContributionDraft {
+            amount: Money::from_cents(100),
+            date: today,
+            note: Some("first".into()),
+        };
+        store.apply(AppAction::AddContribution(id, ok)).unwrap();
+        let detail = crate::application::services::goals::detail(store.db().conn(), id)
+            .unwrap()
+            .unwrap();
+        let contribution_id = detail.contributions[0].id;
+        store
+            .apply(AppAction::ChangeGoalStatus(id, GoalTransition::Archive))
+            .unwrap();
+        assert!(
+            store
+                .apply(AppAction::DeleteContribution {
+                    goal_id: id,
+                    contribution_id,
+                })
+                .is_err()
+        );
+        store
+            .apply(AppAction::ChangeGoalStatus(id, GoalTransition::Restore))
+            .unwrap();
+        store
+            .apply(AppAction::DeleteContribution {
+                goal_id: id,
+                contribution_id,
+            })
+            .unwrap();
+        let goal = crate::infrastructure::db::goals_repo::get(store.db().conn(), id).unwrap();
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(integrity::check(store.db().conn()).unwrap(), vec![]);
     }
 }

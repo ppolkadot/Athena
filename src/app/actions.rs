@@ -7,6 +7,7 @@ use crate::application::services::import::ImportPlan;
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
+use crate::domain::goal::{ContributionDraft, GoalDraft, GoalTransition};
 use crate::domain::person::Person;
 use crate::domain::settings::Profile;
 use crate::domain::template::TemplateDraft;
@@ -47,6 +48,15 @@ pub enum AppAction {
     ApplyAppearance(Box<AppearanceApply>),
     /// Delete the appearance row so defaults derive from the profile again.
     ResetAppearance,
+    /// Create a goal in the Active status (contract §14.3).
+    CreateGoal(GoalDraft),
+    UpdateGoal(i64, GoalDraft),
+    ChangeGoalStatus(i64, GoalTransition),
+    AddContribution(i64, ContributionDraft),
+    DeleteContribution {
+        goal_id: i64,
+        contribution_id: i64,
+    },
 }
 
 /// What Apply commits: the preferences and, for a newly chosen local wallpaper, the staged copy
@@ -71,6 +81,8 @@ pub enum RefreshScope {
     Templates,
     /// The optional appearance row only.
     Appearance,
+    /// The goals list and the selected goal's detail.
+    Goals,
     All,
 }
 
@@ -96,4 +108,6 @@ pub struct ActionOutcome {
     pub toast: Option<ToastKey>,
     pub refresh: RefreshScope,
     pub notice: Option<OperationNotice>,
+    /// The goal a `CreateGoal` action just created, so the screen can select it.
+    pub created_goal: Option<i64>,
 }

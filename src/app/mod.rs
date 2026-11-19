@@ -2406,6 +2406,7 @@ mod tests {
             source: None,
         };
         core.record_outcome_notice(&ActionOutcome {
+            created_goal: None,
             inverse: None,
             toast: None,
             refresh: RefreshScope::Backups,

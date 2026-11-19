@@ -1,4 +1,5 @@
 pub mod export;
+pub mod goals;
 pub mod import;
 #[cfg(test)]
 mod import_format3_tests;

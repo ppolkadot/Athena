@@ -2,6 +2,7 @@ pub mod appearance;
 pub mod category;
 pub mod date;
 pub mod export;
+pub mod goal;
 pub mod money;
 pub mod person;
 pub mod quick_entry;

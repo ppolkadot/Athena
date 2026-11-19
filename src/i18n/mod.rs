@@ -564,6 +564,16 @@ strings! {
     ap_preview_name,
     err_import_invalid_appearance,
     import_preview_format_v4,
+    toast_goal_created,
+    toast_goal_updated,
+    toast_goal_paused,
+    toast_goal_resumed,
+    toast_goal_completed,
+    toast_goal_reopened,
+    toast_goal_archived,
+    toast_goal_restored,
+    toast_contribution_added,
+    toast_contribution_deleted,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -592,6 +602,16 @@ pub enum ToastKey {
     Imported,
     Welcome,
     UndoFailed,
+    GoalCreated,
+    GoalUpdated,
+    GoalPaused,
+    GoalResumed,
+    GoalCompleted,
+    GoalReopened,
+    GoalArchived,
+    GoalRestored,
+    ContributionAdded,
+    ContributionDeleted,
 }
 
 impl ToastKey {
@@ -622,6 +642,16 @@ impl ToastKey {
             ToastKey::Imported => s.toast_imported,
             ToastKey::Welcome => s.toast_welcome,
             ToastKey::UndoFailed => s.toast_undo_failed,
+            ToastKey::GoalCreated => s.toast_goal_created,
+            ToastKey::GoalUpdated => s.toast_goal_updated,
+            ToastKey::GoalPaused => s.toast_goal_paused,
+            ToastKey::GoalResumed => s.toast_goal_resumed,
+            ToastKey::GoalCompleted => s.toast_goal_completed,
+            ToastKey::GoalReopened => s.toast_goal_reopened,
+            ToastKey::GoalArchived => s.toast_goal_archived,
+            ToastKey::GoalRestored => s.toast_goal_restored,
+            ToastKey::ContributionAdded => s.toast_contribution_added,
+            ToastKey::ContributionDeleted => s.toast_contribution_deleted,
         }
     }
 }
@@ -1256,6 +1286,16 @@ mod tests {
             Imported,
             Welcome,
             UndoFailed,
+            GoalCreated,
+            GoalUpdated,
+            GoalPaused,
+            GoalResumed,
+            GoalCompleted,
+            GoalReopened,
+            GoalArchived,
+            GoalRestored,
+            ContributionAdded,
+            ContributionDeleted,
         ] {
             assert_ne!(key.text(Language::En), key.text(Language::PtBr));
         }
