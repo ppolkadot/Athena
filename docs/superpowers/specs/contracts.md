@@ -1,6 +1,6 @@
 # Athena contracts
 
-**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md); §14.1 is **Frozen for 1.2** and §14.2 is **Frozen for 1.3**. Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
+**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md); §14.1 is **Frozen for 1.2**, §14.2 is **Frozen for 1.3** and §14.3 is **Frozen for 1.4**. Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
 **Created:** 2026-11-16, from the [roadmap decisions](2026-11-13-athena-roadmap-revision.md), the [1.1](2026-11-13-athena-1.1.0-revision-brief.md) / [1.2](2026-11-13-athena-1.2.0-revision-brief.md) briefs, and the [readiness review](2026-11-16-athena-readiness-and-appearance-review.md), checked against source at `2093257`.
 
 ## §0 Authority and change rules
@@ -31,7 +31,7 @@
 | **1.1.0** | Safe data | `0002_settlement_kind`, `0003_trash` (3) | **2** |
 | **1.2.0** | Daily speed | `0004_templates` (4) | **3** (frozen for 1.2, §14.1) |
 | **1.3.0** | Appearance | `0005_appearance` (5) | **4** (frozen for 1.3, §14.2) |
-| 1.4.0 | Goals & closings | reserved `0006_goals`, `0007_closings` (7) | reserved 5 |
+| **1.4.0** | Goals & closings | `0006_goals`, `0007_closings` (7) | **5** (frozen for 1.4, §14.3) |
 
 Rules:
 - One migration file per feature. The schema version equals `MIGRATIONS.len()`; tests never hard-code it.
@@ -273,6 +273,8 @@ pub struct SuggestedTransfer { pub from: i64, pub to: i64, pub amount: Money }
 | `SaveTemplate` / `UpdateTemplate` / `DeleteTemplate` (1.2, §14.1) | `None` | `Templates` | Settings and Quick Add |
 | `SaveTransactionFromTemplate(TxDraft, i64)` (1.2) | `DeleteTransaction(id)` | `Month` + `Templates` | one transaction, one timestamp |
 | `ApplyAppearance(Box<AppearanceApply>)` / `ResetAppearance` (1.3, §14.2) | `None` | `Appearance` | Settings → Appearance; Apply may publish a staged managed wallpaper first |
+| `CreateGoal(GoalDraft)` / `UpdateGoal(i64, GoalDraft)` / `ChangeGoalStatus(i64, GoalTransition)` / `AddContribution(i64, ContributionDraft)` / `DeleteContribution { goal_id, contribution_id }` (1.4, §14.3) | `None` | `Goals` | Goals screen; a create reports the new goal id in the outcome |
+| `CloseMonth(YearMonth)` / `RecalculateClosing(YearMonth)` (1.4, §14.3) | `None` | `Closings` | Month card; completed local months only |
 
 - `RestoreSource` is `Listed(PathBuf)` (inside `backups_dir`) or `External(PathBuf)` (picked file).
 - `ImportPlan` derives `Clone` and `PartialEq` because `AppAction` does.
@@ -323,7 +325,7 @@ New `ViewModel` fields:
 ### §8.4 Screens and shortcuts
 
 - `Screen::Trash` is added. The sidebar order is `Screen::ALL = [Month, Calendar, Trash, Settings]`.
-- Shortcuts come from an explicit table, **not** from `ALL` indices: `Ctrl+1` Month, `Ctrl+2` Calendar, `Ctrl+3` Settings, `Ctrl+4` Trash, and later `Ctrl+5` Goals. A test asserts the table.
+- Shortcuts come from an explicit table, **not** from `ALL` indices: `Ctrl+1` Month, `Ctrl+2` Calendar, `Ctrl+3` Settings, `Ctrl+4` Trash, and (1.4) `Ctrl+5` Goals. A test asserts the table. In 1.4 the sidebar order is `[Month, Calendar, Goals, Trash, Settings]`; the Ctrl+1–4 targets are unchanged.
 - Screen titles and icons follow the existing `title()`/`icon()` pattern.
 
 ## §9 Backups and restore — Frozen for 1.1
@@ -419,6 +421,10 @@ Format 3 is format 2 plus a required `templates` array (`id, name, title, amount
 
 Format 4 is format 3 plus an optional `appearance` object (§14.2). Portable fields are theme mode, preset, accent, density, text scale, motion, reduce transparency, quality, background (`none|builtin`), fit, dim and paused; a local wallpaper exports as `none`. Formats 1–3 and a format-4 document without `appearance` clear the appearance row in the replacement transaction. A version above 4 is `TooNew` before any body parsing; invalid enums or ranges in `appearance` are an import validation error. <!-- lint:allow -->
 
+### §10.2.3 Format 5 (written by 1.4)
+
+Format 5 is format 4 plus required `goals` (each with nested `contributions`) and `closings` arrays (§14.3). Goals export in id order with contributions in id order, closings in month order. Formats 1–4 import with no goals or closings. A version above 5 is `TooNew` before any body parsing. Import replaces both collections in the same transaction (closings and contributions before goals, people and transactions are deleted; goals, contributions and closings are inserted after their parents), never regenerates a saved fingerprint, and rejects a dangling reference or an inconsistent snapshot. A closing whose largest-expense row is not in the live export is written with a null `largest_expense_id` and keeps its title and amount. <!-- lint:allow -->
+
 ### §10.3 Format 1 adapter
 
 `format_v1.rs` freezes the 1.0 shapes (domain-derived serde as of `2093257`, `schema_version: 1`).
@@ -505,6 +511,7 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - the latest operation notice
   - Changing a category's scope is refused with its own message (`SettingsError::ScopeInUse`) when entries already use it and the new scope would hide them; the generic save failure is reserved for everything else.
 - Successful restore/import clears filters and opens Month.
+- **1.4 additions (§14.3):** the sidebar gains Goals (`Ctrl+5`, Lucide `target`); Month gains a "Saved closing" card below the live totals and Calendar gains saved/stale markers on year cards and the month header; Settings → Data & backups workbooks gain full-history Goals and Closings sheets.
 - **1.3 additions (§14.2):** Settings gains an Appearance page (theme and presets, accent/density/text scale, background, accessibility) with a live shell preview, Apply/Cancel/Reset and a dirty-leave guard; General links to it instead of switching the theme directly. Wallpaper spans Month, Calendar, Settings and Trash behind an opaque-card shell.
 - **1.2 additions (§14.1):** Create Quick Add gains a Templates picker, Save as template and a one-line entry field with a Review button; Settings gains a Templates page; the sidebar becomes a labeled icon rail when content would be narrower than 480 pt; Calendar and Month expose a day grid with a shared day detail panel; Settings → Data & backups gains XLSX export for the viewed month and all history.
 - **Dialogs** return keyboard focus to the control that opened them.
@@ -581,15 +588,44 @@ Implementation design for 1.3.0 (schema 5, document format 4). Rationale and tes
 - **Glass** is not selectable in 1.3. It needs a revised contract and every gate in the spike record (swapchain p95, focused idle, native DPI, iGPU/dGPU, device-loss fallback).
 - **Format 4** (written by 1.3) is format 3 plus optional `appearance` with the portable typed scalars and a `none|builtin` background. A local wallpaper exports as `none` while keeping fit, dim and paused; asset ids, paths and bytes are never exported. Formats 1–3 and a format-4 document without `appearance` clear the appearance row on replacement (solid legacy theme). A version above 4 is `TooNew` before body parsing.
 
-### §14.3 1.4 Goals & closings (Draft)
+### §14.3 1.4 Goals & closings — Frozen for 1.4
 
-- `0006_goals.sql` and `0007_closings.sql` implement the 1.2 brief:
-  - `is_funded` is derived; `Completed` is manual; `pre_archive_status` is stored
-  - checked contribution totals
-  - closings store `previous_spending_cents`, `previous_count`, `top_category_id`, `top_category_net_cents`, and a canonical comparison record covering both months
-- Format 5 adds goals, contributions and closings.
-- Date-sensitive hints rely on `LoadKey.today` (§8.3).
-- `Ctrl+5` opens Goals.
+Implementation design for 1.4.0 (schema 7, document format 5). Domain rationale lives in the [goals and closing brief](2026-11-13-athena-1.2.0-revision-brief.md) (its release, migration and format numbers are superseded by §2) and the [roadmap](../plans/2026-11-18-athena-stalled-ui-roadmap-plan.md). Goal money is independent of the ledger: goals and contributions never create or edit transactions and never change balances, settlements or summaries.
+
+#### Goals (`0006_goals.sql`)
+
+- `goals(id, name, target_cents, target_date, frequency, attribution_id, status, pre_archive_status, created_at, updated_at)`:
+  - `name` trimmed and nonempty (duplicate names allowed; ids distinguish goals); `target_cents > 0`; `target_date` optional ISO date (future or past); `frequency` is `daily|weekly|monthly`; `attribution_id` optional `people(id)` with `ON DELETE RESTRICT`
+  - `status` is `active|paused|completed|archived`; `pre_archive_status` (`active|paused|completed`) is set exactly when `status = 'archived'`
+  - normalized `YYYY-MM-DD` dates and RFC 3339 UTC metadata
+- `goal_contributions(id, goal_id, amount_cents, date, note, created_at)`: `goal_id` → `goals ON DELETE RESTRICT`, `amount_cents > 0`, optional trimmed note, index on `(goal_id, date, id)`.
+- **Lifecycle** (`GoalTransition`): Active → Pause | Complete; Paused → Resume | Complete; Completed → Reopen (to Active); Archive from Active, Paused or Completed stores the current status in `pre_archive_status`; Restore returns to it. Any other transition is a validation error, checked inside the write transaction. Completing below target requires an explicit UI confirmation that shows the remaining money; the repository does not second-guess it. Edits (`UpdateGoal`) and contribution add/delete are allowed only in Active or Paused, including when already Funded. Pausing keeps history and still accepts deliberate contributions.
+- **Progress.** `contributed` is the checked `i64` sum of contributions; an addition or import whose total would overflow fails inside its transaction. `remaining = max(target − contributed, 0)`, `excess = max(contributed − target, 0)`, the bar is capped at 100 % and the percentage is computed in `i128` (floor). `Funded` is derived as `contributed ≥ target`, independent of the manual status. Removing contributions or raising the target only recomputes `Funded`; it never rewrites the manual status.
+- **Attribution.** A new or changed attribution must be an active person. An unchanged or imported attribution may be archived.
+- **Dates.** A contribution written through an action must have a valid date no later than the app's local today (the Store's date provider; tests freeze it). Imports keep valid historical dates whatever the clock says.
+- **Schedule** `contribution_plan(goal, contributed, today) -> ContributionPlan { Hidden | DueToday(remaining) | Overdue(remaining) | PerPeriod { periods, per_period } }`: hidden when funded, not Active, or without a target date; `DueToday` on the target date and `Overdue` after it, both with the full remaining amount. Otherwise periods are the day difference (daily), `ceil(days / 7)` (weekly), or the smallest positive count of month advances from today that reaches or passes the target (monthly). Each advance anchors on today's day of month and clamps to the destination month's last day, so Jan 31 → Feb 28/29 is one period and Jan 31 → Mar 1 is two. `per_period = ceil(remaining / periods)` in cents (101 cents over two periods is 51).
+- **Actions** (`RefreshScope::Goals`): `CreateGoal(GoalDraft)`, `UpdateGoal(i64, GoalDraft)`, `ChangeGoalStatus(i64, GoalTransition)`, `AddContribution(i64, ContributionDraft)`, `DeleteContribution { goal_id, contribution_id }`. The outcome carries the created goal id so the screen can select it. A delete whose contribution belongs to another goal is `NotFound`. `integrity::check` gains goal shape, contribution ownership and checked-total issues.
+
+#### Goals screen and cache
+
+- `Screen::Goals` on `Ctrl+5` with the Lucide `target` icon and a visible shortcut hint; the sidebar order is `[Month, Calendar, Goals, Trash, Settings]` and `Ctrl+1`–`Ctrl+4` are unchanged.
+- `GoalsState { selected, filter, pending_focus }` in `UiState`; `ViewModel` holds `goals: Vec<GoalListItem>` (summary with contributed cents) and `goal_detail: Option<GoalDetail>` (goal plus contributions, `date DESC, id DESC`). The selected id is part of the load key, so changing it reloads only the detail. `RefreshScope::Goals` stages both together. Selection clears on import/restore, when it leaves the filtered partition, or when its id is missing. `LoadKey.today` reloads schedules at midnight; `AthenaApp` schedules its own local-midnight repaint (DST- and clock-change-aware) and refreshes on resume, independent of wallpaper or focus polls.
+- Layout: Active (default), Paused, Completed and Archived tabs and a primary New goal; two panes at ≥ 720 pt of content, a list → detail drill-in with Back below that. Detail has one primary action (Add contribution for Active/Paused, Reopen for Completed, Restore for Archived) and a labeled menu for the rest. Confirmations: contribution delete (date and amount), archive, and complete below target. Amounts are tabular and update on commit without animation.
+
+#### Closings (`0007_closings.sql`)
+
+- `closings` keyed by canonical `month TEXT` (`YYYY-MM`, month 01–12): `closed_at` (RFC 3339 UTC), `income_cents`, `expenses_cents`, `refunds_cents`, `result_cents` (`income − expenses + refunds`, checked), `entry_count ≥ 0`; `previous_spending_cents` and `previous_count ≥ 0` of the preceding month; `top_category_id` (→ `categories ON DELETE RESTRICT`, nullable) with `top_category_net_cents` (positive; NULL means no winner, a positive amount with a NULL id is Uncategorized); `largest_expense_id` (→ `transactions ON DELETE SET NULL`, nullable) with `largest_expense_title` and `largest_expense_cents` (positive) kept as historical fallbacks after a purge; `fingerprint_version` (`1`) and the two 64-char lower-case hex fingerprints `current_fingerprint` and `previous_fingerprint`. CHECKs and `integrity::check` require consistent optional groups.
+- **Capture** reuses the 1.2 `InsightInputs` (full completed month and full predecessor) from one consistent SQL snapshot taken in the same transaction as the write. The live-only responsibility note is not stored. `CloseMonth(YearMonth)` fails if a closing exists; `RecalculateClosing(YearMonth)` requires one and replaces it completely. Both require a completed local month, `month < YearMonth::from_date(today)`, enforced at action execution against the Store's date provider. Saved values stay historical even when live totals differ; labels (category names) resolve live.
+- **Comparison record (version 1).** For month `M` the canonical bytes are the compact UTF-8 `serde_json` serialization of `{"version":1,"month":"YYYY-MM","rows":[…]}` with `rows` sorted by `(date, id)` and each row `{"id","date","kind","amount_cents","category_id","title","created_at","updated_at"}` in that field order, covering every live **financial** row (`expense|income|refund`) dated in `M`; settlements, descriptions, allocations and display labels are excluded. The empty month hashes `rows: []`. The fingerprint is the lower-case hex SHA-256 of those bytes (explicit `sha2` dependency). `current_fingerprint` covers the closed month and `previous_fingerprint` its predecessor. Fingerprints are never derived from aggregates or wall-clock order.
+- **Staleness.** A closing is stale when either recomputed fingerprint differs from the stored one. The check runs on data, month, year, import/restore and date invalidations, never per frame: Month checks the viewed month and predecessor; Calendar checks closed months of the displayed year with one bounded year-plus-predecessor scan reusing adjacent months. Filter changes do not recompute. A failed check shows an unavailable/retry state and never claims freshness. Recalculation clears the marker.
+- **UI.** Month shows a distinct "Saved closing" card below the live totals (date saved, month and comparison month, figures, saved insight, category, largest expense), a `Close month` action for an unclosed completed month and `Recalculate closing` for a saved one, each behind a confirmation naming the month; recalculation states that the saved snapshot is replaced and ledger rows stay editable. Staleness reads "Changed since closing" with an icon and text. Category names resolve live; the expense shows its captured title and amount, with `Open entry` only while that row is live. Calendar year cards and the month header carry an accessible saved / changed / unavailable marker that opens Month.
+- **Actions** (`RefreshScope::Closings`): `CloseMonth(YearMonth)`, `RecalculateClosing(YearMonth)`.
+
+#### Format 5 and workbook
+
+- `format_v5.rs::DocumentV5` is format 4 plus required `goals` (nested `contributions`) and `closings`, ordered as in §10.2.3. Validation covers ids, references, `YYYY-MM` months, lifecycle shape, snapshot consistency, fingerprint shape and overflow; nothing is regenerated. `tests/fixtures/format5-1.4.0.json` is LF.
+- **Workbook.** Goals and Closings sheets are always labeled "Full history", even for a viewed-month export; `Entries` and `Allocations` keep their requested scope. All cells follow the 1.2 numeric-or-exact-text and explicit-string policy. The receipt count still equals the ledger rows.
+- JSON exports live ledger rows and structured history; SQLite backups keep Trash and local media references.
 
 ## §15 Change log
 
@@ -609,3 +645,4 @@ Implementation design for 1.3.0 (schema 5, document format 4). Rationale and tes
 - 2026-11-18 — §11 hardens non-clobbering file moves without destructor ownership of existing files, shares post-publish verification across normal and reconciled paths, rechecks live state at move/sidecar boundaries, keeps blocked recoverable directories non-fatal at startup, and documents `athena.lock` and process-kill vs power-loss boundaries.
 - 2026-11-18 — Froze §14.1 for 1.2.0 (schema 4, format 3): templates, dirty-draft guard, one-line entry, duplicate consent, day drill-down, insights, XLSX and tokens/icons. Synced §2 (release ledger), §8 (template actions, `RefreshScope::Templates`), §10 (format 3 envelope: required `templates`, accepted formats 1–3) and §12 (Quick Add template/one-line controls, Settings Templates page, icon rail). Historical 1.1 behavior is unchanged.
 - 2026-11-19 — Froze §14.2 for 1.3.0 (schema 5, format 4): single-row `appearance` preferences, Windows platform preferences, managed local wallpaper (static + GIF) with bounded decode/playback and a contrast-floor scrim, Settings → Appearance, and the portable local→none export rule. Synced §2 (release ledger), §8 (`ApplyAppearance`/`ResetAppearance`, `RefreshScope::Appearance`), §10 (format 4 envelope, accepted formats 1–4) and §12 (Appearance page). Glass stays unshipped behind the spike gates. Historical 1.1/1.2 behavior is unchanged.
+- 2026-11-19 — Froze §14.3 for 1.4.0 (schema 7, format 5): goals and contributions (lifecycle with stored pre-archive status, derived Funded, checked totals, calendar-aware contribution plan), `Ctrl+5` Goals screen and cache, monthly closings with version-1 SHA-256 comparison fingerprints and staleness, Month/Calendar closing surfaces, and format 5 plus full-history workbook sheets. Synced §2 (release ledger), §8 (goal and closing actions, `RefreshScope::Goals`/`Closings`, sidebar order), §10 (format 5 envelope, accepted formats 1–5) and §12 (Goals, closing card, markers). §6.4 is unchanged: closings read live rows through `live_transactions`. Historical 1.1–1.3 behavior is unchanged.
