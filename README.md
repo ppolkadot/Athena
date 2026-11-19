@@ -6,12 +6,17 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.2.0 (Daily Speed): reusable templates, one-line quick entry, duplicate-entry
-confirmation, a day drill-down grid on Calendar and Month, a live monthly insight, Excel (`.xlsx`)
-export alongside CSV and JSON, and a labeled icon rail with shared design tokens. Data stays on
-schema 4 with document format 3; formats 1 and 2 still import. Builds on 1.1 (Safe Data):
-settlement balances and paybacks, Trash with undo, and automatic, manual and safety backups with
-in-app recovery and restore. English and Brazilian Portuguese. Windows is the primary target.
+Version 1.3.0 (Native Appearance): Settings, then Appearance, adds theme and presets (Onyx, Pearl,
+Aurora), accent colors, compact density, text size up to 150 %, a built-in gradient or your own
+PNG, JPEG or animated GIF behind every main screen, and Motion, Transparency and image-quality
+controls. Edits preview live and apply only when you press Apply; Windows reduced motion,
+transparency and high contrast are respected, and a minimum dimming keeps text readable over any
+image. Data moves to schema 5 with document format 4; formats 1 to 3 still import. Builds on 1.2
+(Daily Speed): templates, one-line quick entry, duplicate-entry confirmation, a day drill-down grid,
+a live monthly insight, Excel (`.xlsx`) export, a labeled icon rail and shared design tokens, and on
+1.1 (Safe Data): settlement balances and paybacks, Trash with undo, and automatic, manual and
+safety backups with in-app recovery and restore. English and Brazilian Portuguese. Windows is the
+primary target.
 
 Type: Salted Flutters Polaris, embedded as Latin subsets with a tabular money face. The font
 license and provenance live in `assets/fonts/`.
@@ -47,6 +52,9 @@ Inside the data folder:
 - `backups\`: automatic safety copies (see below).
 - `logs\`: daily log files. Transaction titles and descriptions are never logged.
 - `exports\`: the suggested folder for exports.
+- `appearance\`: private copies of the wallpaper images you chose (at most 32 files or 256 MiB).
+  Your original file is never changed. A database backup keeps the reference, not the image;
+  copy the whole data folder to keep wallpapers.
 - `athena.lock`: stops a second copy of Athena from opening the same data.
 
 Settings, then Data, shows the exact path and opens the folder.
@@ -75,9 +83,12 @@ After saving a new entry the form stays open with the amount field focused, read
   never automatically pruned. All backups live in `backups\` inside the data folder.
 - **Restore** accepts a listed backup or an external Athena database. It replaces everything,
   including Trash, after validation and a safety snapshot, then opens Month with cleared filters.
-- **Export JSON** writes Format 2: settings, people, categories, live transactions, settlements,
-  record timestamps, and per-person splits. Money is in integer cents. JSON excludes Trash.
-- **Import JSON** accepts Format 1 (1.0.2) and Format 2 exports. Preview shows counts and any
+- **Export JSON** writes Format 4: settings, people, categories, live transactions, settlements,
+  templates, record timestamps, per-person splits, and your appearance choices. Money is in integer
+  cents. JSON excludes Trash and never contains wallpaper images, paths or ids: a local wallpaper
+  exports as no wallpaper (fit, dimming and pause are kept).
+- **Import JSON** accepts Formats 1 to 4 (Format 1 from 1.0.2). Formats 1 to 3, and a Format 4 file
+  without appearance, reset appearance to the defaults. Preview shows counts and any
   category scopes widened for legacy history. Import replaces all data and empties Trash after
   saving a safety snapshot; use a database backup when you need Trash restored too.
 - **Export CSV** is the readable report for one month or all time. It uses `;` as the delimiter and
