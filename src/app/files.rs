@@ -55,6 +55,14 @@ pub(crate) fn pick_import_path(core: &AppCore) -> Option<PathBuf> {
         .pick_file()
 }
 
+/// Ask which image or GIF to use as the wallpaper. `None` when cancelled.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn pick_wallpaper_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("PNG, JPEG, GIF", &["png", "jpg", "jpeg", "gif"])
+        .pick_file()
+}
+
 pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

@@ -80,6 +80,12 @@ pub(super) fn data_card(
                 events.push(ScreenEvent::PickImportFile);
             }
         });
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(s.ap_scope_note)
+                .text_style(egui::TextStyle::Small)
+                .color(p.muted),
+        );
         if let Some(err) = &ui_state.settings.import_error {
             ui.add_space(6.0);
             ui.label(RichText::new(err).color(p.negative));

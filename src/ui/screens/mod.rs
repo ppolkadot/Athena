@@ -54,6 +54,12 @@ pub enum ScreenEvent {
     PickRestoreFile,
     PickImportFile,
     RetryRefresh,
+    /// Choose a local image or GIF for the Appearance preview.
+    PickWallpaper,
+    /// Apply the Appearance draft.
+    ApplyAppearance,
+    /// Ask to reset appearance to the defaults (confirmed by the app).
+    ResetAppearance,
 }
 
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<ScreenEvent> {

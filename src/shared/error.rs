@@ -63,6 +63,9 @@ pub enum ImportError {
     InvalidTheme,
     #[error("invalid profile language")]
     InvalidLanguage,
+    /// The `appearance` section has an unknown value or an out-of-range number.
+    #[error("invalid appearance settings")]
+    InvalidAppearance,
     #[error("person at index {index} has a non-positive id ({id})")]
     NonPositivePersonId { index: usize, id: i64 },
     #[error("duplicate person id {id}")]

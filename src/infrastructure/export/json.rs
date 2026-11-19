@@ -1,6 +1,6 @@
-//! The complete structured export (Format 3): integer cents, ISO dates, record timestamps, each
-//! live transaction with its allocations, and the entry templates. Written bytes are re-read and verified before
-//! replacing the destination.
+//! The complete structured export (Format 4): integer cents, ISO dates, record timestamps, each
+//! live transaction with its allocations, the entry templates and the portable appearance. Written
+//! bytes are re-read and verified before replacing the destination.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -8,17 +8,44 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::format_v2::{AllocationV2, CategoryV2, PersonV2, ProfileV2, TransactionV2};
-use super::format_v3::{DocumentV3, TemplateV3};
+use super::format_v3::TemplateV3;
+use super::format_v4::{AppearanceV4, DocumentV4};
 use super::{ExportReceipt, atomic_write, ordered_transactions, people_by_id};
+use crate::domain::appearance::{AppearancePrefs, Wallpaper};
 use crate::domain::export::ExportScope;
 use crate::domain::settings::Profile;
-use crate::infrastructure::db::{categories_repo, templates_repo};
+use crate::infrastructure::db::{appearance_repo, categories_repo, templates_repo};
 use crate::shared::error::{AppError, Result};
 
 pub const FORMAT_NAME: &str = "athena-profile";
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
-/// Collect everything into a Format 3 document, in the shared deterministic order.
+/// The portable wire form of the preferences: a local wallpaper is exported as `none`.
+#[must_use]
+pub fn appearance_dto(prefs: &AppearancePrefs) -> AppearanceV4 {
+    let prefs = prefs.portable();
+    AppearanceV4 {
+        theme_mode: prefs.theme_mode.code().to_string(),
+        preset: prefs.preset.code().to_string(),
+        accent: prefs.accent.code().to_string(),
+        density: prefs.density.code().to_string(),
+        text_scale: i64::from(prefs.text_scale.percent()),
+        motion: prefs.motion.code().to_string(),
+        reduce_transparency: prefs.reduce_transparency,
+        quality: prefs.quality.code().to_string(),
+        background: if prefs.wallpaper == Wallpaper::Builtin {
+            "builtin"
+        } else {
+            "none"
+        }
+        .to_string(),
+        fit: prefs.fit.code().to_string(),
+        dim: i64::from(prefs.dim),
+        paused: prefs.paused,
+    }
+}
+
+/// Collect everything into a Format 4 document, in the shared deterministic order.
 ///
 /// # Errors
 /// Database errors.
@@ -26,7 +53,7 @@ pub fn build_document(
     conn: &Connection,
     profile: &Profile,
     exported_at: &str,
-) -> Result<DocumentV3> {
+) -> Result<DocumentV4> {
     let mut categories = categories_repo::list(conn, true)?;
     categories.sort_by_key(|c| c.id);
     let people = people_by_id(conn)?;
@@ -34,7 +61,15 @@ pub fn build_document(
 
     let mut templates = templates_repo::list(conn)?;
     templates.sort_by_key(|t| t.id);
-    Ok(DocumentV3 {
+    // An unreadable row is not exported; it never blocks the financial export.
+    let appearance = match appearance_repo::load(conn) {
+        Ok(prefs) => prefs.as_ref().map(appearance_dto),
+        Err(err) => {
+            tracing::warn!("appearance preferences were not exported: {err}");
+            None
+        }
+    };
+    Ok(DocumentV4 {
         format: FORMAT_NAME.to_string(),
         format_version: FORMAT_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -119,6 +154,7 @@ pub fn build_document(
                 }
             })
             .collect(),
+        appearance,
     })
 }
 
@@ -142,7 +178,7 @@ pub fn write_json(
         file.seek(SeekFrom::Start(0))?;
         let mut text = String::new();
         file.read_to_string(&mut text)?;
-        let parsed: DocumentV3 = serde_json::from_str(&text)
+        let parsed: DocumentV4 = serde_json::from_str(&text)
             .map_err(|e| AppError::Export(format!("written file is not valid: {e}")))?;
         if parsed != document {
             return Err(AppError::Export(

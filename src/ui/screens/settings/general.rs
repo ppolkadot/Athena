@@ -5,7 +5,7 @@ use eframe::egui::{self, Button, RichText};
 use crate::app::actions::AppAction;
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
-use crate::domain::settings::{Language, Profile, Theme};
+use crate::domain::settings::{Language, Profile};
 use crate::i18n::strings;
 use crate::ui::components::money_input;
 use crate::ui::screens::ScreenEvent;
@@ -64,18 +64,10 @@ pub(super) fn profile_card(
                 .text_style(egui::TextStyle::Small)
                 .color(p.muted),
         );
-        ui.horizontal(|ui| {
-            for (theme, label) in [(Theme::Dark, s.dark), (Theme::Light, s.light)] {
-                if ui.selectable_label(profile.theme == theme, label).clicked()
-                    && profile.theme != theme
-                {
-                    events.push(ScreenEvent::Apply(AppAction::SaveProfile(Profile {
-                        theme,
-                        ..profile.clone()
-                    })));
-                }
-            }
-        });
+        ui.label(RichText::new(s.ap_general_link_body).color(p.muted));
+        if ui.button(s.ap_open).clicked() {
+            settings.page = super::SettingsPage::Appearance;
+        }
         ui.add_space(8.0);
         ui.label(
             RichText::new(s.language)
