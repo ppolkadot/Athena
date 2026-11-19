@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod components;
 pub mod icons;
 #[rustfmt::skip]
@@ -12,4 +13,4 @@ pub mod tokens;
 #[cfg(test)]
 mod quick_add_flow_tests;
 #[cfg(test)]
-mod snapshot_tests;
+pub(crate) mod snapshot_tests;

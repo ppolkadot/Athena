@@ -48,7 +48,7 @@ fn onboarded_core(language: Language, theme: Theme, with_data: bool) -> AppCore 
 
 /// GPU rendering is not safe to run from several test threads at once (it crashes some drivers),
 /// so snapshot tests take turns.
-static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn snapshot(results: &mut SnapshotResults, name: &str, mut app: AthenaApp, size: egui::Vec2) {
     let _turn = GPU

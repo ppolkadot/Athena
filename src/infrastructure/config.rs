@@ -17,6 +17,8 @@ pub struct AppDirs {
     pub exports_dir: PathBuf,
     pub backups_dir: PathBuf,
     pub staging_dir: PathBuf,
+    /// Managed wallpaper copies (contract §14.2). Created lazily by the media store.
+    pub appearance_dir: PathBuf,
 }
 
 impl AppDirs {
@@ -28,6 +30,7 @@ impl AppDirs {
             exports_dir: root.join("exports"),
             backups_dir: root.join("backups"),
             staging_dir: root.join("staging"),
+            appearance_dir: root.join("appearance"),
             root,
         }
     }

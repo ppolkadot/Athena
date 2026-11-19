@@ -14,6 +14,7 @@ use crate::domain::transaction::TxDraft;
 use crate::i18n::ToastKey;
 
 pub use crate::infrastructure::db::restore::RestoreSource;
+use crate::infrastructure::media::assets::StagedMedia;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
@@ -48,10 +49,12 @@ pub enum AppAction {
     ResetAppearance,
 }
 
-/// What Apply commits: the validated preferences.
+/// What Apply commits: the preferences and, for a newly chosen local wallpaper, the staged copy
+/// that is published before the row references it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppearanceApply {
     pub prefs: AppearancePrefs,
+    pub media: Option<StagedMedia>,
 }
 
 /// What the view model must reload after an action.

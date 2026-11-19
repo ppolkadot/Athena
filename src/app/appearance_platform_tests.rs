@@ -73,6 +73,7 @@ fn app(platform: &Rc<Cell<PlatformPrefs>>) -> Harness<'static, AthenaApp> {
             paused: true,
             ..AppearancePrefs::default()
         },
+        media: None,
     })))
     .unwrap();
     let mut harness = Harness::builder()

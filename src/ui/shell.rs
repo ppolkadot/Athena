@@ -9,8 +9,10 @@ use crate::app::navigation::Screen;
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
 use crate::i18n::strings;
+use crate::ui::appearance::background::{self, Backdrop};
 use crate::ui::icons;
 use crate::ui::screens::{self, ScreenEvent};
+use crate::ui::theme::effective::Material;
 use crate::ui::theme::{Palette, palette, typography};
 use crate::ui::tokens;
 
@@ -90,9 +92,32 @@ pub struct ShellOutput {
     pub events: Vec<ScreenEvent>,
 }
 
-/// Draw the sidebar and the active screen.
+/// Draw the sidebar and the active screen on the plain canvas.
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutput {
+    show_with(ui, vm, state, &Backdrop::solid())
+}
+
+/// Draw the sidebar and the active screen over `backdrop`. A wallpaper spans the whole viewport
+/// behind the chrome: the central canvas is transparent so every screen shows it, and the sidebar
+/// is translucent (Tint) or opaque (Solid). Cards, rows, inputs and modals stay opaque.
+pub fn show_with(
+    ui: &mut egui::Ui,
+    vm: &ViewModel,
+    state: &mut UiState,
+    backdrop: &Backdrop,
+) -> ShellOutput {
     let p = palette(vm.theme());
+    let wallpaper = backdrop.has_wallpaper();
+    let (sidebar_fill, canvas_fill) = if wallpaper {
+        background::paint(ui.painter(), ui.max_rect(), &p, backdrop);
+        let alpha = match backdrop.material {
+            Material::Tint => background::chrome_alpha(&p, backdrop.scrim),
+            Material::Solid => u8::MAX,
+        };
+        (tint(p.panel, alpha), Color32::TRANSPARENT)
+    } else {
+        (p.panel, p.bg)
+    };
     let s = strings(vm.language());
     let mut output = ShellOutput::default();
     // Collapse to a labeled icon rail when the full sidebar would leave under 480 pt of content.
@@ -108,7 +133,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutp
         .resizable(false)
         .frame(
             Frame::new()
-                .fill(p.panel)
+                .fill(sidebar_fill)
                 .inner_margin(Margin::same(sidebar_margin)),
         )
         .show(ui, |ui| {
@@ -150,7 +175,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutp
     egui::CentralPanel::default()
         .frame(
             Frame::new()
-                .fill(p.bg)
+                .fill(canvas_fill)
                 .inner_margin(Margin::same(content_margin)),
         )
         .show(ui, |ui| {

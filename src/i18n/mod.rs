@@ -18,6 +18,7 @@ use crate::domain::settings::Language;
 use crate::domain::template::TemplateError;
 use crate::domain::transaction::{TransactionType, ValidationError};
 use crate::infrastructure::db::backup::BackupKind;
+use crate::infrastructure::media::MediaError;
 use crate::shared::error::{AppError, ImportError, RestoreError};
 
 /// Declares [`Strings`] and a `fields()` listing used by the completeness tests.
@@ -482,6 +483,17 @@ strings! {
     toast_appearance_saved,
     toast_appearance_reset,
     appearance_unreadable_notice,
+    media_err_unsupported,
+    media_err_corrupt,
+    media_err_source_too_large,
+    media_err_dimensions,
+    media_err_frames,
+    media_err_budget,
+    media_err_io,
+    media_err_missing,
+    media_err_quota,
+    media_err_unsafe,
+    media_err_cancelled,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -768,6 +780,25 @@ pub fn startup_error_message(error: &AppError, language: Language) -> String {
         other => s.startup_generic.replace("{detail}", &other.to_string()),
     };
     format!("{}\n\n{specific}", s.startup_failed)
+}
+
+/// Localized message for a wallpaper media failure.
+#[must_use]
+pub fn media_error_message(error: MediaError, language: Language) -> &'static str {
+    let s = strings(language);
+    match error {
+        MediaError::Unsupported => s.media_err_unsupported,
+        MediaError::Corrupt => s.media_err_corrupt,
+        MediaError::SourceTooLarge => s.media_err_source_too_large,
+        MediaError::DimensionsTooLarge => s.media_err_dimensions,
+        MediaError::TooManyFrames => s.media_err_frames,
+        MediaError::OverBudget => s.media_err_budget,
+        MediaError::Io => s.media_err_io,
+        MediaError::Missing => s.media_err_missing,
+        MediaError::QuotaExceeded => s.media_err_quota,
+        MediaError::Unsafe => s.media_err_unsafe,
+        MediaError::Cancelled => s.media_err_cancelled,
+    }
 }
 
 /// Localized message for a template validation failure.

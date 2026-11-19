@@ -13,6 +13,7 @@ use crate::infrastructure::db::{
     Db, appearance_repo, backup, categories_repo, import_repo, integrity, people_repo,
     profile_repo, restore, templates_repo, transactions_repo, trash_repo,
 };
+use crate::infrastructure::media::assets::MediaStore;
 use crate::shared::error::{AppError, ImportError, Result};
 
 #[derive(Debug)]
@@ -234,7 +235,7 @@ impl Store {
             | AppAction::PurgeTransaction(_)
             | AppAction::EmptyTrash => Self::run_transaction_action(conn, action),
             AppAction::ApplyAppearance(_) | AppAction::ResetAppearance => {
-                Self::run_appearance_action(conn, action)
+                Self::run_appearance_action(&self.dirs, conn, action)
             }
             AppAction::SaveProfile(_)
             | AppAction::SavePerson(_)
@@ -380,12 +381,31 @@ impl Store {
     }
 
     fn run_appearance_action(
+        dirs: &AppDirs,
         conn: &rusqlite::Connection,
         action: AppAction,
     ) -> Result<ActionOutcome> {
         match action {
             AppAction::ApplyAppearance(apply) => {
-                appearance_repo::save(conn, &apply.prefs)?;
+                apply.prefs.validate()?;
+                let store = MediaStore::new(dirs);
+                let published = match &apply.media {
+                    Some(media) => {
+                        if apply.prefs.wallpaper.asset_id() != Some(&media.id) {
+                            return Err(AppError::Validation(
+                                "the staged wallpaper is not the selected one".into(),
+                            ));
+                        }
+                        Some(store.publish(media)?)
+                    }
+                    None => None,
+                };
+                if let Err(err) = appearance_repo::save(conn, &apply.prefs) {
+                    if let (Some(media), Some(published)) = (&apply.media, published) {
+                        store.discard(media, published);
+                    }
+                    return Err(err);
+                }
                 Ok(outcome(
                     None,
                     Some(ToastKey::AppearanceSaved),

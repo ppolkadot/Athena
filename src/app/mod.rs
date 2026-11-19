@@ -16,11 +16,13 @@ mod appearance_tests;
 mod day_flow_tests;
 #[cfg(test)]
 mod quick_flow_tests;
+#[cfg(test)]
+mod wallpaper_tests;
 
 use eframe::egui::{self, Key, Modifiers};
 
 use crate::application::services::onboarding::OnboardingResult;
-use crate::domain::appearance::AppearancePrefs;
+use crate::domain::appearance::{AppearancePrefs, Wallpaper};
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
 use crate::domain::person::Person;
@@ -29,10 +31,14 @@ use crate::domain::transaction::TxDraft;
 use crate::i18n::{ToastKey, backup_error_message, format_import_errors, strings};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::media::MediaError;
+use crate::infrastructure::media::assets::{MediaStore, StagedMedia};
 use crate::infrastructure::platform::{
     self, PlatformPreferences, PlatformPrefs, PlatformWatch, WindowState,
 };
 use crate::shared::error::{AppError, Result};
+use crate::ui::appearance::background::Backdrop;
+use crate::ui::appearance::{WallpaperRuntime, Wanted};
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
 use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
 use crate::ui::components::settlement_card::SettlementEvent;
@@ -67,6 +73,9 @@ pub struct AppCore {
     pub store: Store,
     pub vm: ViewModel,
     pub ui: UiState,
+    /// Bumped by restore, import and Reset so the wallpaper rebinds even if preferences compare
+    /// equal.
+    pub media_epoch: u64,
 }
 
 impl AppCore {
@@ -84,6 +93,7 @@ impl AppCore {
             store: Store::new(db, dirs),
             vm: ViewModel::new(Language::from_system()),
             ui: UiState::default(),
+            media_epoch: 0,
         };
         if run_startup_tasks {
             core.store
@@ -101,11 +111,22 @@ impl AppCore {
     #[cfg(test)]
     #[must_use]
     pub fn empty_for_test(db: Db) -> Self {
-        let dirs = AppDirs::from_root(std::env::temp_dir().join("athena-core-test"));
+        Self::empty_for_test_in(db, std::env::temp_dir().join("athena-core-test"))
+    }
+
+    /// Like [`Self::empty_for_test`] with its own data folder, for tests that write files.
+    ///
+    /// # Panics
+    /// If the first view cannot be loaded from the given database.
+    #[cfg(test)]
+    #[must_use]
+    pub fn empty_for_test_in(db: Db, root: std::path::PathBuf) -> Self {
+        let dirs = AppDirs::from_root(root);
         let mut core = Self {
             store: Store::new(db, dirs),
             vm: ViewModel::new(Language::En),
             ui: UiState::new(YearMonth::new(2026, 11).unwrap()),
+            media_epoch: 0,
         };
         core.vm.today = crate::shared::test_fixtures::today();
         core.sync().unwrap();
@@ -129,6 +150,7 @@ impl AppCore {
             action,
             AppAction::RestoreBackup(_) | AppAction::ImportProfile(_)
         );
+        let is_reset = matches!(action, AppAction::ResetAppearance);
         let outcome = match self.store.apply(action) {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -142,6 +164,9 @@ impl AppCore {
             }
         };
         self.record_outcome_notice(&outcome);
+        if reset_ui || is_reset {
+            self.media_epoch += 1;
+        }
         if reset_ui {
             self.ui.clear_filters();
             self.ui.clear_day_view();
@@ -257,6 +282,18 @@ pub struct AthenaApp {
     look: EffectiveAppearance,
     /// Unapplied appearance edits shown live in the shell; `None` outside the Appearance page.
     appearance_preview: Option<AppearancePrefs>,
+    /// The picked-but-unapplied wallpaper bytes behind a preview of a local file.
+    preview_staged: Option<StagedMedia>,
+    /// Decode worker, playback clock and textures; created when a wallpaper is first wanted.
+    wallpaper: Option<WallpaperRuntime>,
+    /// The `AppCore::media_epoch` the wallpaper was last bound at.
+    seen_media_epoch: u64,
+    /// Why the shown wallpaper is unavailable, if it is (the canvas falls back to solid).
+    media_failure: Option<MediaError>,
+    /// The failure already announced with a toast, so it is announced once.
+    announced_media_failure: Option<MediaError>,
+    /// Tests pin the monotonic clock the wallpaper playback reads.
+    pinned_instant: Option<std::time::Instant>,
     onboarding: OnboardingState,
     quick_add: Option<QuickAddState>,
     confirm: Option<ConfirmDialog>,
@@ -297,6 +334,12 @@ impl AthenaApp {
             applied_style: Some(look.style_key()),
             look,
             appearance_preview: None,
+            preview_staged: None,
+            wallpaper: None,
+            seen_media_epoch: 0,
+            media_failure: None,
+            announced_media_failure: None,
+            pinned_instant: None,
             onboarding,
             quick_add: None,
             confirm: None,
@@ -374,6 +417,70 @@ impl AthenaApp {
         self.core.vm.set_effective_theme(Some(look.theme));
         self.look = look;
         restyle
+    }
+
+    /// Follow the applied or previewed wallpaper, advance its clock and return what the shell
+    /// paints behind its chrome. Costs nothing until a wallpaper is first wanted.
+    fn update_wallpaper(&mut self, ctx: &egui::Context) -> Backdrop {
+        let applied = self
+            .core
+            .vm
+            .appearance
+            .as_ref()
+            .map_or(Wallpaper::None, |a| a.wallpaper.clone());
+        let preview = self
+            .appearance_preview
+            .as_ref()
+            .map(|p| p.wallpaper.clone());
+        let wanted =
+            applied != Wallpaper::None || preview.as_ref().is_some_and(|w| *w != Wallpaper::None);
+        if !wanted && self.wallpaper.is_none() {
+            self.media_failure = None;
+            return Backdrop {
+                material: self.look.material,
+                ..Backdrop::solid()
+            };
+        }
+        let runtime = self
+            .wallpaper
+            .get_or_insert_with(|| WallpaperRuntime::new(ctx));
+        if self.seen_media_epoch != self.core.media_epoch {
+            runtime.invalidate_all();
+            self.seen_media_epoch = self.core.media_epoch;
+        }
+        let store = MediaStore::new(self.core.store.dirs());
+        let (focused, minimized) =
+            ctx.input(|i| (i.focused, i.viewport().minimized.unwrap_or(false)));
+        let staged = self.preview_staged.as_ref();
+        let (backdrop, wake) = runtime.sync(
+            ctx,
+            &store,
+            Wanted {
+                wallpaper: &applied,
+                staged: None,
+            },
+            preview
+                .as_ref()
+                .map(|wallpaper| Wanted { wallpaper, staged }),
+            &self.look,
+            (focused, !minimized),
+            self.pinned_instant.unwrap_or_else(std::time::Instant::now),
+        );
+        if let Some(wake) = wake {
+            ctx.request_repaint_after(wake);
+        }
+        self.media_failure = runtime.failure(preview.is_some());
+        if self.media_failure != self.announced_media_failure {
+            self.announced_media_failure = self.media_failure;
+            if let Some(error) = self
+                .media_failure
+                .filter(|_| self.appearance_preview.is_none())
+            {
+                let text = crate::i18n::media_error_message(error, self.core.vm.language());
+                self.raise_toast_text(ctx, Some(text.to_owned()));
+            }
+        }
+        backdrop
     }
 
     fn remember_modal_opener(&mut self, ctx: &egui::Context) {
@@ -614,6 +721,12 @@ impl AthenaApp {
             applied_style: None,
             look: effective::resolve_defaults(core.vm.profile_theme(), PlatformPrefs::default()),
             appearance_preview: None,
+            preview_staged: None,
+            wallpaper: None,
+            seen_media_epoch: 0,
+            media_failure: None,
+            announced_media_failure: None,
+            pinned_instant: None,
             onboarding: OnboardingState::new(core.vm.language()),
             core,
             quick_add: None,
@@ -636,6 +749,11 @@ impl AthenaApp {
         let mut app = Self::for_test(core);
         app.platform = PlatformWatch::new(provider, std::time::Instant::now());
         app
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_instant(&mut self, now: std::time::Instant) {
+        self.pinned_instant = Some(now);
     }
 
     #[cfg(test)]
@@ -768,7 +886,8 @@ impl AthenaApp {
                 self.apply_undo(&ctx, action);
             }
         }
-        let output = shell::show(ui, &self.core.vm, &mut self.core.ui);
+        let backdrop = self.update_wallpaper(&ctx);
+        let output = shell::show_with(ui, &self.core.vm, &mut self.core.ui, &backdrop);
         if let Some(screen) = output.navigate {
             self.core.set_screen(screen);
         }
@@ -2680,6 +2799,7 @@ mod tests {
             store: Store::new(db, dirs),
             vm: ViewModel::new(Language::En),
             ui: UiState::new(YearMonth::new(2026, 11).unwrap()),
+            media_epoch: 0,
         };
         core.vm.today = crate::shared::test_fixtures::today();
         core.complete_onboarding(OnboardingResult {
