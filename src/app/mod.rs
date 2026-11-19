@@ -9,6 +9,10 @@ pub mod ui_state;
 pub mod view_model;
 
 #[cfg(test)]
+mod appearance_platform_tests;
+#[cfg(test)]
+mod appearance_tests;
+#[cfg(test)]
 mod day_flow_tests;
 #[cfg(test)]
 mod quick_flow_tests;
@@ -16,6 +20,7 @@ mod quick_flow_tests;
 use eframe::egui::{self, Key, Modifiers};
 
 use crate::application::services::onboarding::OnboardingResult;
+use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
 use crate::domain::person::Person;
@@ -24,6 +29,9 @@ use crate::domain::transaction::TxDraft;
 use crate::i18n::{ToastKey, backup_error_message, format_import_errors, strings};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
+use crate::infrastructure::platform::{
+    self, PlatformPreferences, PlatformPrefs, PlatformWatch, WindowState,
+};
 use crate::shared::error::{AppError, Result};
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
 use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
@@ -32,6 +40,8 @@ use crate::ui::components::toast::{self, Toast, ToastAction};
 use crate::ui::quick_add::{self, QuickAddState};
 use crate::ui::screens::ScreenEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
+use crate::ui::theme::active::StyleKey;
+use crate::ui::theme::effective::{self, EffectiveAppearance};
 use crate::ui::{shell, theme};
 
 use self::actions::{ActionOutcome, AppAction, RestoreSource};
@@ -239,7 +249,14 @@ impl AppCore {
 
 pub struct AthenaApp {
     core: AppCore,
-    applied_theme: Theme,
+    /// OS preferences (animation, high contrast, transparency), refreshed on focus and a slow poll.
+    platform: PlatformWatch,
+    /// The styling last pushed to egui, so unchanged frames restyle nothing.
+    applied_style: Option<StyleKey>,
+    /// The resolved look for the current frame.
+    look: EffectiveAppearance,
+    /// Unapplied appearance edits shown live in the shell; `None` outside the Appearance page.
+    appearance_preview: Option<AppearancePrefs>,
     onboarding: OnboardingState,
     quick_add: Option<QuickAddState>,
     confirm: Option<ConfirmDialog>,
@@ -266,12 +283,20 @@ impl AthenaApp {
     #[must_use]
     pub fn from_core(ctx: &egui::Context, core: AppCore) -> Self {
         theme::install_fonts(ctx);
-        let applied_theme = core.vm.theme();
-        theme::apply(ctx, applied_theme);
+        let platform = PlatformWatch::new(platform::system_provider(), std::time::Instant::now());
+        Self::with_platform(ctx, core, platform)
+    }
+
+    fn with_platform(ctx: &egui::Context, core: AppCore, platform: PlatformWatch) -> Self {
+        let look = Self::resolve_look(&core, None, platform.current(), None);
+        theme::apply_effective(ctx, &look);
         let onboarding = OnboardingState::new(core.vm.language());
         Self {
             core,
-            applied_theme,
+            platform,
+            applied_style: Some(look.style_key()),
+            look,
+            appearance_preview: None,
             onboarding,
             quick_add: None,
             confirm: None,
@@ -282,6 +307,73 @@ impl AthenaApp {
             pinned_today: None,
             close_confirmed: false,
         }
+    }
+
+    /// Build the app on a core with injected platform preferences (tests and the real provider).
+    #[must_use]
+    pub fn with_provider(
+        ctx: &egui::Context,
+        core: AppCore,
+        provider: Box<dyn PlatformPreferences>,
+    ) -> Self {
+        theme::install_fonts(ctx);
+        let platform = PlatformWatch::new(provider, std::time::Instant::now());
+        Self::with_platform(ctx, core, platform)
+    }
+
+    /// Applied or previewed preferences, the legacy theme, the OS theme signal and platform state
+    /// resolved into one look. Onboarding keeps its solid stock style.
+    fn resolve_look(
+        core: &AppCore,
+        preview: Option<&AppearancePrefs>,
+        platform: PlatformPrefs,
+        os_theme: Option<Theme>,
+    ) -> EffectiveAppearance {
+        let legacy = core.vm.profile_theme();
+        if !core.vm.onboarding_complete() {
+            return effective::resolve_defaults(legacy, PlatformPrefs::default());
+        }
+        let prefs = preview
+            .or(core.vm.appearance.as_ref())
+            .cloned()
+            .unwrap_or_else(|| AppearancePrefs::defaults_for(legacy));
+        effective::resolve(&prefs, legacy, os_theme, platform)
+    }
+
+    /// Re-read platform preferences when due, resolve the look and restyle egui only when the
+    /// styling key changed. Schedules the next platform check separately from decorative repaints.
+    fn refresh_appearance(&mut self, ctx: &egui::Context) -> bool {
+        let (focused, minimized) =
+            ctx.input(|i| (i.focused, i.viewport().minimized.unwrap_or(false)));
+        let (_, wait) = self.platform.poll(
+            std::time::Instant::now(),
+            WindowState {
+                focused,
+                visible: !minimized,
+            },
+        );
+        if let Some(wait) = wait {
+            ctx.request_repaint_after(wait);
+        }
+        let os_theme = ctx.system_theme().map(|t| match t {
+            egui::Theme::Dark => Theme::Dark,
+            egui::Theme::Light => Theme::Light,
+        });
+        let look = Self::resolve_look(
+            &self.core,
+            self.appearance_preview.as_ref(),
+            self.platform.current(),
+            os_theme,
+        );
+        let key = look.style_key();
+        let restyle = self.applied_style != Some(key) || theme::active::get() != Some(key);
+        if restyle {
+            theme::apply_effective(ctx, &look);
+            self.applied_style = Some(key);
+        }
+        self.core.vm.set_effective_theme(Some(look.theme));
+        self.look = look;
+        restyle
     }
 
     fn remember_modal_opener(&mut self, ctx: &egui::Context) {
@@ -515,7 +607,13 @@ impl AthenaApp {
     #[cfg(test)]
     pub(crate) fn for_test(core: AppCore) -> Self {
         Self {
-            applied_theme: core.vm.theme(),
+            platform: PlatformWatch::new(
+                Box::new(platform::UnknownPlatform),
+                std::time::Instant::now(),
+            ),
+            applied_style: None,
+            look: effective::resolve_defaults(core.vm.profile_theme(), PlatformPrefs::default()),
+            appearance_preview: None,
             onboarding: OnboardingState::new(core.vm.language()),
             core,
             quick_add: None,
@@ -527,6 +625,17 @@ impl AthenaApp {
             pinned_today: Some(crate::shared::test_fixtures::today()),
             close_confirmed: false,
         }
+    }
+
+    /// Like [`Self::for_test`] with an injected platform-preference provider.
+    #[cfg(test)]
+    pub(crate) fn for_test_with_platform(
+        core: AppCore,
+        provider: Box<dyn PlatformPreferences>,
+    ) -> Self {
+        let mut app = Self::for_test(core);
+        app.platform = PlatformWatch::new(provider, std::time::Instant::now());
+        app
     }
 
     #[cfg(test)]
@@ -606,10 +715,9 @@ impl AthenaApp {
         if let Err(err) = self.core.sync() {
             tracing::error!("could not refresh the view: {err}");
         }
-        let theme = self.core.vm.theme();
-        if theme != self.applied_theme {
-            theme::apply(ui.ctx(), theme);
-            self.applied_theme = theme;
+        let frame_ctx = ui.ctx().clone();
+        if self.refresh_appearance(&frame_ctx) {
+            ui.set_style(frame_ctx.global_style());
         }
         self.guard_window_close(ui.ctx());
         if !self.core.vm.onboarding_complete() {
@@ -1471,7 +1579,7 @@ mod tests {
         harness.get_by_label("Light").click();
         harness.run_steps(4);
         assert_eq!(harness.state().core.vm.theme(), Theme::Light);
-        assert_eq!(harness.state().applied_theme, Theme::Light);
+        assert_eq!(harness.state().look.theme, Theme::Light);
         harness.get_by_label("Português").click();
         harness.run_steps(4);
         assert_eq!(harness.state().core.vm.language(), Language::PtBr);

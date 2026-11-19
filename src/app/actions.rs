@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::application::services::import::ImportPlan;
 use crate::application::services::onboarding::OnboardingResult;
+use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
 use crate::domain::settings::Profile;
@@ -41,6 +42,16 @@ pub enum AppAction {
     DeleteBackup(std::path::PathBuf),
     RestoreBackup(RestoreSource),
     ImportProfile(Box<ImportPlan>),
+    /// Write the full appearance row (contract §14.2).
+    ApplyAppearance(Box<AppearanceApply>),
+    /// Delete the appearance row so defaults derive from the profile again.
+    ResetAppearance,
+}
+
+/// What Apply commits: the validated preferences.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppearanceApply {
+    pub prefs: AppearancePrefs,
 }
 
 /// What the view model must reload after an action.
@@ -55,6 +66,8 @@ pub enum RefreshScope {
     Categories,
     /// Entry templates only.
     Templates,
+    /// The optional appearance row only.
+    Appearance,
     All,
 }
 

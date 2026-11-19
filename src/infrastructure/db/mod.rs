@@ -1,5 +1,6 @@
 //! `SQLite` access. The UI never issues SQL; repositories in this folder do.
 
+pub mod appearance_repo;
 pub mod backup;
 pub mod categories_repo;
 pub mod import_repo;

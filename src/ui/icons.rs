@@ -145,7 +145,7 @@ pub fn paint_with(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
 /// A square icon-only button with a localized accessible name. Returns the response; the name is
 /// also the hover text.
 pub fn button(ui: &mut egui::Ui, p: &Palette, icon: Icon, label: &str) -> Response {
-    let size = Vec2::splat(tokens::CONTROL_HEIGHT);
+    let size = Vec2::splat(tokens::control_height());
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
     if ui.is_rect_visible(rect) {

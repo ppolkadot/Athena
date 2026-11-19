@@ -479,6 +479,9 @@ strings! {
     xlsx_participant,
     export_xlsx_month,
     export_xlsx_all,
+    toast_appearance_saved,
+    toast_appearance_reset,
+    appearance_unreadable_notice,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -488,6 +491,8 @@ pub enum ToastKey {
     TemplateSaved,
     TemplateUpdated,
     TemplateDeleted,
+    AppearanceSaved,
+    AppearanceReset,
     TransactionUpdated,
     TransactionDeleted,
     TransactionRestored,
@@ -516,6 +521,8 @@ impl ToastKey {
             ToastKey::TemplateSaved => s.toast_template_saved,
             ToastKey::TemplateUpdated => s.toast_template_updated,
             ToastKey::TemplateDeleted => s.toast_template_deleted,
+            ToastKey::AppearanceSaved => s.toast_appearance_saved,
+            ToastKey::AppearanceReset => s.toast_appearance_reset,
             ToastKey::TransactionUpdated => s.toast_transaction_updated,
             ToastKey::TransactionDeleted => s.toast_transaction_deleted,
             ToastKey::TransactionRestored => s.toast_transaction_restored,

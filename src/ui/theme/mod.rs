@@ -1,11 +1,13 @@
 //! Applies the palette, spacing and type scale to egui for both themes.
 
+pub mod active;
+pub mod effective;
 pub mod palette;
 pub mod typography;
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke, Style, Vec2, Visuals};
 
-pub use palette::{Palette, composite, contrast_ratio, palette, parse_hex};
+pub use palette::{Palette, composite, contrast_ratio, palette, parse_hex, stock_palette};
 pub use typography::install_fonts;
 
 use crate::domain::settings::Theme;
@@ -13,6 +15,8 @@ use crate::domain::settings::Theme;
 const CARD_RADIUS: u8 = 16;
 const CONTROL_RADIUS: u8 = 10;
 const SELECTION_BG_ALPHA: u8 = 36;
+/// Compact density keeps controls at least this tall.
+const COMPACT_CONTROL_HEIGHT: f32 = 32.0;
 
 fn egui_theme(theme: Theme) -> egui::Theme {
     match theme {
@@ -25,8 +29,12 @@ fn tint(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-/// Build the egui style for one theme.
+/// Build the egui style for one theme at 100% text scale and comfortable density.
 fn configure(style: &mut Style, p: &Palette, theme: Theme) {
+    configure_scaled(style, p, theme, 100, false);
+}
+
+fn configure_scaled(style: &mut Style, p: &Palette, theme: Theme, text_scale: u16, compact: bool) {
     let mut v = if theme == Theme::Dark {
         Visuals::dark()
     } else {
@@ -85,22 +93,51 @@ fn configure(style: &mut Style, p: &Palette, theme: Theme) {
     w.open.corner_radius = control;
 
     style.visuals = v;
-    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
-    style.spacing.button_padding = Vec2::new(14.0, 8.0);
-    style.spacing.interact_size = Vec2::new(0.0, 36.0);
-    typography::apply_text_styles(style);
+    let (gap, pad_y, control) = if compact {
+        (6.0, 6.0, COMPACT_CONTROL_HEIGHT)
+    } else {
+        (8.0, 8.0, 36.0)
+    };
+    style.spacing.item_spacing = Vec2::new(gap, gap);
+    style.spacing.button_padding = Vec2::new(14.0, pad_y);
+    style.spacing.interact_size = Vec2::new(0.0, control);
+    typography::apply_text_styles_scaled(style, text_scale);
 }
 
 /// Configure both egui styles from the palette and select `theme`. Safe to call every frame
 /// the theme changes; fonts are installed separately, once, with [`install_fonts`].
 pub fn apply(ctx: &egui::Context, theme: Theme) {
+    active::set(None);
     for t in [Theme::Dark, Theme::Light] {
-        ctx.style_mut_of(egui_theme(t), |style| configure(style, &palette(t), t));
+        ctx.style_mut_of(egui_theme(t), |style| {
+            configure(style, &stock_palette(t), t);
+        });
     }
     ctx.set_theme(match theme {
         Theme::Dark => egui::ThemePreference::Dark,
         Theme::Light => egui::ThemePreference::Light,
     });
+}
+
+/// Style egui for a resolved appearance and make it the look painters and tokens read. Safe to
+/// call whenever the [`active::StyleKey`] changes; it never touches fonts or widget ids.
+pub fn apply_effective(ctx: &egui::Context, look: &effective::EffectiveAppearance) {
+    let key = look.style_key();
+    for t in [Theme::Dark, Theme::Light] {
+        let p = if t == key.theme {
+            key.palette
+        } else {
+            stock_palette(t)
+        };
+        ctx.style_mut_of(egui_theme(t), |style| {
+            configure_scaled(style, &p, t, key.text_scale, key.compact);
+        });
+    }
+    ctx.set_theme(match key.theme {
+        Theme::Dark => egui::ThemePreference::Dark,
+        Theme::Light => egui::ThemePreference::Light,
+    });
+    active::set(Some(key));
 }
 
 #[cfg(test)]
@@ -154,5 +191,75 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod effective_style_tests {
+    use super::*;
+    use crate::domain::appearance::{AppearancePrefs, Density, TextScale};
+    use crate::infrastructure::platform::PlatformPrefs;
+    use crate::ui::tokens;
+
+    #[test]
+    fn effective_style_scales_every_text_style_and_compacts_spacing() {
+        let _reset = active::ResetOnDrop;
+        let ctx = egui::Context::default();
+        let prefs = AppearancePrefs {
+            text_scale: TextScale::P150,
+            density: Density::Compact,
+            ..AppearancePrefs::default()
+        };
+        let look = effective::resolve(&prefs, Theme::Dark, None, PlatformPrefs::default());
+        apply_effective(&ctx, &look);
+        let style = ctx.style_of(egui::Theme::Dark);
+        let body = style.text_styles[&egui::TextStyle::Body].size;
+        assert!((body - typography::BODY * 1.5).abs() < 0.01);
+        for text_style in [
+            egui::TextStyle::Small,
+            egui::TextStyle::Button,
+            egui::TextStyle::Heading,
+            egui::TextStyle::Monospace,
+            typography::section(),
+            typography::display(),
+        ] {
+            assert!(style.text_styles[&text_style].size > 12.0, "{text_style:?}");
+        }
+        // Painter helpers scale with the same percentage, including tabular money.
+        assert!((typography::money_font().size - typography::BODY * 1.5).abs() < 0.01);
+        assert!((typography::section_font().size - typography::SECTION * 1.5).abs() < 0.01);
+        assert!((style.spacing.interact_size.y - 32.0).abs() < f32::EPSILON);
+        assert!((tokens::control_height() - 32.0).abs() < f32::EPSILON);
+        assert!(
+            (tokens::space_s() - 6.0).abs() < f32::EPSILON
+                && (tokens::space_m() - 8.0).abs() < f32::EPSILON
+                && (tokens::space_l() - 12.0).abs() < f32::EPSILON
+                && (tokens::space_xl() - 18.0).abs() < f32::EPSILON
+        );
+        // Stock apply restores the defaults.
+        apply(&ctx, Theme::Dark);
+        assert!((typography::money_font().size - typography::BODY).abs() < 0.01);
+        assert!((tokens::control_height() - 36.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn effective_palette_reaches_widgets_and_painters_alike() {
+        let _reset = active::ResetOnDrop;
+        let ctx = egui::Context::default();
+        let prefs = AppearancePrefs {
+            accent: crate::domain::appearance::Accent::Teal,
+            ..AppearancePrefs::default()
+        };
+        let look = effective::resolve(&prefs, Theme::Dark, None, PlatformPrefs::default());
+        apply_effective(&ctx, &look);
+        assert_eq!(palette(Theme::Dark).accent, look.palette.accent);
+        assert_ne!(
+            palette(Theme::Dark).accent,
+            stock_palette(Theme::Dark).accent
+        );
+        let style = ctx.style_of(egui::Theme::Dark);
+        assert_eq!(style.visuals.selection.stroke.color, look.palette.accent);
+        // The other theme keeps the stock palette.
+        assert_eq!(palette(Theme::Light), stock_palette(Theme::Light));
     }
 }

@@ -35,6 +35,44 @@ pub const NARROW_CONTENT: f32 = 480.0;
 /// Opacity of the selected-surface accent tint, out of 255.
 pub const SELECTED_ALPHA: u8 = 36;
 
+fn step(comfortable: f32, compact: f32) -> f32 {
+    if crate::ui::theme::active::compact() {
+        compact
+    } else {
+        comfortable
+    }
+}
+
+/// 8 pt, or 6 pt in compact density.
+#[must_use]
+pub fn space_s() -> f32 {
+    step(SPACE_S, 6.0)
+}
+
+/// 12 pt, or 8 pt in compact density.
+#[must_use]
+pub fn space_m() -> f32 {
+    step(SPACE_M, 8.0)
+}
+
+/// 16 pt, or 12 pt in compact density.
+#[must_use]
+pub fn space_l() -> f32 {
+    step(SPACE_L, 12.0)
+}
+
+/// 24 pt, or 18 pt in compact density.
+#[must_use]
+pub fn space_xl() -> f32 {
+    step(SPACE_XL, 18.0)
+}
+
+/// 36 pt controls, or a 32 pt minimum in compact density.
+#[must_use]
+pub fn control_height() -> f32 {
+    step(CONTROL_HEIGHT, 32.0)
+}
+
 /// The accent tint over `surface`: the selected row/nav fill as actually composited.
 #[must_use]
 pub fn selected_fill(p: &Palette, surface: Color32) -> Color32 {

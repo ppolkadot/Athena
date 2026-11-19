@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod category;
 pub mod date;
 pub mod export;

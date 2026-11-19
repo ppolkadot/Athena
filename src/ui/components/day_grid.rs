@@ -68,9 +68,9 @@ pub fn toggle(
         f.layout_no_wrap(text.to_owned(), font.clone(), p.text)
             .size()
             .x
-    }) + 2.0 * tokens::SPACE_L;
+    }) + 2.0 * tokens::space_l();
     let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(width, tokens::CONTROL_HEIGHT), Sense::hover());
+        ui.allocate_exact_size(Vec2::new(width, tokens::control_height()), Sense::hover());
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| WidgetInfo::selected(Role::Button, true, on, name));
     let radius = CornerRadius::same(tokens::CONTROL_RADIUS);
@@ -133,7 +133,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, opener: Id) 
             .text_style(egui::TextStyle::Small)
             .color(p.muted),
     );
-    ui.add_space(tokens::SPACE_S);
+    ui.add_space(tokens::space_s());
     if ui.available_width() >= WIDE {
         let total = ui.available_width();
         ui.horizontal_top(|ui| {
@@ -145,7 +145,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, opener: Id) 
                     grid(ui, vm, state, month, opener, &mut out);
                 },
             );
-            let rest = total - GRID_WIDTH - tokens::SPACE_L;
+            let rest = total - GRID_WIDTH - tokens::space_l();
             ui.allocate_ui_with_layout(
                 Vec2::new(rest, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
@@ -157,7 +157,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, opener: Id) 
         });
     } else {
         grid(ui, vm, state, month, opener, &mut out);
-        ui.add_space(tokens::SPACE_M);
+        ui.add_space(tokens::space_m());
         detail(ui, vm, state, &mut out);
     }
     out
@@ -436,7 +436,7 @@ fn detail(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, out: &mut DayO
                     .text_style(egui::TextStyle::Small)
                     .color(p.muted),
             );
-            ui.add_space(tokens::SPACE_S);
+            ui.add_space(tokens::space_s());
             if rows.is_empty() {
                 ui.label(RichText::new(s.day_detail_empty).color(p.muted));
                 return;
