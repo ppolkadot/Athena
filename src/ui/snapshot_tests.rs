@@ -182,7 +182,7 @@ fn narrow_viewport_collapses_to_a_labeled_icon_rail() {
                 );
             harness.run_steps(6);
             // Every screen keeps its localized accessible name in both modes.
-            for name in [s.month, s.calendar, s.trash, s.settings] {
+            for name in [s.month, s.calendar, s.goals, s.trash, s.settings] {
                 assert!(
                     harness.query_by_label(name).is_some(),
                     "{language:?} {size:?} missing nav name {name}"
@@ -425,4 +425,111 @@ fn snapshot_recovery() {
             .output_path("src/ui/snapshots")
             .max_failed_pixels(150),
     );
+}
+
+/// Goals with a spread of states: a funded goal, an overfunded one with a long note, a paused one,
+/// and one with a deadline, so the list and detail show every figure.
+fn goals_core(language: Language, theme: Theme, populated: bool, narrow_detail: bool) -> AppCore {
+    use crate::app::actions::AppAction;
+    use crate::domain::goal::{ContributionDraft, Frequency, GoalDraft, GoalTransition};
+    let mut core = onboarded_core(language, theme, true);
+    core.set_screen(Screen::Goals);
+    if !populated {
+        return core;
+    }
+    let partner = core
+        .vm
+        .all_people
+        .iter()
+        .find(|p| p.kind != crate::domain::person::PersonKind::Owner)
+        .map(|p| p.id);
+    let make = |core: &mut AppCore, name: &str, target: i64, date: Option<(i32, u32, u32)>| {
+        core.apply(AppAction::CreateGoal(GoalDraft {
+            name: name.into(),
+            target: Money::from_cents(target),
+            target_date: date.map(|(y, m, d)| crate::shared::test_fixtures::date(y, m, d)),
+            frequency: Frequency::Monthly,
+            attribution_id: partner,
+        }))
+        .unwrap()
+        .created_goal
+        .unwrap()
+    };
+    let put = |core: &mut AppCore, id: i64, cents: i64, day: u32, note: Option<&str>| {
+        core.apply(AppAction::AddContribution(
+            id,
+            ContributionDraft {
+                amount: Money::from_cents(cents),
+                date: crate::shared::test_fixtures::date(2026, 11, day),
+                note: note.map(str::to_owned),
+            },
+        ))
+        .unwrap();
+    };
+    let trip = make(
+        &mut core,
+        "Viagem de fim de ano",
+        1_200_000,
+        Some((2027, 3, 1)),
+    );
+    put(&mut core, trip, 250_000, 2, None);
+    put(
+        &mut core,
+        trip,
+        100_000,
+        9,
+        Some(
+            "Décimo terceiro adiantado, mais o troco do reembolso do seguro, guardado de uma vez para não gastar.",
+        ),
+    );
+    let car = make(&mut core, "Entrada do carro", 500_000, None);
+    put(&mut core, car, 650_000, 4, Some("Venda da moto"));
+    let laptop = make(&mut core, "Notebook", 800_000, Some((2026, 12, 20)));
+    put(&mut core, laptop, 99_999_999, 1, None);
+    let rainy = make(
+        &mut core,
+        "Reserva de emergência",
+        3_000_000,
+        Some((2027, 11, 11)),
+    );
+    put(&mut core, rainy, 10_000, 6, None);
+    core.apply(AppAction::ChangeGoalStatus(rainy, GoalTransition::Pause))
+        .unwrap();
+    core.ui
+        .goals
+        .set_filter(crate::domain::goal::GoalStatus::Active);
+    core.ui.goals.select(trip);
+    if !narrow_detail {
+        core.ui.goals.back();
+        core.ui.goals.select(trip);
+    }
+    core.sync().unwrap();
+    core.ui.goals.pending_focus = None;
+    core
+}
+
+#[test]
+fn snapshot_goals() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        snapshot(
+            &mut results,
+            &format!("goals_empty_{tag}"),
+            AthenaApp::for_test(goals_core(language, theme, false, false)),
+            SIZE,
+        );
+        snapshot(
+            &mut results,
+            &format!("goals_{tag}"),
+            AthenaApp::for_test(goals_core(language, theme, true, false)),
+            egui::Vec2::new(1280.0, 820.0),
+        );
+        snapshot(
+            &mut results,
+            &format!("goals_narrow_{tag}"),
+            AthenaApp::for_test(goals_core(language, theme, true, true)),
+            egui::Vec2::new(640.0, 900.0),
+        );
+    }
+    results.unwrap();
 }

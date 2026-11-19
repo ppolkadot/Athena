@@ -27,6 +27,7 @@ fn nav_item(
     p: &Palette,
     screen: Screen,
     label: &str,
+    hint: Option<&str>,
     active: bool,
     rail: bool,
 ) -> bool {
@@ -74,6 +75,31 @@ fn nav_item(
             typography::proportional(typography::BODY),
             color,
         );
+        // The shortcut hint is shown only when it fits beside the label.
+        if let Some(hint) = hint {
+            let font = typography::proportional(typography::SECONDARY);
+            let hint_galley = painter.layout_no_wrap(hint.to_string(), font, p.muted);
+            let label_end = rect.left()
+                + 14.0
+                + tokens::ICON_SIZE
+                + 10.0
+                + painter
+                    .layout_no_wrap(
+                        label.to_string(),
+                        typography::proportional(typography::BODY),
+                        color,
+                    )
+                    .size()
+                    .x;
+            let hint_left = rect.right() - 10.0 - hint_galley.size().x;
+            if label_end + 8.0 <= hint_left {
+                painter.galley(
+                    egui::pos2(hint_left, rect.center().y - hint_galley.size().y / 2.0),
+                    hint_galley,
+                    p.muted,
+                );
+            }
+        }
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let response = if rail {
@@ -82,6 +108,35 @@ fn nav_item(
         response
     };
     response.clicked()
+}
+
+/// The sidebar entries with their `Ctrl+digit` hints. Returns the entry the user clicked.
+fn nav_items(
+    ui: &mut egui::Ui,
+    vm: &ViewModel,
+    state: &UiState,
+    p: &Palette,
+    rail: bool,
+) -> Option<Screen> {
+    let s = strings(vm.language());
+    let mut clicked = None;
+    for screen in Screen::ALL {
+        let hint = screen
+            .shortcut_digit()
+            .map(|digit| s.shortcut_hint.replace("{key}", &digit.to_string()));
+        if nav_item(
+            ui,
+            p,
+            screen,
+            screen.title(vm.language()),
+            hint.as_deref(),
+            state.screen == screen,
+            rail,
+        ) {
+            clicked = Some(screen);
+        }
+    }
+    clicked
 }
 
 /// What the shell and the active screen ask the app to do this frame.
@@ -146,18 +201,7 @@ pub fn show_with(
                 );
             }
             ui.add_space(tokens::space_l());
-            for screen in Screen::ALL {
-                if nav_item(
-                    ui,
-                    &p,
-                    screen,
-                    screen.title(vm.language()),
-                    state.screen == screen,
-                    rail,
-                ) {
-                    output.navigate = Some(screen);
-                }
-            }
+            output.navigate = nav_items(ui, vm, state, &p, rail);
             if !rail {
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
                     ui.label(

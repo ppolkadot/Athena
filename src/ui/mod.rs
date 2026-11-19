@@ -1,5 +1,6 @@
 pub mod appearance;
 pub mod components;
+pub mod goal_form;
 pub mod icons;
 #[rustfmt::skip]
 mod icon_paths;

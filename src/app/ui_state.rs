@@ -3,9 +3,97 @@
 use chrono::NaiveDate;
 
 use super::navigation::Screen;
+use crate::application::services::goals::GoalListItem;
 use crate::domain::date::YearMonth;
+use crate::domain::goal::GoalStatus;
 use crate::domain::transaction::{SettlementIssue, TxFilter};
 use crate::ui::screens::settings::SettingsState;
+
+/// Where keyboard focus goes on the Goals screen the next time it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalFocus {
+    /// The list heading: nothing valid is left to land on.
+    ListHeading,
+    /// A goal's row.
+    Row(i64),
+    /// The selected goal's primary action.
+    Primary,
+}
+
+/// Goals screen state: which goal is open, which lifecycle tab shows, and where focus goes next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalsState {
+    /// The open goal. On narrow widths this is the drill-in; Back clears it.
+    pub selected: Option<i64>,
+    pub filter: GoalStatus,
+    pub pending_focus: Option<GoalFocus>,
+    /// The ids the list showed last frame, in display order, so a removed selection can move focus
+    /// to the next valid row.
+    pub visible: Vec<i64>,
+}
+
+impl Default for GoalsState {
+    fn default() -> Self {
+        Self {
+            selected: None,
+            filter: GoalStatus::Active,
+            pending_focus: None,
+            visible: Vec::new(),
+        }
+    }
+}
+
+impl GoalsState {
+    pub fn select(&mut self, id: i64) {
+        self.selected = Some(id);
+    }
+
+    /// Leave the detail (the narrow drill-in's Back).
+    pub fn back(&mut self) {
+        self.selected = None;
+    }
+
+    /// Show another lifecycle tab; the open goal belongs to the previous one.
+    pub fn set_filter(&mut self, filter: GoalStatus) {
+        if filter != self.filter {
+            self.filter = filter;
+            self.selected = None;
+            self.visible.clear();
+        }
+    }
+
+    /// Forget everything tied to stored goals (restore and import replace them).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Drop a selection that is missing or no longer in the filtered list, moving focus to the next
+    /// valid row (else the list heading). Returns whether the selection changed.
+    pub fn reconcile(&mut self, goals: &[GoalListItem]) -> bool {
+        let Some(selected) = self.selected else {
+            return false;
+        };
+        let in_list = |id: i64| {
+            goals
+                .iter()
+                .any(|g| g.goal.id == id && g.goal.status == self.filter)
+        };
+        if in_list(selected) {
+            return false;
+        }
+        let position = self.visible.iter().position(|id| *id == selected);
+        let next = position.and_then(|at| {
+            self.visible[at + 1..]
+                .iter()
+                .chain(self.visible[..at].iter().rev())
+                .copied()
+                .find(|id| in_list(*id))
+        });
+        self.selected = None;
+        self.pending_focus = Some(next.map_or(GoalFocus::ListHeading, GoalFocus::Row));
+        true
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UiState {
@@ -19,6 +107,8 @@ pub struct UiState {
     search_edited_at: Option<f64>,
     /// Edits in progress on the settings screen.
     pub settings: SettingsState,
+    /// The Goals screen: open goal, lifecycle tab, focus target.
+    pub goals: GoalsState,
     /// Target row index to focus on Trash after restoring or purging an item.
     pub trash_focus_row: Option<usize>,
     /// Row index awaiting permanent-delete confirmation on Trash.
@@ -54,6 +144,7 @@ impl UiState {
             search_input: String::new(),
             search_edited_at: None,
             settings: SettingsState::default(),
+            goals: GoalsState::default(),
             trash_focus_row: None,
             pending_purge_focus_row: None,
             calendar_days: None,
