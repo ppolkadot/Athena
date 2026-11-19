@@ -6,13 +6,19 @@ Log an expense, income or refund in seconds. See the month register: every entry
 category split and the person split. Browse the year in a calendar and click a month to open its
 log. No cloud, no accounts, no network.
 
-Version 1.3.0 (Native Appearance): Settings, then Appearance, adds theme and presets (Onyx, Pearl,
-Aurora), accent colors, compact density, text size up to 150 %, a built-in gradient or your own
-PNG, JPEG or animated GIF behind every main screen, and Motion, Transparency and image-quality
-controls. Edits preview live and apply only when you press Apply; Windows reduced motion,
-transparency and high contrast are respected, and a minimum dimming keeps text readable over any
-image. Data moves to schema 5 with document format 4; formats 1 to 3 still import. Builds on 1.2
-(Daily Speed): templates, one-line quick entry, duplicate-entry confirmation, a day drill-down grid,
+Version 1.4.0 (Goals and Closings): Goals (`Ctrl+5`) track what you set aside without touching your
+balance. Each goal has a target, an optional date and person, a lifecycle (Active, Paused,
+Completed, Archived), a contribution history and a saving-schedule hint; Funded is derived from the
+money saved and never changes the status you chose. A completed month can be closed on the Month
+screen: its totals, comparison with the previous month, top category and largest expense are saved,
+the Calendar marks closed months, and a card says when entries changed since. Excel exports gain
+full-history Goals and Closings sheets. Data moves to schema 7 with document format 5; formats 1 to
+4 still import. Builds on 1.3 (Native Appearance): Settings, then Appearance, adds theme and presets
+(Onyx, Pearl, Aurora), accent colors, compact density, text size up to 150 %, a built-in gradient or
+your own PNG, JPEG or animated GIF behind every main screen, and Motion, Transparency and
+image-quality controls. Edits preview live and apply only when you press Apply; Windows reduced
+motion, transparency and high contrast are respected, and a minimum dimming keeps text readable over
+any image. Builds on 1.2 (Daily Speed): templates, one-line quick entry, duplicate-entry confirmation, a day drill-down grid,
 a live monthly insight, Excel (`.xlsx`) export, a labeled icon rail and shared design tokens, and on
 1.1 (Safe Data): settlement balances and paybacks, Trash with undo, and automatic, manual and
 safety backups with in-app recovery and restore. English and Brazilian Portuguese. Windows is the

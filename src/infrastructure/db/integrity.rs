@@ -16,7 +16,7 @@ pub enum IntegrityIssue {
     SettlementShape { tx_id: i64 },
     /// A template's responsibility mode, payer or allocations disagree with its amount and kind.
     TemplateShape { template_id: i64 },
-    /// A goal or one of its contributions has an impossible date, or the contributions overflow.
+    /// A goal has invalid shape, a missing reference or an overflowing contribution total.
     GoalShape { goal_id: i64 },
     /// A saved closing violates its consistency rules (checked result, optional groups,
     /// fingerprint shape).
@@ -104,10 +104,22 @@ pub fn check(conn: &Connection) -> Result<Vec<IntegrityIssue>> {
     Ok(issues)
 }
 
-/// Goals whose dates are not real calendar dates or whose contributions overflow `i64`.
+/// Goals with invalid shape, references, dates or contribution totals.
 fn goal_issues(conn: &Connection) -> Result<Vec<i64>> {
     let valid = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok();
-    let mut bad: Vec<i64> = Vec::new();
+    let mut bad = ids(
+        conn,
+        "SELECT g.id FROM goals g LEFT JOIN people p ON p.id = g.attribution_id
+         WHERE (g.attribution_id IS NOT NULL AND p.id IS NULL)
+            OR length(trim(g.name)) = 0 OR g.target_cents <= 0
+            OR g.frequency NOT IN ('daily', 'weekly', 'monthly')
+            OR g.status NOT IN ('active', 'paused', 'completed', 'archived')
+            OR (g.status = 'archived') <> (g.pre_archive_status IS NOT NULL)
+            OR g.pre_archive_status NOT IN ('active', 'paused', 'completed')
+         UNION
+         SELECT c.goal_id FROM goal_contributions c LEFT JOIN goals g ON g.id = c.goal_id
+         WHERE g.id IS NULL OR c.amount_cents <= 0",
+    )?;
     let mut stmt = conn.prepare("SELECT id, target_date FROM goals ORDER BY id")?;
     let goals = stmt
         .query_map([], |r| {
@@ -149,6 +161,38 @@ mod tests {
     use super::*;
     use crate::infrastructure::db::Db;
     use crate::shared::test_fixtures::seed_people;
+
+    #[test]
+    fn integrity_flags_invalid_goal_lifecycle_and_orphan_contribution() {
+        let db = Db::open_in_memory().unwrap();
+        let conn = db.conn();
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints = ON;
+             PRAGMA foreign_keys = OFF;
+             INSERT INTO goals (id, name, target_cents, frequency, status, created_at, updated_at)
+             VALUES (1, 'Trip', 100, 'monthly', 'archived', '2026-11-11T00:00:00Z',
+                     '2026-11-11T00:00:00Z');
+             INSERT INTO goal_contributions (goal_id, amount_cents, date, created_at)
+             VALUES (2, 100, '2026-11-11', '2026-11-11T00:00:00Z');
+             PRAGMA foreign_keys = ON;
+             PRAGMA ignore_check_constraints = OFF;",
+        )
+        .unwrap();
+        assert_eq!(
+            check(conn).unwrap(),
+            vec![
+                IntegrityIssue::GoalShape { goal_id: 1 },
+                IntegrityIssue::GoalShape { goal_id: 2 },
+            ]
+        );
+
+        conn.execute_batch(
+            "UPDATE goals SET pre_archive_status = 'active' WHERE id = 1;
+             UPDATE goal_contributions SET goal_id = 1 WHERE goal_id = 2;",
+        )
+        .unwrap();
+        assert!(check(conn).unwrap().is_empty());
+    }
 
     #[test]
     fn integrity_flags_settlement_shape() {

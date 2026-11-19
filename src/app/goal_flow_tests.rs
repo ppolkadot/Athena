@@ -5,9 +5,10 @@ use eframe::egui::{self, Id, Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use super::actions::AppAction;
+use super::actions::{AppAction, AppearanceApply};
 use super::navigation::Screen;
 use super::{AppCore, AthenaApp};
+use crate::domain::appearance::{AppearancePrefs, MotionPref, TextScale};
 use crate::domain::goal::{
     ContributionDraft, Frequency, GoalDraft, GoalStatus, GoalTransition, contribution_plan,
 };
@@ -384,14 +385,28 @@ fn narrow_widths_drill_in_and_back_out() {
 
 #[test]
 fn paused_goals_keep_their_actions_at_every_text_scale() {
-    let mut core = core();
-    let id = create(&mut core, "Trip", 100_000);
-    core.apply(AppAction::ChangeGoalStatus(id, GoalTransition::Pause))
+    let _reset = theme::active::ResetOnDrop;
+    for text_scale in TextScale::ALL {
+        let mut core = core();
+        core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
+            prefs: AppearancePrefs {
+                text_scale,
+                motion: MotionPref::Reduced,
+                ..AppearancePrefs::default()
+            },
+            media: None,
+        })))
         .unwrap();
-    core.ui.goals.set_filter(GoalStatus::Paused);
-    core.ui.goals.select(id);
-    let mut h = wide(core);
-    open_goals(&mut h);
-    assert!(h.query_by_label("Add contribution").is_some());
-    assert!(h.query_by_label("More actions").is_some());
+        let id = create(&mut core, "Trip", 100_000);
+        core.apply(AppAction::ChangeGoalStatus(id, GoalTransition::Pause))
+            .unwrap();
+        core.ui.goals.set_filter(GoalStatus::Paused);
+        core.ui.goals.select(id);
+        let mut h = wide(core);
+        open_goals(&mut h);
+        assert_eq!(h.state().look.text_scale, text_scale.percent());
+        assert!(h.state().look.reduced_motion);
+        assert!(h.query_by_label("Add contribution").is_some());
+        assert!(h.query_by_label("More actions").is_some());
+    }
 }

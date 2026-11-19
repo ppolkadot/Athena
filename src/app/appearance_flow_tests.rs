@@ -158,25 +158,22 @@ fn a_rejected_file_blocks_apply_and_the_error_sits_next_to_the_control() {
         .push(Some(path));
     rig.key_activate("Choose file");
     let deadline = Instant::now() + Duration::from_secs(20);
-    while rig.edit().status.failure.is_none() {
+    let corrupt_message = "That image is damaged or incomplete.";
+    // The worker can finish after the frame has already drawn Settings.
+    while rig.harness.query_by_label(corrupt_message).is_none() {
         rig.steps(2);
-        assert!(Instant::now() < deadline, "decode failure never reported");
+        assert!(
+            Instant::now() < deadline,
+            "decode failure never rendered: {:?}",
+            rig.edit().status.failure
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        rig.harness
-            .query_by_label("That image is damaged or incomplete.")
-            .is_some()
-    );
     assert!(rig.apply_disabled());
     // Removing the file clears the error and the plain canvas is previewed again.
     rig.key_activate("Remove");
     assert!(rig.edit().status.failure.is_none());
-    assert!(
-        rig.harness
-            .query_by_label("That image is damaged or incomplete.")
-            .is_none()
-    );
+    assert!(rig.harness.query_by_label(corrupt_message).is_none());
 }
 
 #[test]
