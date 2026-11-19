@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::domain::goal::GoalError;
 use crate::domain::template::TemplateError;
 use crate::infrastructure::db::integrity::IntegrityIssue;
 
@@ -204,6 +205,8 @@ pub enum AppError {
     CategoryScopeInUse,
     #[error("the template is invalid ({} issue(s))", .0.len())]
     TemplateInvalid(Vec<TemplateError>),
+    #[error("the goal request is invalid ({} issue(s))", .0.len())]
+    GoalInvalid(Vec<GoalError>),
     #[error(transparent)]
     Media(#[from] crate::infrastructure::media::MediaError),
     #[error("export failed: {0}")]

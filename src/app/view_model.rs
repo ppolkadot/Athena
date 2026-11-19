@@ -5,6 +5,7 @@ use super::actions::{OperationNotice, RefreshScope};
 use super::navigation::Screen;
 use super::store::Store;
 use super::ui_state::UiState;
+use crate::application::services::goals::{self, GoalDetail, GoalListItem};
 use crate::application::services::{reports, settlement};
 use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
@@ -58,6 +59,10 @@ pub struct ViewModel {
     pub transactions: Vec<Transaction>,
     /// Entry templates, alphabetical by folded name then id.
     pub templates: Vec<Template>,
+    /// Every goal with its progress, in stable id order.
+    pub goals: Vec<GoalListItem>,
+    /// The selected goal with its contributions, if one is selected and exists.
+    pub goal_detail: Option<GoalDetail>,
     pub summary: MonthSummary,
     pub category_totals: Vec<CategoryTotal>,
     pub person_totals: Vec<PersonTotal>,
@@ -110,6 +115,8 @@ impl ViewModel {
             all_categories: Vec::new(),
             transactions: Vec::new(),
             templates: Vec::new(),
+            goals: Vec::new(),
+            goal_detail: None,
             summary: MonthSummary::default(),
             category_totals: Vec::new(),
             person_totals: Vec::new(),
@@ -432,6 +439,9 @@ impl ViewModel {
             }
             RefreshScope::Appearance => {
                 self.stage_appearance(read_appearance(conn));
+            }
+            RefreshScope::Goals => {
+                self.goals = goals::list_items(conn)?;
             }
             RefreshScope::Trash => {
                 let trash_count = trash_repo::count(conn)?;

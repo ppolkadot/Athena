@@ -16,6 +16,8 @@ pub enum IntegrityIssue {
     SettlementShape { tx_id: i64 },
     /// A template's responsibility mode, payer or allocations disagree with its amount and kind.
     TemplateShape { template_id: i64 },
+    /// A goal or one of its contributions has an impossible date, or the contributions overflow.
+    GoalShape { goal_id: i64 },
 }
 
 fn ids(conn: &Connection, sql: &str) -> Result<Vec<i64>> {
@@ -86,7 +88,50 @@ pub fn check(conn: &Connection) -> Result<Vec<IntegrityIssue>> {
     )? {
         issues.push(IntegrityIssue::TemplateShape { template_id });
     }
+    for goal_id in goal_issues(conn)? {
+        issues.push(IntegrityIssue::GoalShape { goal_id });
+    }
     Ok(issues)
+}
+
+/// Goals whose dates are not real calendar dates or whose contributions overflow `i64`.
+fn goal_issues(conn: &Connection) -> Result<Vec<i64>> {
+    let valid = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok();
+    let mut bad: Vec<i64> = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, target_date FROM goals ORDER BY id")?;
+    let goals = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, date) in goals {
+        if date.as_deref().is_some_and(|d| !valid(d)) {
+            bad.push(id);
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT goal_id, date, amount_cents FROM goal_contributions ORDER BY goal_id, id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut totals: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+    for (goal_id, date, cents) in rows {
+        let total = totals.entry(goal_id).or_insert(0);
+        match total.checked_add(cents) {
+            Some(next) if valid(&date) => *total = next,
+            _ => bad.push(goal_id),
+        }
+    }
+    bad.sort_unstable();
+    bad.dedup();
+    Ok(bad)
 }
 
 #[cfg(test)]
