@@ -1328,6 +1328,8 @@ mod tests {
             templates: vec![],
             widened_categories: Vec::new(),
             appearance: None,
+            goals: Vec::new(),
+            closings: Vec::new(),
         }
     }
 

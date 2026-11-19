@@ -9,6 +9,7 @@ use crate::domain::appearance::{
 };
 use crate::infrastructure::db::{Db, appearance_repo, import_repo, integrity};
 use crate::infrastructure::export::format_v4::DocumentV4;
+use crate::infrastructure::export::format_v5::DocumentV5;
 use crate::infrastructure::export::json::{FORMAT_VERSION, write_json};
 use crate::shared::error::{AppError, ImportError};
 
@@ -91,10 +92,15 @@ fn the_fixture_round_trips_through_the_database_and_back_to_the_same_bytes() {
     let path = dir.path().join("out.json");
     write_json(db.conn(), &plan.profile, &plan.exported_at, &path).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    let doc: DocumentV4 = serde_json::from_str(&text).unwrap();
+    let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
     assert_eq!(doc.format_version, FORMAT_VERSION);
+    assert!(doc.goals.is_empty() && doc.closings.is_empty());
+    // The current writer adds only the format 5 envelope; every format 4 field is reproduced.
     let mut again: Value = serde_json::from_str(&text).unwrap();
     again["app_version"] = json!("1.3.0");
+    again["format_version"] = json!(4);
+    again.as_object_mut().unwrap().remove("goals");
+    again.as_object_mut().unwrap().remove("closings");
     assert_eq!(
         again,
         fixture(),
@@ -102,6 +108,7 @@ fn the_fixture_round_trips_through_the_database_and_back_to_the_same_bytes() {
     );
 
     let mut from_db = ImportPlan::from_db(db.conn(), &plan.profile).unwrap();
+    from_db.format_version = plan.format_version;
     let mut expected = plan;
     from_db.source_name.clear();
     expected.source_name.clear();
@@ -127,7 +134,7 @@ fn a_local_wallpaper_is_exported_as_none_without_ids_paths_or_bytes() {
         "no asset id is exported"
     );
     assert!(!text.contains(".media") && !text.contains("appearance\\"));
-    let doc: DocumentV4 = serde_json::from_str(&text).unwrap();
+    let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
     let appearance = doc.appearance.unwrap();
     assert_eq!(appearance.background, "none");
     assert_eq!(
@@ -245,12 +252,12 @@ fn unknown_and_future_fields_are_rejected() {
         matches!(errors(&doc).as_slice(), [ImportError::MalformedJson(_)]),
         "asset ids are never part of a document"
     );
-    // A format above 4 is rejected before its body is read.
-    let future = json!({"format": "athena-profile", "format_version": 5, "appearance": 1});
+    // A format above the current one is rejected before its body is read.
+    let future = json!({"format": "athena-profile", "format_version": 6, "appearance": 1});
     assert_eq!(
         errors(&future),
         vec![ImportError::TooNew {
-            found: 5,
+            found: 6,
             supported: FORMAT_VERSION
         }]
     );

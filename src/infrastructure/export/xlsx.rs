@@ -1,6 +1,7 @@
 //! The workbook export: an `Entries` sheet (one row per transaction, the CSV columns plus the id and
-//! an amount representation) and an `Allocations` sheet (one row per share). Both sheets start with
-//! a labeled scope row and a frozen header row.
+//! an amount representation) and an `Allocations` sheet (one row per share), scoped as requested,
+//! plus `Goals` and `Closings` sheets that always cover the full history (1.4). Every sheet starts
+//! with a labeled scope row and a frozen header row.
 //!
 //! Every user value is written with an explicit string write, so text that begins with `=`, `+`,
 //! `-` or `@` is stored as text and can never become a formula or link. Dates are ISO text and
@@ -18,11 +19,13 @@ use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
 
 use super::csv::type_label;
 use super::{ExportReceipt, atomic_write, ordered_transactions, people_by_id};
+use crate::domain::closing::ClosingSnapshot;
 use crate::domain::export::ExportScope;
+use crate::domain::goal::{GoalRecord, GoalStatus, progress};
 use crate::domain::settings::Language;
 use crate::domain::transaction::Transaction;
 use crate::i18n::{Strings, month_label, strings};
-use crate::infrastructure::db::categories_repo;
+use crate::infrastructure::db::{categories_repo, closings_repo, goals_repo};
 use crate::shared::error::{AppError, Result};
 
 /// The largest cent magnitude written as a number.
@@ -222,6 +225,127 @@ fn write_allocations(
     Ok(())
 }
 
+/// A whole number as a numeric cell while it is exact in a spreadsheet, otherwise exact text.
+fn write_count(sheet: &mut Worksheet, row: u32, col: u16, count: i64) -> Result<()> {
+    if count.unsigned_abs() <= MAX_NUMERIC_CENTS {
+        #[allow(clippy::cast_precision_loss)]
+        sheet
+            .write_number(row, col, count as f64)
+            .map(|_| ())
+            .map_err(|e| xlsx_error(&e))
+    } else {
+        write_text(sheet, row, col, &count.to_string())
+    }
+}
+
+fn status_label(s: &Strings, status: GoalStatus) -> &'static str {
+    match status {
+        GoalStatus::Active => s.goal_status_active,
+        GoalStatus::Paused => s.goal_status_paused,
+        GoalStatus::Completed => s.goal_status_completed,
+        GoalStatus::Archived => s.goal_status_archived,
+    }
+}
+
+fn write_goals(
+    sheet: &mut Worksheet,
+    formats: &Formats,
+    language: Language,
+    names: &Names,
+    records: &[GoalRecord],
+) -> Result<()> {
+    let s = strings(language);
+    for (index, record) in records.iter().enumerate() {
+        let row = data_row(index)?;
+        let goal = &record.goal;
+        let contributed = record
+            .contributions
+            .iter()
+            .try_fold(0_i64, |total, c| total.checked_add(c.amount.cents()))
+            .ok_or_else(|| {
+                AppError::Export("goal contributions exceed the supported total".into())
+            })?;
+        let figures = progress(
+            goal.target,
+            crate::domain::money::Money::from_cents(contributed),
+        );
+        write_text(sheet, row, 0, &goal.id.to_string())?;
+        write_text(sheet, row, 1, &goal.name)?;
+        write_text(
+            sheet,
+            row,
+            2,
+            goal.attribution_id.map_or("", |id| names.person(id)),
+        )?;
+        write_amount(sheet, formats, s, row, 3, goal.target.cents())?;
+        write_amount(sheet, formats, s, row, 5, contributed)?;
+        write_amount(sheet, formats, s, row, 7, figures.remaining.cents())?;
+        write_amount(sheet, formats, s, row, 9, figures.excess.cents())?;
+        write_text(
+            sheet,
+            row,
+            11,
+            &goal
+                .target_date
+                .map_or_else(String::new, |d| d.format("%Y-%m-%d").to_string()),
+        )?;
+        write_text(sheet, row, 12, status_label(s, goal.status))?;
+        write_text(
+            sheet,
+            row,
+            13,
+            if figures.funded {
+                s.xlsx_yes
+            } else {
+                s.xlsx_no
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn write_closings(
+    sheet: &mut Worksheet,
+    formats: &Formats,
+    language: Language,
+    names: &Names,
+    closings: &[ClosingSnapshot],
+) -> Result<()> {
+    let s = strings(language);
+    for (index, closing) in closings.iter().enumerate() {
+        let row = data_row(index)?;
+        write_text(sheet, row, 0, &closing.month.key())?;
+        write_text(sheet, row, 1, &closing.closed_at)?;
+        write_amount(sheet, formats, s, row, 2, closing.income.cents())?;
+        write_amount(sheet, formats, s, row, 4, closing.expenses.cents())?;
+        write_amount(sheet, formats, s, row, 6, closing.refunds.cents())?;
+        write_amount(sheet, formats, s, row, 8, closing.result.cents())?;
+        write_count(sheet, row, 10, closing.count)?;
+        write_amount(
+            sheet,
+            formats,
+            s,
+            row,
+            11,
+            closing.previous_spending.cents(),
+        )?;
+        write_count(sheet, row, 13, closing.previous_count)?;
+        if let Some((category, net)) = closing.top_category {
+            let name = category
+                .and_then(|id| names.categories.get(&id))
+                .map_or(s.qa_no_category, String::as_str);
+            write_text(sheet, row, 14, name)?;
+            write_amount(sheet, formats, s, row, 15, net.cents())?;
+        }
+        if let Some(expense) = &closing.largest_expense {
+            write_text(sheet, row, 17, &expense.title)?;
+            write_amount(sheet, formats, s, row, 18, expense.amount.cents())?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn build(conn: &Connection, language: Language, scope: ExportScope) -> Result<(Vec<u8>, usize)> {
     let s = strings(language);
     let transactions = ordered_transactions(conn, &scope.filter())?;
@@ -280,6 +404,77 @@ fn build(conn: &Connection, language: Language, scope: ExportScope) -> Result<(V
         ],
     )?;
     write_allocations(allocations, &formats, language, &names, &transactions)?;
+
+    // Goals and closings are history, not part of the requested range: both sheets say so.
+    let goals = workbook.add_worksheet();
+    start_sheet(
+        goals,
+        &formats,
+        s.xlsx_sheet_goals,
+        s.xlsx_scope,
+        s.xlsx_scope_history,
+        &[
+            s.xlsx_id,
+            s.xlsx_h_name,
+            s.xlsx_h_for,
+            s.xlsx_h_target,
+            s.xlsx_amount_form,
+            s.xlsx_h_contributed,
+            s.xlsx_amount_form,
+            s.xlsx_h_remaining,
+            s.xlsx_amount_form,
+            s.xlsx_h_excess,
+            s.xlsx_amount_form,
+            s.xlsx_h_deadline,
+            s.xlsx_h_status,
+            s.xlsx_h_funded,
+        ],
+    )?;
+    write_goals(
+        goals,
+        &formats,
+        language,
+        &names,
+        &goals_repo::records(conn)?,
+    )?;
+
+    let closings = workbook.add_worksheet();
+    start_sheet(
+        closings,
+        &formats,
+        s.xlsx_sheet_closings,
+        s.xlsx_scope,
+        s.xlsx_scope_history,
+        &[
+            s.xlsx_h_month,
+            s.xlsx_h_saved_at,
+            s.income_total,
+            s.xlsx_amount_form,
+            s.expenses,
+            s.xlsx_amount_form,
+            s.xlsx_h_refunds,
+            s.xlsx_amount_form,
+            s.result,
+            s.xlsx_amount_form,
+            s.xlsx_h_entries,
+            s.xlsx_h_prev_spending,
+            s.xlsx_amount_form,
+            s.xlsx_h_prev_entries,
+            s.xlsx_h_top_category,
+            s.xlsx_h_top_category_amount,
+            s.xlsx_amount_form,
+            s.xlsx_h_largest_title,
+            s.xlsx_h_largest_amount,
+            s.xlsx_amount_form,
+        ],
+    )?;
+    write_closings(
+        closings,
+        &formats,
+        language,
+        &names,
+        &closings_repo::list(conn)?,
+    )?;
 
     let bytes = workbook.save_to_buffer().map_err(|e| xlsx_error(&e))?;
     Ok((bytes, transactions.len()))
@@ -460,6 +655,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn xlsx_round_trips_sheets_headers_scope_and_formula_safety() {
         let db = seeded_with_extras();
         let dir = tempfile::tempdir().unwrap();
@@ -481,10 +677,20 @@ mod tests {
                 let mut book = open(&path);
                 assert_eq!(
                     book.sheet_names(),
-                    vec![s.xlsx_sheet_entries, s.xlsx_sheet_allocations]
+                    vec![
+                        s.xlsx_sheet_entries,
+                        s.xlsx_sheet_allocations,
+                        s.xlsx_sheet_goals,
+                        s.xlsx_sheet_closings
+                    ]
                 );
                 // Nothing in either sheet is a formula, whatever the user typed.
-                for sheet in [s.xlsx_sheet_entries, s.xlsx_sheet_allocations] {
+                for sheet in [
+                    s.xlsx_sheet_entries,
+                    s.xlsx_sheet_allocations,
+                    s.xlsx_sheet_goals,
+                    s.xlsx_sheet_closings,
+                ] {
                     let formulas = book.worksheet_formula(sheet).unwrap();
                     assert!(formulas.cells().all(|(_, _, f)| f.is_empty()), "{sheet}");
                 }
@@ -618,14 +824,17 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_export_still_has_both_sheets_and_headings() {
+    fn an_empty_export_still_has_every_sheet_and_headings() {
         let db = Db::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.xlsx");
         let receipt = write_xlsx(db.conn(), Language::PtBr, ExportScope::All, &path).unwrap();
         assert_eq!(receipt.record_count, 0);
         let mut book = open(&path);
-        assert_eq!(book.sheet_names(), vec!["Lançamentos", "Alocações"]);
+        assert_eq!(
+            book.sheet_names(),
+            vec!["Lançamentos", "Alocações", "Metas", "Fechamentos"]
+        );
         let entries = rows(&mut book, "Lançamentos");
         assert_eq!(entries.height(), 2);
         assert_eq!(text(entries.get_value((0, 1))), "Todo o histórico");
@@ -666,5 +875,218 @@ mod tests {
         let err = write_xlsx(db.conn(), Language::En, ExportScope::All, &path);
         assert!(matches!(err, Err(AppError::Export(_))));
         assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+    }
+
+    /// Entries in October and November, two closings (one whose largest expense is purged), and
+    /// goals attributed to a person who is archived afterwards, with a hostile name and note.
+    fn history_db() -> Db {
+        use crate::application::services::closings;
+        use crate::domain::goal::{ContributionDraft, Frequency, GoalDraft, GoalTransition};
+        use crate::infrastructure::db::goals_repo;
+        let db = Db::open_in_memory().unwrap();
+        let (_, partner) = seed_people(db.conn());
+        let conn = db.conn();
+        let mut sofa = draft_with(vec![]);
+        sofa.title = "Sofa".into();
+        sofa.amount = Money::from_cents(90_000);
+        sofa.date = date(2026, 10, 12);
+        let sofa_id = transactions_repo::create(conn, &sofa).unwrap();
+        let mut shop = draft_with(vec![]);
+        shop.title = "Shop".into();
+        shop.amount = Money::from_cents(12_345);
+        shop.date = date(2026, 11, 3);
+        transactions_repo::create(conn, &shop).unwrap();
+        let today = date(2026, 12, 1);
+        closings::close_month(
+            conn,
+            YearMonth::new(2026, 10).unwrap(),
+            today,
+            "2026-12-01T09:00:00Z",
+        )
+        .unwrap();
+        closings::close_month(
+            conn,
+            YearMonth::new(2026, 11).unwrap(),
+            today,
+            "2026-12-01T09:05:00Z",
+        )
+        .unwrap();
+        transactions_repo::delete(conn, sofa_id).unwrap();
+        crate::infrastructure::db::trash_repo::purge(conn, sofa_id).unwrap();
+        let mut pen = draft_with(vec![]);
+        pen.title = "Pen".into();
+        pen.amount = Money::from_cents(250);
+        pen.date = date(2026, 10, 20);
+        transactions_repo::create(conn, &pen).unwrap();
+
+        let today = date(2026, 11, 20);
+        let make = |name: &str, target: i64, person: Option<i64>| {
+            goals_repo::create(
+                conn,
+                &GoalDraft {
+                    name: name.into(),
+                    target: Money::from_cents(target),
+                    target_date: Some(date(2027, 3, 1)),
+                    frequency: Frequency::Monthly,
+                    attribution_id: person,
+                },
+            )
+            .unwrap()
+        };
+        let add = |goal: i64, cents: i64, note: Option<&str>| {
+            goals_repo::add_contribution(
+                conn,
+                goal,
+                &ContributionDraft {
+                    amount: Money::from_cents(cents),
+                    date: today,
+                    note: note.map(str::to_owned),
+                },
+                today,
+            )
+            .unwrap();
+        };
+        let trip = make("=HYPERLINK(\"x\")", 100_000, Some(partner));
+        add(trip, 25_050, Some("@note"));
+        let over = make("Over", 1_000, None);
+        add(over, 1_500, None);
+        let huge = make("Huge", i64::MAX, None);
+        add(huge, 1, None);
+        goals_repo::change_status(conn, over, GoalTransition::Archive).unwrap();
+        people_repo::set_archived(conn, partner, true).unwrap();
+        db
+    }
+
+    #[test]
+    fn goals_and_closings_sheets_cover_the_full_history_for_both_scopes() {
+        let db = history_db();
+        let dir = tempfile::tempdir().unwrap();
+        for language in [Language::En, Language::PtBr] {
+            let s = strings(language);
+            let mut sheets = Vec::new();
+            for (scope, expected_entries) in [
+                (ExportScope::Month(YearMonth::new(2026, 11).unwrap()), 1),
+                (ExportScope::All, 2),
+            ] {
+                let path = dir
+                    .path()
+                    .join(format!("{language:?}-{expected_entries}.xlsx"));
+                let receipt = write_xlsx(db.conn(), language, scope, &path).unwrap();
+                // The receipt still counts ledger rows only.
+                assert_eq!(receipt.record_count, expected_entries);
+                let mut book = open(&path);
+                assert_eq!(
+                    book.sheet_names(),
+                    vec![
+                        s.xlsx_sheet_entries,
+                        s.xlsx_sheet_allocations,
+                        s.xlsx_sheet_goals,
+                        s.xlsx_sheet_closings
+                    ]
+                );
+                for sheet in [s.xlsx_sheet_goals, s.xlsx_sheet_closings] {
+                    let range = rows(&mut book, sheet);
+                    assert_eq!(text(range.get_value((0, 0))), s.xlsx_scope);
+                    assert_eq!(
+                        text(range.get_value((0, 1))),
+                        s.xlsx_scope_history,
+                        "{sheet}"
+                    );
+                    let formulas = book.worksheet_formula(sheet).unwrap();
+                    assert!(formulas.cells().all(|(_, _, f)| f.is_empty()), "{sheet}");
+                }
+                // The requested scope still narrows Entries.
+                assert_eq!(
+                    rows(&mut book, s.xlsx_sheet_entries).height(),
+                    2 + expected_entries
+                );
+                sheets.push((
+                    rows(&mut book, s.xlsx_sheet_goals),
+                    rows(&mut book, s.xlsx_sheet_closings),
+                ));
+            }
+            // Goals and closings do not depend on the entries scope.
+            assert_eq!(sheets[0].0, sheets[1].0);
+            assert_eq!(sheets[0].1, sheets[1].1);
+        }
+    }
+
+    #[test]
+    fn goal_rows_read_back_exactly_with_archived_names_and_exact_text() {
+        let db = history_db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goals.xlsx");
+        write_xlsx(db.conn(), Language::En, ExportScope::All, &path).unwrap();
+        let mut book = open(&path);
+        let goals = rows(&mut book, "Goals");
+        assert_eq!(goals.height(), 2 + 3);
+        let headers: Vec<String> = (0..14).map(|c| text(goals.get_value((1, c)))).collect();
+        assert_eq!(headers[1], "Name");
+        assert_eq!(headers[12], "Status");
+        // Row 1: hostile name stays text; archived attribution still resolves; 250.50 saved.
+        assert_eq!(text(goals.get_value((2, 0))), "1");
+        assert_eq!(text(goals.get_value((2, 1))), "=HYPERLINK(\"x\")");
+        assert_eq!(text(goals.get_value((2, 2))), "Ana");
+        assert_eq!(cents(goals.get_value((2, 3))), 100_000);
+        assert_eq!(cents(goals.get_value((2, 5))), 25_050);
+        assert_eq!(cents(goals.get_value((2, 7))), 74_950);
+        assert_eq!(cents(goals.get_value((2, 9))), 0);
+        assert_eq!(text(goals.get_value((2, 11))), "2027-03-01");
+        assert_eq!(text(goals.get_value((2, 12))), "Active");
+        assert_eq!(text(goals.get_value((2, 13))), "No");
+        // Row 2: overfunded and archived; the excess is its own column and Funded is derived.
+        assert_eq!(cents(goals.get_value((3, 7))), 0);
+        assert_eq!(cents(goals.get_value((3, 9))), 500);
+        assert_eq!(text(goals.get_value((3, 12))), "Archived");
+        assert_eq!(text(goals.get_value((3, 13))), "Yes");
+        // Row 3: a target beyond the numeric limit is exact text with its indicator.
+        assert_eq!(text(goals.get_value((4, 3))), exact_amount_text(i64::MAX));
+        assert_eq!(text(goals.get_value((4, 4))), "Exact text");
+        assert_eq!(
+            text(goals.get_value((4, 7))),
+            exact_amount_text(i64::MAX - 1)
+        );
+    }
+
+    #[test]
+    fn closing_rows_read_back_with_the_saved_values_and_the_purged_expense_fallback() {
+        let db = history_db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("closings.xlsx");
+        write_xlsx(db.conn(), Language::PtBr, ExportScope::All, &path).unwrap();
+        let mut book = open(&path);
+        let closings = rows(&mut book, "Fechamentos");
+        assert_eq!(closings.height(), 2 + 2);
+        assert_eq!(text(closings.get_value((2, 0))), "2026-10");
+        assert_eq!(text(closings.get_value((2, 1))), "2026-12-01T09:00:00Z");
+        assert_eq!(cents(closings.get_value((2, 4))), 90_000);
+        assert_eq!(cents(closings.get_value((2, 8))), -90_000);
+        assert!(
+            matches!(closings.get_value((2, 10)), Some(Data::Float(f)) if (*f - 1.0).abs() < 1e-9)
+        );
+        // The Uncategorized winner is named, and the purged largest expense keeps its fallback.
+        assert_eq!(text(closings.get_value((2, 14))), "Sem categoria");
+        assert_eq!(cents(closings.get_value((2, 15))), 90_000);
+        assert_eq!(text(closings.get_value((2, 17))), "Sofa");
+        assert_eq!(cents(closings.get_value((2, 18))), 90_000);
+        assert_eq!(text(closings.get_value((3, 0))), "2026-11");
+        assert_eq!(cents(closings.get_value((3, 4))), 12_345);
+        // November compared with October's saved spending.
+        assert_eq!(cents(closings.get_value((3, 11))), 90_000);
+        assert_eq!(text(closings.get_value((3, 17))), "Shop");
+    }
+
+    #[test]
+    fn workbooks_without_goals_or_closings_keep_both_history_sheets_with_headings() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("none.xlsx");
+        write_xlsx(db.conn(), Language::En, ExportScope::All, &path).unwrap();
+        let mut book = open(&path);
+        for sheet in ["Goals", "Closings"] {
+            let range = rows(&mut book, sheet);
+            assert_eq!(range.height(), 2, "{sheet}");
+            assert_eq!(text(range.get_value((0, 1))), "Full history");
+        }
     }
 }

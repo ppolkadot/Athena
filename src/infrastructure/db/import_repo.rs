@@ -3,7 +3,8 @@
 use rusqlite::{Connection, Transaction, params};
 
 use super::{
-    appearance_repo, integrity, now_rfc3339, templates_repo, transactions_repo::date_text,
+    appearance_repo, closings_repo, goals_repo, integrity, now_rfc3339, templates_repo,
+    transactions_repo::date_text,
 };
 use crate::application::services::import::ImportPlan;
 use crate::domain::category::Category;
@@ -44,6 +45,14 @@ where
     insert_categories(&tx, &plan.categories)?;
     insert_transactions(&tx, &plan.transactions)?;
     insert_templates(&tx, &plan.templates)?;
+    // Goals and closings come after the people, categories and transactions they reference.
+    // Saved fingerprints are inserted as they are: nothing is regenerated.
+    for record in &plan.goals {
+        goals_repo::insert_imported(&tx, record)?;
+    }
+    for closing in &plan.closings {
+        closings_repo::insert_imported(&tx, closing)?;
+    }
     // Formats 1-3 and a format-4 document without `appearance` leave no row (solid legacy theme).
     if let Some(prefs) = &plan.appearance {
         appearance_repo::save(&tx, prefs)?;
@@ -55,7 +64,10 @@ where
 
 fn clear_tables(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(
-        "DELETE FROM allocations;
+        "DELETE FROM closings;
+         DELETE FROM goal_contributions;
+         DELETE FROM goals;
+         DELETE FROM allocations;
          DELETE FROM transactions;
          DELETE FROM template_allocations;
          DELETE FROM templates;
@@ -210,7 +222,7 @@ mod tests {
     fn sample_plan() -> ImportPlan {
         ImportPlan {
             source_name: "incoming.json".into(),
-            format_version: 4,
+            format_version: crate::infrastructure::export::json::FORMAT_VERSION,
             app_version: "1.1.0".into(),
             exported_at: "2026-11-15T10:00:00Z".into(),
             used_timestamp_fallback: false,
@@ -272,6 +284,8 @@ mod tests {
             }],
             templates: vec![],
             appearance: None,
+            goals: Vec::new(),
+            closings: Vec::new(),
         }
     }
 

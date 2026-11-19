@@ -14,6 +14,8 @@ pub struct ImportPreviewDialog {
     pub current_categories: usize,
     pub current_transactions: usize,
     pub current_templates: usize,
+    pub current_goals: usize,
+    pub current_closings: usize,
     pub current_trash: usize,
     pub snapshot_dir: String,
 }
@@ -40,7 +42,8 @@ pub fn show(
         1 => s.import_preview_format_v1,
         2 => s.import_preview_format_v2,
         3 => s.import_preview_format_v3,
-        _ => s.import_preview_format_v4,
+        4 => s.import_preview_format_v4,
+        _ => s.import_preview_format_v5,
     };
     let meta = s
         .import_preview_meta
@@ -65,6 +68,22 @@ pub fn show(
             &dialog.current_transactions.to_string(),
         )
         .replace("{cur_trash}", &dialog.current_trash.to_string());
+    let history = s
+        .import_preview_history
+        .replace("{in_goals}", &dialog.plan.goals.len().to_string())
+        .replace("{cur_goals}", &dialog.current_goals.to_string())
+        .replace(
+            "{in_contributions}",
+            &dialog
+                .plan
+                .goals
+                .iter()
+                .map(|g| g.contributions.len())
+                .sum::<usize>()
+                .to_string(),
+        )
+        .replace("{in_closings}", &dialog.plan.closings.len().to_string())
+        .replace("{cur_closings}", &dialog.current_closings.to_string());
     let snapshot = s
         .import_preview_snapshot
         .replace("{snapshot_dir}", &dialog.snapshot_dir);
@@ -98,6 +117,8 @@ pub fn show(
         }
         ui.add_space(8.0);
         ui.label(RichText::new(counts).color(p.text));
+        ui.add_space(4.0);
+        ui.label(RichText::new(history).color(p.text));
         ui.add_space(6.0);
         // Appearance is replaced too: by the file's settings, or back to the defaults.
         let appearance_note = if dialog.plan.appearance.is_some() {
@@ -174,7 +195,11 @@ mod tests {
                 transactions: vec![],
                 templates: vec![],
                 appearance: None,
+                goals: Vec::new(),
+                closings: Vec::new(),
             }),
+            current_goals: 2,
+            current_closings: 1,
             current_people: 3,
             current_categories: 12,
             current_transactions: 18,

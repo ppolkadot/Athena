@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{bad_code, now_rfc3339, people_repo};
 use crate::domain::goal::{
-    Contribution, ContributionDraft, Frequency, Goal, GoalDraft, GoalError, GoalStatus,
+    Contribution, ContributionDraft, Frequency, Goal, GoalDraft, GoalError, GoalRecord, GoalStatus,
     GoalTransition, apply_transition,
 };
 use crate::domain::money::Money;
@@ -314,6 +314,66 @@ pub fn delete_contribution(conn: &Connection, goal_id: i64, contribution_id: i64
 pub fn count(conn: &Connection) -> Result<usize> {
     let n: i64 = conn.query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0))?;
     Ok(usize::try_from(n).unwrap_or(0))
+}
+
+/// Every goal with its contributions in id order, for export.
+///
+/// # Errors
+/// Database errors.
+pub fn records(conn: &Connection) -> Result<Vec<GoalRecord>> {
+    let mut by_goal: HashMap<i64, Vec<Contribution>> = HashMap::new();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CONTRIBUTION_COLUMNS} FROM goal_contributions ORDER BY id"
+    ))?;
+    for row in stmt.query_map([], contribution_from_row)? {
+        let c = row?;
+        by_goal.entry(c.goal_id).or_default().push(c);
+    }
+    Ok(list(conn)?
+        .into_iter()
+        .map(|goal| GoalRecord {
+            contributions: by_goal.remove(&goal.id).unwrap_or_default(),
+            goal,
+        })
+        .collect())
+}
+
+/// Insert a goal exactly as imported: explicit id and timestamps, no reference-activity or
+/// date-versus-today rules (history may reference archived people and past dates).
+pub(crate) fn insert_imported(conn: &Connection, record: &GoalRecord) -> Result<()> {
+    let goal = &record.goal;
+    conn.execute(
+        "INSERT INTO goals (id, name, target_cents, target_date, frequency, attribution_id,
+            status, pre_archive_status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            goal.id,
+            goal.name.trim(),
+            goal.target.cents(),
+            goal.target_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            goal.frequency.code(),
+            goal.attribution_id,
+            goal.status.code(),
+            goal.pre_archive_status.map(GoalStatus::code),
+            goal.created_at,
+            goal.updated_at,
+        ],
+    )?;
+    for c in &record.contributions {
+        conn.execute(
+            "INSERT INTO goal_contributions (id, goal_id, amount_cents, date, note, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                c.id,
+                goal.id,
+                c.amount.cents(),
+                c.date.format("%Y-%m-%d").to_string(),
+                c.note,
+                c.created_at
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

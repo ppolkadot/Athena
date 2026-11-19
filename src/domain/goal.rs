@@ -160,6 +160,14 @@ impl Goal {
     }
 }
 
+/// A goal with all its contributions, as exported and imported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalRecord {
+    pub goal: Goal,
+    /// In id order.
+    pub contributions: Vec<Contribution>,
+}
+
 /// One saved contribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contribution {

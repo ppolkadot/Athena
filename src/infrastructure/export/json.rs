@@ -1,6 +1,7 @@
-//! The complete structured export (Format 4): integer cents, ISO dates, record timestamps, each
-//! live transaction with its allocations, the entry templates and the portable appearance. Written
-//! bytes are re-read and verified before replacing the destination.
+//! The complete structured export (Format 5): integer cents, ISO dates, record timestamps, each
+//! live transaction with its allocations, the entry templates, the portable appearance, and the
+//! goals with their contributions and saved closings. Written bytes are re-read and verified
+//! before replacing the destination.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -9,16 +10,19 @@ use rusqlite::Connection;
 
 use super::format_v2::{AllocationV2, CategoryV2, PersonV2, ProfileV2, TransactionV2};
 use super::format_v3::TemplateV3;
-use super::format_v4::{AppearanceV4, DocumentV4};
+use super::format_v4::AppearanceV4;
+use super::format_v5::{ClosingV5, ContributionV5, DocumentV5, GoalV5};
 use super::{ExportReceipt, atomic_write, ordered_transactions, people_by_id};
 use crate::domain::appearance::{AppearancePrefs, Wallpaper};
 use crate::domain::export::ExportScope;
 use crate::domain::settings::Profile;
-use crate::infrastructure::db::{appearance_repo, categories_repo, templates_repo};
+use crate::infrastructure::db::{
+    appearance_repo, categories_repo, closings_repo, goals_repo, templates_repo,
+};
 use crate::shared::error::{AppError, Result};
 
 pub const FORMAT_NAME: &str = "athena-profile";
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// The portable wire form of the preferences: a local wallpaper is exported as `none`.
 #[must_use]
@@ -45,15 +49,46 @@ pub fn appearance_dto(prefs: &AppearancePrefs) -> AppearanceV4 {
     }
 }
 
-/// Collect everything into a Format 4 document, in the shared deterministic order.
+/// The wire form of a saved closing. A largest-expense reference that is not in the exported
+/// (live) rows is written as null; the captured title and amount stay.
+fn closing_dto(
+    closing: &crate::domain::closing::ClosingSnapshot,
+    live_ids: &std::collections::HashSet<i64>,
+) -> ClosingV5 {
+    let expense = closing.largest_expense.as_ref();
+    ClosingV5 {
+        month: closing.month.key(),
+        closed_at: closing.closed_at.clone(),
+        income_cents: closing.income.cents(),
+        expenses_cents: closing.expenses.cents(),
+        refunds_cents: closing.refunds.cents(),
+        result_cents: closing.result.cents(),
+        entry_count: closing.count,
+        previous_spending_cents: closing.previous_spending.cents(),
+        previous_count: closing.previous_count,
+        top_category_id: closing.top_category.and_then(|(id, _)| id),
+        top_category_net_cents: closing.top_category.map(|(_, net)| net.cents()),
+        largest_expense_id: expense
+            .and_then(|e| e.id)
+            .filter(|id| live_ids.contains(id)),
+        largest_expense_title: expense.map(|e| e.title.clone()),
+        largest_expense_cents: expense.map(|e| e.amount.cents()),
+        fingerprint_version: i64::from(closing.fingerprint_version),
+        current_fingerprint: closing.current_fingerprint.clone(),
+        previous_fingerprint: closing.previous_fingerprint.clone(),
+    }
+}
+
+/// Collect everything into a Format 5 document, in the shared deterministic order.
 ///
 /// # Errors
 /// Database errors.
+#[allow(clippy::too_many_lines)]
 pub fn build_document(
     conn: &Connection,
     profile: &Profile,
     exported_at: &str,
-) -> Result<DocumentV4> {
+) -> Result<DocumentV5> {
     let mut categories = categories_repo::list(conn, true)?;
     categories.sort_by_key(|c| c.id);
     let people = people_by_id(conn)?;
@@ -69,7 +104,10 @@ pub fn build_document(
             None
         }
     };
-    Ok(DocumentV4 {
+    let goals = goals_repo::records(conn)?;
+    let closings = closings_repo::list(conn)?;
+    let live_ids: std::collections::HashSet<i64> = transactions.iter().map(|t| t.id).collect();
+    Ok(DocumentV5 {
         format: FORMAT_NAME.to_string(),
         format_version: FORMAT_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -155,6 +193,39 @@ pub fn build_document(
             })
             .collect(),
         appearance,
+        goals: goals
+            .into_iter()
+            .map(|record| GoalV5 {
+                id: record.goal.id,
+                name: record.goal.name,
+                target_cents: record.goal.target.cents(),
+                target_date: record
+                    .goal
+                    .target_date
+                    .map(|d| d.format("%Y-%m-%d").to_string()),
+                frequency: record.goal.frequency.code().to_string(),
+                attribution_id: record.goal.attribution_id,
+                status: record.goal.status.code().to_string(),
+                pre_archive_status: record.goal.pre_archive_status.map(|s| s.code().to_string()),
+                created_at: record.goal.created_at,
+                updated_at: record.goal.updated_at,
+                contributions: record
+                    .contributions
+                    .into_iter()
+                    .map(|c| ContributionV5 {
+                        id: c.id,
+                        amount_cents: c.amount.cents(),
+                        date: c.date.format("%Y-%m-%d").to_string(),
+                        note: c.note,
+                        created_at: c.created_at,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        closings: closings
+            .iter()
+            .map(|closing| closing_dto(closing, &live_ids))
+            .collect(),
     })
 }
 
@@ -178,7 +249,7 @@ pub fn write_json(
         file.seek(SeekFrom::Start(0))?;
         let mut text = String::new();
         file.read_to_string(&mut text)?;
-        let parsed: DocumentV4 = serde_json::from_str(&text)
+        let parsed: DocumentV5 = serde_json::from_str(&text)
             .map_err(|e| AppError::Export(format!("written file is not valid: {e}")))?;
         if parsed != document {
             return Err(AppError::Export(
