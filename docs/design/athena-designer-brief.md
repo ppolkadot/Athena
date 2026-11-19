@@ -1,7 +1,7 @@
 # Athena — Designer Brief
 
 ## Product
-Athena is a local-first desktop finance app for one person or a household. It runs offline on Windows, stores data in one SQLite file, and focuses on fast expense logging and clear monthly review. Money is BRL, exact cents. UI is English and Brazilian Portuguese at runtime. Shipped through 1.3; guides 1.4.
+Athena is a local-first desktop finance app for one person or a household. It runs offline on Windows, stores data in one SQLite file, and focuses on fast expense logging and clear monthly review. Money is BRL, exact cents. UI is English and Brazilian Portuguese at runtime. Shipped through 1.4 (Goals and closings).
 
 ## Users and feel
 Individual tracking daily spending; couple sharing expenses by responsibility; desktop, keyboard-first. Light, quiet, fast. Entry faster than a notes app. No dashboard clutter.
@@ -17,20 +17,20 @@ Individual tracking daily spending; couple sharing expenses by responsibility; d
 
 ## Screens
 - Onboarding: 4 steps.
-- Month: stepper, all-time balance, income/expenses/result cards, insight, filters, day-grouped register, right rail with category bars, person totals, settlement, closing card.
-- Calendar: 12 month cards, closed dot, day drill-down (1.1).
-- Goals (1.4), Trash (1.1), Settings (Appearance 1.3: wallpaper, text size).
+- Month: stepper, all-time balance, income/expenses/result cards, insight, filters, day-grouped register, right rail with category bars, person totals, settlement, saved closing card (changed marker).
+- Calendar: 12 month cards with saved/changed closing markers, day drill-down.
+- Goals (Ctrl+5): lifecycle tabs, list and detail, contributions, Funded apart from Completed. Trash, Settings (Appearance: wallpaper, text size).
 - Quick add modal: amount first, then title/date/type/category/payer/person/split; Enter saves, Esc closes.
-- Global: sidebar (Month, Calendar, Trash, Goals, Settings), toasts/undo, confirm dialogs, empty states.
+- Global: sidebar (Month, Calendar, Goals, Trash, Settings; Ctrl+1–5 hints), toasts/undo, confirm dialogs, empty states.
 
 ## Type
 Shipped: Salted Flutters Polaris (github.com/ppolkadot/Salted-Flutters-Polaris), embedded Latin subsets.
 
 - `Semibold` for body and controls; real `Bold` (`usWeightClass = 700`) for wordmark, section, heading, display, and month titles.
-- Money/dates use frozen `tnum` `Tabular Semibold`. Verified: `R$`, digits, punctuation, Portuguese diacritics. Right-align amounts.
+- Money/dates use frozen `tnum` `Tabular Semibold`. Right-align amounts.
 - Glyph fallbacks: `Segoe UI` and `Segoe UI Symbol` for symbols beyond the Latin subset.
 - Sizes: 15 body, 13 secondary, 20 section, 28 heading, 34 display. Keep 8 pt grid.
-- License allows commercial use and embedding; keep `LICENSE.txt` beside redistributed files and preserve metadata.
+- Keep `LICENSE.txt` beside redistributed fonts.
 
 ## Visual baseline — open to redesign
 Dark default near-black; light is a full peer.
@@ -38,10 +38,10 @@ bg `#050608` / `#F6F7FB`; panel `#0A0C10` / `#FFFFFF`; card `#0F1218` / `#FFFFFF
 
 8 pt grid; cards 16 radius/1 px border/16 padding; buttons 10 radius/36 height; content 1100 max; sidebar 220; window 1280×820. Motion 120–180 ms ease, fade + 8 px slide. Hover changes border/background only.
 
-Color never sole signal: expense `−`+label, income `+`+label, refund `↩`+label; selected month underline+bold; closed dot+tooltip.
+Color never sole signal: expense `−`+label, income `+`+label, refund `↩`+label; selected month underline+bold; closing marker is icon+words.
 
 ## Must not break
-- Windows desktop, egui 0.37, offline, no mandatory network.
+- Windows desktop, egui 0.37, offline.
 - Exact BRL `R$ 1.234,56`; no implied rounding; right-aligned tabular amounts.
 - Keyboard-first: `Ctrl+N`, `Enter`, `Esc`, visible focus.
 - Shared expense shows responsibility vs payment; never double-count.

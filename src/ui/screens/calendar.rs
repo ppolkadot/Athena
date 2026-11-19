@@ -329,7 +329,22 @@ fn days_view(
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
             icons::paint(ui, rect, icon, if attention { p.warning } else { p.accent });
-            ui.label(RichText::new(text).color(if attention { p.warning } else { p.muted }));
+            let marker = ui
+                .add(
+                    Button::new(RichText::new(text).color(if attention {
+                        p.warning
+                    } else {
+                        p.accent
+                    }))
+                    .frame(false),
+                )
+                .on_hover_text(s.open_month);
+            marker.widget_info(|| {
+                WidgetInfo::labeled(Role::Button, true, format!("{text}, {}", s.open_month))
+            });
+            if marker.clicked() {
+                event = Some(CalendarEvent::OpenMonth(month));
+            }
         });
     }
     ui.add_space(8.0);

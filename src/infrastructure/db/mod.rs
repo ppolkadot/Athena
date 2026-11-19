@@ -223,6 +223,64 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_to_schema_7_preserves_appearance_and_goal_history() {
+        use crate::domain::appearance::{AppearancePrefs, Density};
+        use crate::domain::goal::{ContributionDraft, Frequency, GoalDraft};
+        use crate::domain::money::Money;
+        use crate::shared::test_fixtures::today;
+
+        for schema in [5, 6] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("athena.db");
+            let old = Db::open_with(&path, &MIGRATIONS[..schema]).unwrap();
+            let prefs = AppearancePrefs {
+                density: Density::Compact,
+                ..AppearancePrefs::default()
+            };
+            appearance_repo::save(old.conn(), &prefs).unwrap();
+            if schema == 6 {
+                let id = goals_repo::create(
+                    old.conn(),
+                    &GoalDraft {
+                        name: "Emergency fund".into(),
+                        target: Money::from_cents(50_000),
+                        target_date: None,
+                        frequency: Frequency::Monthly,
+                        attribution_id: None,
+                    },
+                )
+                .unwrap();
+                goals_repo::add_contribution(
+                    old.conn(),
+                    id,
+                    &ContributionDraft {
+                        amount: Money::from_cents(12_345),
+                        date: today(),
+                        note: Some("First deposit".into()),
+                    },
+                    today(),
+                )
+                .unwrap();
+            }
+            let goals_before = if schema == 6 {
+                goals_repo::records(old.conn()).unwrap()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(goals_before.len(), schema - 5);
+            drop(old);
+
+            let upgraded = Db::open(&path).unwrap();
+            assert_eq!(version(upgraded.conn()), 7);
+            assert_eq!(version(upgraded.conn()), latest_version());
+            assert_eq!(appearance_repo::load(upgraded.conn()).unwrap(), Some(prefs));
+            assert_eq!(goals_repo::records(upgraded.conn()).unwrap(), goals_before);
+            assert!(closings_repo::list(upgraded.conn()).unwrap().is_empty());
+            assert!(integrity::check(upgraded.conn()).unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn rejects_newer_schema() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 99_i64).unwrap();

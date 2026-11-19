@@ -5,9 +5,10 @@ use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use super::actions::AppAction;
+use super::actions::{AppAction, AppearanceApply};
 use super::navigation::Screen;
 use super::{AppCore, AthenaApp};
+use crate::domain::appearance::{AppearancePrefs, TextScale, ThemeMode, Wallpaper};
 use crate::domain::closing::ClosingStatus;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
@@ -203,6 +204,18 @@ fn calendar_markers_name_the_status_and_open_the_saved_month() {
     assert_eq!(h.state().core.ui.month, oct());
     assert!(h.query_by_label("Saved closing").is_some());
     assert!(h.query_by_label("Changed since closing").is_some());
+
+    h.state_mut().core.set_screen(Screen::Calendar);
+    h.run_steps(6);
+    h.get_by_label("Days of October 2026").click();
+    h.run_steps(6);
+    h.get_by_label("Changed since closing, Open month").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(6);
+    assert_eq!(h.state().core.ui.screen, Screen::Month);
+    assert_eq!(h.state().core.ui.month, oct());
+    assert!(h.query_by_label("Saved closing").is_some());
 }
 
 #[test]
@@ -294,18 +307,55 @@ fn the_saved_expense_opens_only_while_live_and_keeps_a_fallback_otherwise() {
 
 #[test]
 fn the_closing_flow_is_localized_in_portuguese() {
+    let _reset = theme::active::ResetOnDrop;
     let mut core = core_in(Language::PtBr);
+    core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
+        prefs: AppearancePrefs {
+            theme_mode: ThemeMode::Light,
+            text_scale: TextScale::P150,
+            wallpaper: Wallpaper::Builtin,
+            ..AppearancePrefs::default()
+        },
+        media: None,
+    })))
+    .unwrap();
     save(&mut core, date(2026, 10, 5), 40_000, "Aluguel");
     core.open_month(oct()).unwrap();
     let mut h = harness(core);
+    assert_eq!(h.state().look.theme, Theme::Light);
+    assert_eq!(h.state().look.text_scale, 150);
+    assert!(
+        h.state()
+            .wallpaper
+            .as_ref()
+            .is_some_and(|rt| rt.texture_id(false).is_some())
+    );
     h.get_by_label("Fechar mês Outubro 2026").click();
     h.run_steps(4);
     assert!(h.query_by_label("Fechar Outubro 2026?").is_some());
     h.get_by_label("Fechar mês").click();
     h.run_steps(6);
     assert!(h.query_by_label("Fechamento salvo").is_some());
-    assert!(
-        h.query_by_label("Recalcular fechamento Outubro 2026")
-            .is_some()
+    let saved = stored(&h).unwrap();
+    save(
+        &mut h.state_mut().core,
+        date(2026, 10, 12),
+        1_500,
+        "Mercado",
+    );
+    h.run_steps(4);
+    h.get_by_label("Recalcular fechamento Outubro 2026").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert_eq!(stored(&h).unwrap(), saved);
+    h.get_by_label("Recalcular").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(6);
+    assert_eq!(stored(&h).unwrap().expenses.cents(), 41_500);
+    assert_eq!(
+        h.state().core.vm.closing_status.get(&oct()),
+        Some(&ClosingStatus::Current)
     );
 }

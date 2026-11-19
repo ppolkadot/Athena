@@ -541,6 +541,7 @@ fn closing_core(language: Language, theme: Theme, screen: Screen, changed: bool)
     use crate::domain::date::YearMonth;
     use crate::domain::transaction::TransactionType;
     let mut core = onboarded_core(language, theme, true);
+    core.store.freeze_today(today());
     let save = |core: &mut AppCore, on: (u32, u32), cents: i64, title: &str| {
         let mut draft = crate::shared::test_fixtures::draft_with(vec![]);
         draft.date = crate::shared::test_fixtures::date(2026, on.0, on.1);
