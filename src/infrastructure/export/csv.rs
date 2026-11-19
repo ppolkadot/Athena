@@ -28,7 +28,7 @@ pub fn csv_safe(text: &str) -> String {
     }
 }
 
-fn type_label(kind: TransactionType, language: Language) -> &'static str {
+pub(super) fn type_label(kind: TransactionType, language: Language) -> &'static str {
     let s = strings(language);
     match kind {
         TransactionType::Expense => s.expense,

@@ -53,9 +53,9 @@ pub(super) fn data_card(
                 .text_style(egui::TextStyle::Small)
                 .color(p.muted),
         );
-        let month_text = s
-            .export_csv_month
-            .replace("{month}", &month_label(ui_state.month, vm.language()));
+        let month_name = month_label(ui_state.month, vm.language());
+        let month_text = s.export_csv_month.replace("{month}", &month_name);
+        let xlsx_month_text = s.export_xlsx_month.replace("{month}", &month_name);
         ui.horizontal_wrapped(|ui| {
             if ui.button(s.export_json).clicked() {
                 events.push(ScreenEvent::Export(ExportRequest::Json));
@@ -67,6 +67,14 @@ pub(super) fn data_card(
             }
             if ui.button(s.export_csv_all).clicked() {
                 events.push(ScreenEvent::Export(ExportRequest::Csv(ExportScope::All)));
+            }
+            if ui.button(&xlsx_month_text).clicked() {
+                events.push(ScreenEvent::Export(ExportRequest::Xlsx(
+                    ExportScope::Month(ui_state.month),
+                )));
+            }
+            if ui.button(s.export_xlsx_all).clicked() {
+                events.push(ScreenEvent::Export(ExportRequest::Xlsx(ExportScope::All)));
             }
             if ui.button(s.import_ellipsis).clicked() {
                 events.push(ScreenEvent::PickImportFile);

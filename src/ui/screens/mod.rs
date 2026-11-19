@@ -23,6 +23,8 @@ pub enum ExportRequest {
     /// The complete profile.
     Json,
     Csv(crate::domain::export::ExportScope),
+    /// A workbook with Entries and Allocations sheets for the same scopes as CSV.
+    Xlsx(crate::domain::export::ExportScope),
 }
 
 /// Something a screen needs the app to do, beyond editing `UiState`.

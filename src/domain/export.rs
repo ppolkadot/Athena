@@ -34,6 +34,15 @@ pub fn default_export_name(scope: ExportScope) -> String {
     }
 }
 
+/// `athena-YYYY-MM.xlsx` for a month, `athena-all.xlsx` for everything.
+#[must_use]
+pub fn default_xlsx_name(scope: ExportScope) -> String {
+    match scope {
+        ExportScope::All => "athena-all.xlsx".to_string(),
+        ExportScope::Month(month) => format!("athena-{}.xlsx", month.key()),
+    }
+}
+
 /// `athena-full-YYYY-MM-DD.json`. The JSON export is always the complete profile.
 #[must_use]
 pub fn default_json_name(today: NaiveDate) -> String {

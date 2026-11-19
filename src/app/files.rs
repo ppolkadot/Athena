@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 
 use crate::application::services::export;
-use crate::domain::export::{default_export_name, default_json_name};
+use crate::domain::export::{default_export_name, default_json_name, default_xlsx_name};
 use crate::i18n::{PluralKey, plural, strings};
 use crate::ui::screens::ExportRequest;
 use crate::ui::screens::settings;
@@ -30,6 +30,7 @@ pub(crate) fn pick_export_path(
     let (name, filter_name, extensions): (String, &str, &[&str]) = match request {
         ExportRequest::Json => (default_json_name(today), "JSON", &["json"]),
         ExportRequest::Csv(scope) => (default_export_name(scope), "CSV", &["csv"]),
+        ExportRequest::Xlsx(scope) => (default_xlsx_name(scope), "Excel", &["xlsx"]),
     };
     rfd::FileDialog::new()
         .set_file_name(name)
@@ -77,6 +78,7 @@ pub fn run_export(
             )),
         },
         ExportRequest::Csv(scope) => export::export_csv(conn, language, scope, path),
+        ExportRequest::Xlsx(scope) => export::export_xlsx(conn, language, scope, path),
     };
     match result {
         Ok(receipt) => s

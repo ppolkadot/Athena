@@ -768,6 +768,12 @@ mod tests {
         harness.run_steps(2);
         harness.get_by_label("Export CSV (all time)").click();
         harness.run_steps(2);
+        harness
+            .get_by_label("Export Excel for November 2026")
+            .click();
+        harness.run_steps(2);
+        harness.get_by_label("Export Excel (all time)").click();
+        harness.run_steps(2);
         let events = harness.state().2.clone();
         let nov = crate::domain::date::YearMonth::new(2026, 11).unwrap();
         assert!(events.contains(&ScreenEvent::Export(ExportRequest::Json)));
@@ -775,5 +781,9 @@ mod tests {
             ExportScope::Month(nov)
         ))));
         assert!(events.contains(&ScreenEvent::Export(ExportRequest::Csv(ExportScope::All))));
+        assert!(events.contains(&ScreenEvent::Export(ExportRequest::Xlsx(
+            ExportScope::Month(nov)
+        ))));
+        assert!(events.contains(&ScreenEvent::Export(ExportRequest::Xlsx(ExportScope::All))));
     }
 }
