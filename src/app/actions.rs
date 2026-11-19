@@ -7,6 +7,7 @@ use crate::application::services::import::ImportPlan;
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
+use crate::domain::date::YearMonth;
 use crate::domain::goal::{ContributionDraft, GoalDraft, GoalTransition};
 use crate::domain::person::Person;
 use crate::domain::settings::Profile;
@@ -57,6 +58,10 @@ pub enum AppAction {
         goal_id: i64,
         contribution_id: i64,
     },
+    /// Save a closing for a completed local month (contract §14.3).
+    CloseMonth(YearMonth),
+    /// Replace a month's saved closing with a fresh capture.
+    RecalculateClosing(YearMonth),
 }
 
 /// What Apply commits: the preferences and, for a newly chosen local wallpaper, the staged copy
@@ -83,6 +88,8 @@ pub enum RefreshScope {
     Appearance,
     /// The goals list and the selected goal's detail.
     Goals,
+    /// Saved closings and their staleness.
+    Closings,
     All,
 }
 

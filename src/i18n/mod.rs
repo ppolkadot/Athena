@@ -12,6 +12,7 @@ pub use insight::{InsightText, insight_text};
 
 use chrono::{Datelike as _, NaiveDate, Weekday};
 
+use crate::domain::closing::ClosingError;
 use crate::domain::date::YearMonth;
 use crate::domain::goal::GoalError;
 use crate::domain::money::MoneyError;
@@ -655,6 +656,35 @@ strings! {
     contrib_delete_title,
     contrib_delete_body,
     contrib_delete_confirm,
+    toast_closing_saved,
+    toast_closing_recalculated,
+    closing_title,
+    closing_saved_on,
+    closing_compared_with,
+    closing_refunds,
+    closing_entries_row,
+    closing_changed,
+    closing_check_unavailable,
+    closing_check_retry_a11y,
+    closing_not_saved,
+    closing_close_month,
+    closing_recalculate,
+    closing_close_title,
+    closing_close_body,
+    closing_close_confirm,
+    closing_recalc_title,
+    closing_recalc_body,
+    closing_recalc_confirm,
+    closing_open_entry,
+    closing_entry_gone,
+    closing_marker_current,
+    closing_marker_changed,
+    closing_marker_unavailable,
+    closing_marker_text_current,
+    closing_err_not_completed,
+    closing_err_exists,
+    closing_err_missing,
+    closing_err_save,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -693,6 +723,8 @@ pub enum ToastKey {
     GoalRestored,
     ContributionAdded,
     ContributionDeleted,
+    ClosingSaved,
+    ClosingRecalculated,
 }
 
 impl ToastKey {
@@ -733,6 +765,8 @@ impl ToastKey {
             ToastKey::GoalRestored => s.toast_goal_restored,
             ToastKey::ContributionAdded => s.toast_contribution_added,
             ToastKey::ContributionDeleted => s.toast_contribution_deleted,
+            ToastKey::ClosingSaved => s.toast_closing_saved,
+            ToastKey::ClosingRecalculated => s.toast_closing_recalculated,
         }
     }
 }
@@ -1016,6 +1050,18 @@ pub fn money_error_message(error: MoneyError, language: Language) -> &'static st
         MoneyError::Invalid => s.m_invalid,
         MoneyError::TooPrecise => s.m_too_precise,
         MoneyError::TooLarge => s.m_too_large,
+    }
+}
+
+/// Localized message for a refused closing.
+#[must_use]
+pub fn closing_error_message(error: ClosingError, language: Language) -> &'static str {
+    let s = strings(language);
+    match error {
+        ClosingError::NotCompleted => s.closing_err_not_completed,
+        ClosingError::AlreadyClosed => s.closing_err_exists,
+        ClosingError::NotClosed => s.closing_err_missing,
+        ClosingError::Inconsistent | ClosingError::Overflow => s.closing_err_save,
     }
 }
 
@@ -1395,6 +1441,8 @@ mod tests {
             GoalRestored,
             ContributionAdded,
             ContributionDeleted,
+            ClosingSaved,
+            ClosingRecalculated,
         ] {
             assert_ne!(key.text(Language::En), key.text(Language::PtBr));
         }

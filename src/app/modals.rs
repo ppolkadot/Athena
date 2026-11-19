@@ -5,8 +5,8 @@ use chrono::{DateTime, Local, Utc};
 use crate::application::services::import::ImportPlan;
 use crate::domain::transaction::{Transaction, TxDraft};
 use crate::i18n::{
-    PluralKey, ToastKey, backup_delete_error_message, format_date, format_import_errors, plural,
-    restore_error_message, strings,
+    PluralKey, ToastKey, backup_delete_error_message, closing_error_message, format_date,
+    format_import_errors, goal_error_message, plural, restore_error_message, strings,
 };
 use crate::infrastructure::db::{
     restore::RestoreSource, templates_repo, transactions_repo, trash_repo,
@@ -29,6 +29,42 @@ fn goal_item(
     id: i64,
 ) -> Option<&crate::application::services::goals::GoalListItem> {
     core.vm.goals.iter().find(|g| g.goal.id == id)
+}
+
+/// The confirmation before saving a month's closing.
+#[must_use]
+pub fn close_month_confirmation(
+    core: &AppCore,
+    month: crate::domain::date::YearMonth,
+) -> ConfirmDialog {
+    let language = core.vm.language();
+    let s = strings(language);
+    let name = crate::i18n::month_label(month, language);
+    ConfirmDialog {
+        title: s.closing_close_title.replace("{month}", &name),
+        body: s.closing_close_body.replace("{month}", &name),
+        confirm_label: s.closing_close_confirm.to_owned(),
+        danger: false,
+        action: AppAction::CloseMonth(month),
+    }
+}
+
+/// The confirmation before replacing a saved closing; it says the old snapshot is replaced.
+#[must_use]
+pub fn recalculate_closing_confirmation(
+    core: &AppCore,
+    month: crate::domain::date::YearMonth,
+) -> ConfirmDialog {
+    let language = core.vm.language();
+    let s = strings(language);
+    let name = crate::i18n::month_label(month, language);
+    ConfirmDialog {
+        title: s.closing_recalc_title.replace("{month}", &name),
+        body: s.closing_recalc_body.replace("{month}", &name),
+        confirm_label: s.closing_recalc_confirm.to_owned(),
+        danger: false,
+        action: AppAction::RecalculateClosing(month),
+    }
 }
 
 /// The confirmation before completing a goal that is still short of its target, naming the money
@@ -616,6 +652,19 @@ fn record_confirmed_error(
             let message = backup_delete_error_message(other, language);
             core.ui.settings.backup_error = Some(message.clone());
             Some((message, None))
+        }
+        AppError::ClosingInvalid(error) => {
+            tracing::warn!("closing refused: {error}");
+            Some((closing_error_message(*error, language).to_string(), None))
+        }
+        AppError::GoalInvalid(rules) => {
+            tracing::warn!("goal change refused ({} rule(s))", rules.len());
+            let message = rules
+                .first()
+                .map_or(strings(language).goal_err_save, |rule| {
+                    goal_error_message(*rule, language)
+                });
+            Some((message.to_string(), None))
         }
         other => {
             tracing::warn!("confirmed action failed: {other}");

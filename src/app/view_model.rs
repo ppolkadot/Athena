@@ -5,10 +5,12 @@ use super::actions::{OperationNotice, RefreshScope};
 use super::navigation::Screen;
 use super::store::Store;
 use super::ui_state::UiState;
+use crate::application::services::closings::{self, FingerprintCache};
 use crate::application::services::goals::{self, GoalDetail, GoalListItem};
 use crate::application::services::{reports, settlement};
 use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
+use crate::domain::closing::{ClosingSnapshot, ClosingStatus};
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
@@ -22,7 +24,7 @@ use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
     appearance_repo,
     backup::{self, BackupFile},
-    categories_repo, people_repo, profile_repo, templates_repo, transactions_repo,
+    categories_repo, closings_repo, people_repo, profile_repo, templates_repo, transactions_repo,
     trash_repo::{self, TrashItem},
 };
 use crate::shared::error::Result;
@@ -63,6 +65,14 @@ pub struct ViewModel {
     pub templates: Vec<Template>,
     /// Every goal with its progress, in stable id order.
     pub goals: Vec<GoalListItem>,
+    /// Every saved monthly closing by month.
+    pub closings: std::collections::BTreeMap<YearMonth, ClosingSnapshot>,
+    /// Months whose saved largest expense is still a live entry (so it can be opened).
+    pub closing_live_expense: std::collections::HashSet<YearMonth>,
+    /// Whether the ledger changed since each closing the open screen shows: the viewed month on
+    /// Month, the displayed year on Calendar. Computed on data, month, year and screen changes,
+    /// never per frame and never for a filter change.
+    pub closing_status: std::collections::HashMap<YearMonth, ClosingStatus>,
     /// The selected goal with its contributions, if one is selected and exists.
     pub goal_detail: Option<GoalDetail>,
     pub summary: MonthSummary,
@@ -103,6 +113,8 @@ pub struct ViewModel {
     pub(crate) goal_list_loads: usize,
     #[cfg(test)]
     pub(crate) goal_detail_loads: usize,
+    closing_cache: FingerprintCache,
+    closing_cache_version: u64,
     loaded: Option<LoadKey>,
     failed_load_key: Option<LoadKey>,
 }
@@ -122,6 +134,11 @@ impl ViewModel {
             transactions: Vec::new(),
             templates: Vec::new(),
             goals: Vec::new(),
+            closings: std::collections::BTreeMap::new(),
+            closing_live_expense: std::collections::HashSet::new(),
+            closing_status: std::collections::HashMap::new(),
+            closing_cache: FingerprintCache::default(),
+            closing_cache_version: 0,
             goal_detail: None,
             summary: MonthSummary::default(),
             category_totals: Vec::new(),
@@ -334,6 +351,9 @@ impl ViewModel {
                     self.goal_detail = detail;
                     self.record_goal_detail_load();
                 }
+                if prev.screen != key.screen {
+                    self.refresh_closing_status(store, ui, key.version);
+                }
                 self.stage_days(day_activity, day_rows);
                 if ui.screen == Screen::Trash {
                     if let Some((count, items)) = trash {
@@ -402,6 +422,35 @@ impl ViewModel {
         }
     }
 
+    /// Recompute the closing statuses the open screen needs: the viewed month on Month, the
+    /// displayed year on Calendar. Fingerprints are cached per ledger version, so adjacent months
+    /// and repeated checks reuse each other; a failed check shows as unavailable.
+    fn refresh_closing_status(&mut self, store: &Store, ui: &UiState, version: u64) {
+        if self.closing_cache_version != version {
+            self.closing_cache.clear();
+            self.closing_cache_version = version;
+        }
+        let months: Vec<YearMonth> = match ui.screen {
+            Screen::Month => vec![ui.month],
+            Screen::Calendar => (1..=12)
+                .filter_map(|m| YearMonth::new(ui.calendar_year, m))
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.closing_status = closings::statuses(
+            store.db().conn(),
+            &mut self.closing_cache,
+            &self.closings,
+            &months,
+        );
+    }
+
+    /// Run unavailable closing checks again (the Retry control).
+    pub fn retry_closing_checks(&mut self, store: &Store, ui: &UiState) {
+        self.closing_cache.clear();
+        self.refresh_closing_status(store, ui, store.data_version());
+    }
+
     /// A failed read leaves no day detail behind to be mistaken for current data.
     fn fail_day_cache(&mut self) {
         self.day_activity.clear();
@@ -422,6 +471,7 @@ impl ViewModel {
         match reports::year_calendar(store.db().conn(), ui.calendar_year) {
             Ok(calendar) => {
                 self.calendar = calendar;
+                self.refresh_closing_status(store, ui, key.version);
                 self.loaded = Some(key);
                 self.failed_load_key = None;
                 self.refresh_failed = false;
@@ -489,6 +539,12 @@ impl ViewModel {
             RefreshScope::Appearance => {
                 self.stage_appearance(read_appearance(conn));
             }
+            RefreshScope::Closings => {
+                let (list, live) = read_closings(conn)?;
+                self.closings = list;
+                self.closing_live_expense = live;
+                self.refresh_closing_status(store, ui, key.version);
+            }
             RefreshScope::Goals => {
                 let list = goals::list_items(conn)?;
                 let detail = read_goal_detail(conn, key.goal)?;
@@ -532,6 +588,7 @@ impl ViewModel {
                 let insight = read_insight(conn, ui.month, key.today);
                 let goal_list = goals::list_items(conn)?;
                 let goal_detail = read_goal_detail(conn, key.goal)?;
+                let (closing_list, closing_live) = read_closings(conn)?;
                 let start = profile.as_ref().map_or(Money::ZERO, |p| p.start_balance);
                 let balance = reports::tracked_balance(conn, start)?;
                 let trash_count = trash_repo::count(conn)?;
@@ -576,6 +633,9 @@ impl ViewModel {
                 self.day_rows = day_rows;
                 self.insight = insight;
                 self.goals = goal_list;
+                self.closings = closing_list;
+                self.closing_live_expense = closing_live;
+                self.refresh_closing_status(store, ui, key.version);
                 self.goal_detail = goal_detail;
                 self.record_goal_list_load();
                 self.record_goal_detail_load();
@@ -594,6 +654,25 @@ impl ViewModel {
         }
         Ok(())
     }
+}
+
+/// Every saved closing and which of them still point at a live largest-expense entry.
+fn read_closings(
+    conn: &rusqlite::Connection,
+) -> Result<(
+    std::collections::BTreeMap<YearMonth, ClosingSnapshot>,
+    std::collections::HashSet<YearMonth>,
+)> {
+    let list = closings::all(conn)?;
+    let mut live = std::collections::HashSet::new();
+    for (month, snapshot) in &list {
+        if let Some(id) = snapshot.largest_expense.as_ref().and_then(|e| e.id)
+            && closings_repo::is_live_transaction(conn, id)?
+        {
+            live.insert(*month);
+        }
+    }
+    Ok((list, live))
 }
 
 /// The open goal's detail; `None` when nothing is selected or the goal no longer exists.

@@ -18,6 +18,9 @@ pub enum IntegrityIssue {
     TemplateShape { template_id: i64 },
     /// A goal or one of its contributions has an impossible date, or the contributions overflow.
     GoalShape { goal_id: i64 },
+    /// A saved closing violates its consistency rules (checked result, optional groups,
+    /// fingerprint shape).
+    ClosingShape { month: String },
 }
 
 fn ids(conn: &Connection, sql: &str) -> Result<Vec<i64>> {
@@ -90,6 +93,13 @@ pub fn check(conn: &Connection) -> Result<Vec<IntegrityIssue>> {
     }
     for goal_id in goal_issues(conn)? {
         issues.push(IntegrityIssue::GoalShape { goal_id });
+    }
+    for closing in super::closings_repo::list(conn)? {
+        if closing.validate().is_err() {
+            issues.push(IntegrityIssue::ClosingShape {
+                month: closing.month.key(),
+            });
+        }
     }
     Ok(issues)
 }

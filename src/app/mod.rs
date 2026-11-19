@@ -17,6 +17,8 @@ mod appearance_platform_tests;
 #[cfg(test)]
 mod appearance_tests;
 #[cfg(test)]
+mod closing_flow_tests;
+#[cfg(test)]
 mod day_flow_tests;
 #[cfg(test)]
 mod goal_flow_tests;
@@ -49,6 +51,7 @@ use crate::infrastructure::platform::{
 use crate::shared::error::{AppError, Result};
 use crate::ui::appearance::background::Backdrop;
 use crate::ui::appearance::{WallpaperRuntime, Wanted};
+use crate::ui::components::closing_card::ClosingEvent;
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
 use crate::ui::components::discard_prompt::{self, DiscardChoice};
 use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
@@ -71,10 +74,11 @@ use self::files::{
 };
 pub use self::modals::{
     ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action,
-    archive_goal_confirmation, begin_edit, begin_edit_template, complete_goal_confirmation,
-    delete_backup_confirmation, delete_confirmation, delete_contribution_confirmation,
-    delete_template_confirmation, empty_trash_confirmation, handle_quick_add,
-    import_preview_dialog, purge_confirmation, restore_confirmation,
+    archive_goal_confirmation, begin_edit, begin_edit_template, close_month_confirmation,
+    complete_goal_confirmation, delete_backup_confirmation, delete_confirmation,
+    delete_contribution_confirmation, delete_template_confirmation, empty_trash_confirmation,
+    handle_quick_add, import_preview_dialog, purge_confirmation, recalculate_closing_confirmation,
+    restore_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
@@ -588,6 +592,7 @@ impl AthenaApp {
                 });
             }
             ScreenEvent::Goal(event) if idle => self.handle_goal_event(ctx, event),
+            ScreenEvent::Closing(event) => self.handle_closing_event(ctx, event, idle),
             ScreenEvent::NewTransaction if self.quick_add.is_none() => {
                 self.remember_modal_opener(ctx);
                 self.open_quick_add();
@@ -954,6 +959,26 @@ impl AthenaApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Confirm a closing action, or re-run an unavailable staleness check.
+    fn handle_closing_event(&mut self, ctx: &egui::Context, event: ClosingEvent, idle: bool) {
+        match event {
+            ClosingEvent::RetryCheck => {
+                self.core
+                    .vm
+                    .retry_closing_checks(&self.core.store, &self.core.ui);
+            }
+            ClosingEvent::Close(month) if idle => {
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(close_month_confirmation(&self.core, month));
+            }
+            ClosingEvent::Recalculate(month) if idle => {
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(recalculate_closing_confirmation(&self.core, month));
+            }
+            _ => {}
         }
     }
 

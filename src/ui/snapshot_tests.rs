@@ -533,3 +533,75 @@ fn snapshot_goals() {
     }
     results.unwrap();
 }
+
+/// October closed with a long-titled largest expense, then September edited so the closing reads as
+/// changed since; or left as it was saved.
+fn closing_core(language: Language, theme: Theme, screen: Screen, changed: bool) -> AppCore {
+    use crate::app::actions::AppAction;
+    use crate::domain::date::YearMonth;
+    use crate::domain::transaction::TransactionType;
+    let mut core = onboarded_core(language, theme, true);
+    let save = |core: &mut AppCore, on: (u32, u32), cents: i64, title: &str| {
+        let mut draft = crate::shared::test_fixtures::draft_with(vec![]);
+        draft.date = crate::shared::test_fixtures::date(2026, on.0, on.1);
+        draft.amount = Money::from_cents(cents);
+        draft.kind = TransactionType::Expense;
+        draft.title = title.into();
+        core.apply(AppAction::SaveTransaction(draft)).unwrap();
+    };
+    save(&mut core, (9, 12), 120_000, "Mercado do mês anterior");
+    save(
+        &mut core,
+        (10, 3),
+        350_000,
+        "Aluguel de outubro com condomínio e reajuste anual",
+    );
+    save(&mut core, (10, 21), 18_990, "Farmácia");
+    let october = YearMonth::new(2026, 10).unwrap();
+    core.apply(AppAction::CloseMonth(october)).unwrap();
+    if changed {
+        save(&mut core, (9, 30), 5_000, "Compra esquecida");
+    }
+    match screen {
+        Screen::Calendar => {
+            core.set_screen(Screen::Calendar);
+            core.set_calendar_year(2026).unwrap();
+        }
+        _ => core.open_month(october).unwrap(),
+    }
+    core
+}
+
+#[test]
+fn snapshot_closing_card_and_calendar_markers() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        snapshot(
+            &mut results,
+            &format!("month_closing_{tag}"),
+            AthenaApp::for_test(closing_core(language, theme, Screen::Month, false)),
+            egui::Vec2::new(1280.0, 1100.0),
+        );
+        snapshot(
+            &mut results,
+            &format!("month_closing_changed_{tag}"),
+            AthenaApp::for_test(closing_core(language, theme, Screen::Month, true)),
+            egui::Vec2::new(1280.0, 1100.0),
+        );
+        snapshot(
+            &mut results,
+            &format!("calendar_closing_{tag}"),
+            AthenaApp::for_test(closing_core(language, theme, Screen::Calendar, true)),
+            SIZE,
+        );
+        let mut days = closing_core(language, theme, Screen::Calendar, true);
+        days.ui.calendar_days = Some(crate::domain::date::YearMonth::new(2026, 10).unwrap());
+        snapshot(
+            &mut results,
+            &format!("calendar_closing_days_{tag}"),
+            AthenaApp::for_test(days),
+            egui::Vec2::new(1280.0, 900.0),
+        );
+    }
+    results.unwrap();
+}

@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use super::actions::{ActionOutcome, AppAction, OperationKind, OperationNotice, RefreshScope};
 use crate::application::services::import::ImportPlan;
-use crate::application::services::{goals, onboarding};
+use crate::application::services::{closings, goals, onboarding};
 use crate::domain::goal::GoalTransition;
 use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
@@ -253,6 +253,7 @@ impl Store {
             _ => {}
         }
         let today = self.today();
+        let stamp = self.closing_stamp();
         let conn = self.db.conn();
         match action {
             AppAction::CompleteOnboarding(result) => {
@@ -274,6 +275,9 @@ impl Store {
             | AppAction::ChangeGoalStatus(_, _)
             | AppAction::AddContribution(_, _)
             | AppAction::DeleteContribution { .. } => Self::run_goal_action(conn, today, action),
+            AppAction::CloseMonth(_) | AppAction::RecalculateClosing(_) => {
+                Self::run_closing_action(conn, today, &stamp, &action)
+            }
             AppAction::ApplyAppearance(_) | AppAction::ResetAppearance => {
                 Self::run_appearance_action(&self.dirs, conn, action)
             }
@@ -417,6 +421,42 @@ impl Store {
                     None,
                     Some(ToastKey::TemplateDeleted),
                     RefreshScope::Templates,
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// The capture time of a closing: the current UTC time, or noon UTC of the frozen date so tests
+    /// and snapshots do not depend on when they run.
+    fn closing_stamp(&self) -> String {
+        match self.clock {
+            Clock::Local => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            Clock::Fixed(date) => format!("{}T12:00:00Z", date.format("%Y-%m-%d")),
+        }
+    }
+
+    fn run_closing_action(
+        conn: &rusqlite::Connection,
+        today: NaiveDate,
+        stamp: &str,
+        action: &AppAction,
+    ) -> Result<ActionOutcome> {
+        match *action {
+            AppAction::CloseMonth(month) => {
+                closings::close_month(conn, month, today, stamp)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::ClosingSaved),
+                    RefreshScope::Closings,
+                ))
+            }
+            AppAction::RecalculateClosing(month) => {
+                closings::recalculate(conn, month, today, stamp)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::ClosingRecalculated),
+                    RefreshScope::Closings,
                 ))
             }
             _ => unreachable!(),
@@ -1440,6 +1480,31 @@ mod tests {
             .unwrap();
         let goal = crate::infrastructure::db::goals_repo::get(store.db().conn(), id).unwrap();
         assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(integrity::check(store.db().conn()).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn closing_actions_use_the_frozen_local_date_and_report_a_closings_refresh() {
+        use crate::domain::closing::ClosingError;
+        use crate::domain::date::YearMonth;
+        let mut store = store().with_fixed_today(NaiveDate::from_ymd_opt(2026, 11, 19).unwrap());
+        let october = YearMonth::new(2026, 10).unwrap();
+        let version = store.data_version();
+        let current = store.apply(AppAction::CloseMonth(YearMonth::new(2026, 11).unwrap()));
+        assert!(matches!(
+            current,
+            Err(AppError::ClosingInvalid(ClosingError::NotCompleted))
+        ));
+        assert!(store.apply(AppAction::RecalculateClosing(october)).is_err());
+        assert_eq!(store.data_version(), version);
+
+        let closed = store.apply(AppAction::CloseMonth(october)).unwrap();
+        assert_eq!(closed.refresh, RefreshScope::Closings);
+        assert_eq!(closed.toast, Some(ToastKey::ClosingSaved));
+        assert_eq!(store.data_version(), version + 1);
+        assert!(store.apply(AppAction::CloseMonth(october)).is_err());
+        let again = store.apply(AppAction::RecalculateClosing(october)).unwrap();
+        assert_eq!(again.toast, Some(ToastKey::ClosingRecalculated));
         assert_eq!(integrity::check(store.db().conn()).unwrap(), vec![]);
     }
 }

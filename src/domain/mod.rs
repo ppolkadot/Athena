@@ -1,5 +1,6 @@
 pub mod appearance;
 pub mod category;
+pub mod closing;
 pub mod date;
 pub mod export;
 pub mod goal;

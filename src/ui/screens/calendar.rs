@@ -12,6 +12,7 @@ use crate::app::view_model::ViewModel;
 use crate::domain::date::YearMonth;
 use crate::domain::reports::CalendarMonthTotal;
 use crate::i18n::{PluralKey, month_label, month_name, plural, strings};
+use crate::ui::components::closing_card;
 use crate::ui::components::day_grid;
 use crate::ui::components::summary_card::{plain_brl, signed_brl};
 use crate::ui::components::transaction_row::RowAction;
@@ -60,7 +61,10 @@ fn month_card(
     let s = strings(vm.language());
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CARD_HEIGHT), Sense::click());
     let name = month_label(entry.month, vm.language());
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
+    // A saved closing adds its status in words to the card's accessible name.
+    let marker = closing_card::marker_parts(vm, entry.month);
+    let accessible = marker.map_or_else(|| name.clone(), |(_, text, _)| format!("{name}, {text}"));
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &accessible));
     let hovered = response.hovered();
     let fill = if hovered { p.card_hover } else { p.card };
     let stroke = if is_current {
@@ -90,6 +94,19 @@ fn month_card(
         title_font,
         title_color,
     );
+
+    if let Some((icon, _, attention)) = marker {
+        let icon_rect = Rect::from_min_size(
+            egui::pos2(rect.right() - 16.0 - 18.0, rect.top() + 14.0),
+            Vec2::splat(18.0),
+        );
+        icons::paint_with(
+            painter,
+            icon_rect,
+            icon,
+            if attention { p.warning } else { p.accent },
+        );
+    }
 
     let summary = &entry.summary;
     let money = typography::money_font();
@@ -307,6 +324,14 @@ fn days_view(
         .text_style(typography::display())
         .strong(),
     );
+    if let Some((icon, text, attention)) = closing_card::marker_parts(vm, month) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            icons::paint(ui, rect, icon, if attention { p.warning } else { p.accent });
+            ui.label(RichText::new(text).color(if attention { p.warning } else { p.muted }));
+        });
+    }
     ui.add_space(8.0);
     let out = day_grid::show(ui, vm, state, days_id(month));
     match out.row {

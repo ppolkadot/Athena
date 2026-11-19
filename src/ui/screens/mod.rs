@@ -34,6 +34,8 @@ pub enum ScreenEvent {
     NewTransaction,
     /// A goals screen request: forms, confirmations and lifecycle steps.
     Goal(goals::GoalEvent),
+    /// A saved-closing request: Close month, Recalculate closing or a retry.
+    Closing(crate::ui::components::closing_card::ClosingEvent),
     EditTransaction(i64),
     DeleteTransaction(i64),
     /// Open the template editor (Quick Add form without a date).
@@ -70,9 +72,13 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
         Screen::Month => month::show(ui, vm, state)
             .map(|event| match event {
                 month::MonthEvent::NewTransaction => ScreenEvent::NewTransaction,
-                month::MonthEvent::Edit(id) => ScreenEvent::EditTransaction(id),
+                month::MonthEvent::Edit(id)
+                | month::MonthEvent::Closing(
+                    crate::ui::components::closing_card::ClosingEvent::OpenEntry(id),
+                ) => ScreenEvent::EditTransaction(id),
                 month::MonthEvent::Delete(id) => ScreenEvent::DeleteTransaction(id),
                 month::MonthEvent::Settlement(ev) => ScreenEvent::Settlement(ev),
+                month::MonthEvent::Closing(ev) => ScreenEvent::Closing(ev),
             })
             .into_iter()
             .collect(),

@@ -35,6 +35,8 @@ ICONS = [
     ("ARROW_LEFT_RIGHT", "arrow-left-right"),
     ("TARGET", "target"),
     ("SEARCH", "search"),
+    ("BOOKMARK", "bookmark"),
+    ("TRIANGLE_ALERT", "triangle-alert"),
 ]
 
 NUM = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
