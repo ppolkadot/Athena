@@ -3,8 +3,8 @@
 
 use chrono::Datelike;
 use eframe::egui::{
-    self, Align2, Button, CornerRadius, FontId, RichText, Role, Sense, Stroke, StrokeKind, Vec2,
-    WidgetInfo,
+    self, Align2, Button, CornerRadius, FontId, Id, Rect, RichText, Role, Sense, Stroke,
+    StrokeKind, Vec2, WidgetInfo,
 };
 
 use crate::app::ui_state::UiState;
@@ -12,16 +12,26 @@ use crate::app::view_model::ViewModel;
 use crate::domain::date::YearMonth;
 use crate::domain::reports::CalendarMonthTotal;
 use crate::i18n::{PluralKey, month_label, month_name, plural, strings};
+use crate::ui::components::day_grid;
 use crate::ui::components::summary_card::{plain_brl, signed_brl};
+use crate::ui::components::transaction_row::RowAction;
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme::{palette, typography};
 
-const CARD_HEIGHT: f32 = 120.0;
+const CARD_HEIGHT: f32 = 156.0;
+const DAYS_BUTTON_HEIGHT: f32 = 28.0;
 const GAP: f32 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalendarEvent {
     OpenMonth(YearMonth),
+    Edit(i64),
+    Delete(i64),
+}
+
+/// The Days button of a month card (also where Escape from that month's grid returns focus).
+fn days_id(month: YearMonth) -> Id {
+    Id::unique(("calendar-days", month))
 }
 
 /// How many cards fit per row: three on a normal window, two on a narrow one.
@@ -30,13 +40,22 @@ pub fn columns_for(width: f32) -> usize {
     if width >= 720.0 { 3 } else { 2 }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardAction {
+    None,
+    Open,
+    Days,
+}
+
+#[allow(clippy::too_many_lines)]
 fn month_card(
     ui: &mut egui::Ui,
     vm: &ViewModel,
     entry: &CalendarMonthTotal,
     width: f32,
     is_current: bool,
-) -> bool {
+    state: &mut UiState,
+) -> CardAction {
     let p = palette(vm.theme());
     let s = strings(vm.language());
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CARD_HEIGHT), Sense::click());
@@ -93,10 +112,16 @@ fn month_card(
         );
     };
     if summary.count == 0 {
+        // A settlement-only month has no financial entries but is still activity.
+        let text = if entry.activity_count > 0 {
+            day_grid::activity_text(vm, entry.activity_count)
+        } else {
+            plural(PluralKey::Entries, 0, vm.language())
+        };
         painter.text(
             egui::pos2(left, rect.top() + 52.0),
             Align2::LEFT_TOP,
-            plural(PluralKey::Entries, 0, vm.language()),
+            text,
             small,
             p.muted,
         );
@@ -125,13 +150,72 @@ fn month_card(
             p.muted,
         );
     }
-    response
+    let opened = response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked();
+
+    if days_button(ui, vm, entry.month, rect, left, &name, state) {
+        CardAction::Days
+    } else if opened {
+        CardAction::Open
+    } else {
+        CardAction::None
+    }
+}
+
+/// The Days action sits on top of the card, so its click never opens the month.
+fn days_button(
+    ui: &mut egui::Ui,
+    vm: &ViewModel,
+    month: YearMonth,
+    card: Rect,
+    left: f32,
+    month_name: &str,
+    state: &mut UiState,
+) -> bool {
+    let p = palette(vm.theme());
+    let s = strings(vm.language());
+    let id = days_id(month);
+    let button = Rect::from_min_size(
+        egui::pos2(left, card.bottom() - DAYS_BUTTON_HEIGHT - 10.0),
+        Vec2::new(96.0, DAYS_BUTTON_HEIGHT),
+    );
+    let days = ui.interact(button, id, Sense::click());
+    let name = s.days_of_month.replace("{month}", month_name);
+    days.widget_info(|| WidgetInfo::labeled(Role::Button, true, &name));
+    day_grid::take_pending_focus(state, id, &days);
+    let painter = ui.painter();
+    painter.rect(
+        button,
+        CornerRadius::same(10),
+        if days.hovered() { p.card_hover } else { p.card },
+        Stroke::new(1.0, p.border),
+        StrokeKind::Inside,
+    );
+    if days.has_focus() {
+        painter.rect_stroke(
+            button,
+            CornerRadius::same(10),
+            Stroke::new(2.0, p.focus),
+            StrokeKind::Inside,
+        );
+    }
+    painter.text(
+        button.center(),
+        Align2::CENTER_CENTER,
+        s.days,
+        FontId::new(typography::SECONDARY, egui::FontFamily::Proportional),
+        p.accent,
+    );
+    days.on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked()
 }
 
-/// Draw the calendar. Returns the month the user opened, if any.
+/// Draw the calendar. Returns what the user asked for, if anything.
 pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<CalendarEvent> {
+    if let Some(month) = state.calendar_days {
+        return days_view(ui, vm, state, month);
+    }
     let s = strings(vm.language());
     let p = palette(vm.theme());
     let mut event = None;
@@ -159,7 +243,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Ca
     });
     ui.add_space(12.0);
 
-    if vm.calendar.iter().all(|m| m.summary.count == 0) {
+    if vm.calendar.iter().all(|m| m.activity_count == 0) {
         ui.label(
             RichText::new(
                 s.empty_year
@@ -178,11 +262,64 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Ca
     for row in vm.calendar.chunks(columns) {
         ui.horizontal(|ui| {
             for entry in row {
-                if month_card(ui, vm, entry, width, entry.month == current) {
-                    event = Some(CalendarEvent::OpenMonth(entry.month));
+                match month_card(ui, vm, entry, width, entry.month == current, state) {
+                    CardAction::Open => event = Some(CalendarEvent::OpenMonth(entry.month)),
+                    CardAction::Days => {
+                        state.calendar_days = Some(entry.month);
+                        state.clear_day_selection();
+                    }
+                    CardAction::None => {}
                 }
             }
         });
+    }
+    event
+}
+
+/// One month's day grid inside the Calendar, with a way back to the year and on to the register.
+fn days_view(
+    ui: &mut egui::Ui,
+    vm: &ViewModel,
+    state: &mut UiState,
+    month: YearMonth,
+) -> Option<CalendarEvent> {
+    let s = strings(vm.language());
+    let p = palette(vm.theme());
+    let mut event = None;
+    let mut back = false;
+    ui.horizontal_wrapped(|ui| {
+        back = ui
+            .add(Button::new(RichText::new(s.back_to_year).color(p.accent)))
+            .clicked();
+        if ui
+            .add(Button::new(RichText::new(s.open_month).color(p.accent)))
+            .clicked()
+        {
+            event = Some(CalendarEvent::OpenMonth(month));
+        }
+    });
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            s.days_of_month
+                .replace("{month}", &month_label(month, vm.language())),
+        )
+        .text_style(typography::display())
+        .strong(),
+    );
+    ui.add_space(8.0);
+    let out = day_grid::show(ui, vm, state, days_id(month));
+    match out.row {
+        Some(RowAction::Edit(id)) => event = Some(CalendarEvent::Edit(id)),
+        Some(RowAction::Delete(id)) => event = Some(CalendarEvent::Delete(id)),
+        None => {}
+    }
+    if back || out.left {
+        state.calendar_days = None;
+        state.clear_day_selection();
+        if back {
+            state.pending_focus = Some(days_id(month));
+        }
     }
     event
 }

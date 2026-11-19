@@ -5,7 +5,10 @@
 //! string literal.
 
 mod en;
+mod insight;
 mod pt_br;
+
+pub use insight::{InsightText, insight_text};
 
 use chrono::{Datelike as _, NaiveDate, Weekday};
 
@@ -426,6 +429,44 @@ strings! {
     settings_template_delete_body,
     settings_template_edit_named,
     settings_template_delete_named,
+    days,
+    days_of_month,
+    back_to_year,
+    open_month,
+    day_cell_label,
+    day_activity_none,
+    day_activity_one,
+    day_activity_many,
+    day_detail_title,
+    day_detail_scope,
+    day_detail_empty,
+    day_detail_unavailable,
+    day_grid_hint,
+    insight_title,
+    insight_heading_mtd,
+    insight_heading_planned,
+    insight_none,
+    insight_income_only,
+    insight_refunds_only,
+    insight_none_neutral,
+    insight_income_only_neutral,
+    insight_refunds_only_neutral,
+    insight_net_credits,
+    insight_zero,
+    insight_spending,
+    insight_pct,
+    insight_pct_less_than_one,
+    insight_cmp_up,
+    insight_cmp_down,
+    insight_cmp_unchanged,
+    insight_cmp_up_full,
+    insight_cmp_down_full,
+    insight_cmp_unchanged_full,
+    insight_cmp_amounts,
+    insight_cmp_amounts_full,
+    insight_top_category,
+    insight_largest_expense,
+    insight_leading_person,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.

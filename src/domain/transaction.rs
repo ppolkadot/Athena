@@ -315,6 +315,8 @@ pub struct TxFilter {
     pub kind: Option<TransactionType>,
     pub issue: Option<SettlementIssue>,
     pub until: Option<NaiveDate>,
+    /// Exactly this date (every live kind), for the day detail.
+    pub day: Option<NaiveDate>,
 }
 
 #[cfg(test)]

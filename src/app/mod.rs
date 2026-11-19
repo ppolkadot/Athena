@@ -9,6 +9,8 @@ pub mod ui_state;
 pub mod view_model;
 
 #[cfg(test)]
+mod day_flow_tests;
+#[cfg(test)]
 mod quick_flow_tests;
 
 use eframe::egui::{self, Key, Modifiers};
@@ -132,6 +134,7 @@ impl AppCore {
         self.record_outcome_notice(&outcome);
         if reset_ui {
             self.ui.clear_filters();
+            self.ui.clear_day_view();
             self.ui.set_screen(Screen::Month);
             self.ui.settings.reset_all();
         }
@@ -2100,7 +2103,7 @@ mod tests {
         let before_count = core.vm.transactions.len();
 
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_size(egui::Vec2::new(1280.0, 1150.0))
             .with_context_setup(theme::typography::install_test_fonts)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {
@@ -2151,7 +2154,7 @@ mod tests {
         core.sync().unwrap();
 
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_size(egui::Vec2::new(1280.0, 1150.0))
             .with_context_setup(theme::typography::install_test_fonts)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {
@@ -2292,7 +2295,7 @@ mod tests {
         core.create_transaction(unassigned).unwrap();
 
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_size(egui::Vec2::new(1280.0, 1150.0))
             .with_context_setup(theme::typography::install_test_fonts)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {
@@ -2365,7 +2368,7 @@ mod tests {
         core.set_month(YearMonth::new(2026, 10).unwrap()).unwrap();
 
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_size(egui::Vec2::new(1280.0, 1150.0))
             .with_context_setup(theme::typography::install_test_fonts)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {
@@ -2529,7 +2532,7 @@ mod tests {
         .unwrap();
 
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::Vec2::new(1280.0, 820.0))
+            .with_size(egui::Vec2::new(1280.0, 1150.0))
             .with_context_setup(theme::typography::install_test_fonts)
             .build_ui_state(
                 |ui, app: &mut AthenaApp| {

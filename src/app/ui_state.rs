@@ -23,6 +23,18 @@ pub struct UiState {
     pub trash_focus_row: Option<usize>,
     /// Row index awaiting permanent-delete confirmation on Trash.
     pub pending_purge_focus_row: Option<usize>,
+    /// Calendar: the month whose day grid is open instead of the year cards.
+    pub calendar_days: Option<YearMonth>,
+    /// Month: whether the day grid shows above the register.
+    pub month_days: bool,
+    /// The date whose live rows the day detail shows (any date, including empty days).
+    pub selected_day: Option<NaiveDate>,
+    /// The grid cell that takes keyboard focus; arrows move it within the month.
+    pub day_cursor: Option<NaiveDate>,
+    /// A widget to give keyboard focus to when it is next drawn (returning from the grid).
+    pub pending_focus: Option<eframe::egui::Id>,
+    /// Move focus to the day detail heading after a row disappears.
+    pub day_heading_focus: bool,
 }
 
 /// How long typing must pause before the search runs, in seconds.
@@ -44,10 +56,54 @@ impl UiState {
             settings: SettingsState::default(),
             trash_focus_row: None,
             pending_purge_focus_row: None,
+            calendar_days: None,
+            month_days: false,
+            selected_day: None,
+            day_cursor: None,
+            pending_focus: None,
+            day_heading_focus: false,
         }
     }
 
+    /// The month whose day grid is cached: the Calendar's open month, or the viewed month while
+    /// the Month screen shows its grid.
+    #[must_use]
+    pub fn grid_month(&self) -> Option<YearMonth> {
+        match self.screen {
+            Screen::Calendar => self.calendar_days,
+            Screen::Month if self.month_days => Some(self.month),
+            _ => None,
+        }
+    }
+
+    /// Select a date for the day detail.
+    pub fn select_day(&mut self, date: NaiveDate) {
+        self.selected_day = Some(date);
+        self.day_cursor = Some(date);
+    }
+
+    /// Forget the selection and the keyboard cursor.
+    pub fn clear_day_selection(&mut self) {
+        self.selected_day = None;
+        self.day_cursor = None;
+        self.day_heading_focus = false;
+    }
+
+    /// Leave every day view: used when the data is replaced (restore, import).
+    pub fn clear_day_view(&mut self) {
+        self.calendar_days = None;
+        self.month_days = false;
+        self.clear_day_selection();
+    }
+
     pub fn set_screen(&mut self, screen: Screen) {
+        if screen != self.screen {
+            // A selected day belongs to the view that showed it.
+            self.clear_day_selection();
+        }
+        if screen != Screen::Calendar {
+            self.calendar_days = None;
+        }
         if screen != Screen::Settings {
             // Leaving settings drops unsaved edits and subpage selection, so reopening starts fresh.
             self.settings.reset_all();
@@ -62,6 +118,9 @@ impl UiState {
     /// Select a month. Filters that only make sense inside one month (day, added in 1.1) are
     /// cleared here so the register never looks empty after navigating.
     pub fn set_month(&mut self, month: YearMonth) {
+        if month != self.month {
+            self.clear_day_selection();
+        }
         self.month = month;
         self.filter.issue = None;
         self.filter.until = None;
@@ -69,6 +128,7 @@ impl UiState {
     }
 
     pub fn set_repair_filter(&mut self, issue: SettlementIssue, as_of: NaiveDate) {
+        self.clear_day_selection();
         self.filter = TxFilter {
             month: None,
             until: Some(as_of),
@@ -155,6 +215,12 @@ impl UiState {
     }
 
     pub fn set_calendar_year(&mut self, year: i32) {
+        if year != self.calendar_year {
+            self.calendar_days = None;
+            if self.screen == Screen::Calendar {
+                self.clear_day_selection();
+            }
+        }
         self.calendar_year = year;
     }
 }

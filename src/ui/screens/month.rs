@@ -17,7 +17,10 @@ use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::reports::bar_fraction;
 use crate::domain::transaction::{SettlementIssue, Transaction};
-use crate::i18n::{format_date, format_short_month_year, month_label, strings, weekday_short};
+use crate::i18n::{
+    format_date, format_short_month_year, insight_text, month_label, strings, weekday_short,
+};
+use crate::ui::components::day_grid;
 use crate::ui::components::settlement_card::{self, SettlementEvent};
 use crate::ui::components::summary_card::{self, Tone, plain_brl, signed_brl};
 use crate::ui::components::transaction_row::RowAction;
@@ -146,6 +149,77 @@ fn summaries(ui: &mut egui::Ui, vm: &ViewModel) {
             None,
         );
     });
+}
+
+/// The live insight of the viewed month. Names resolve from current ids, so a rename shows at once.
+fn insight(ui: &mut egui::Ui, vm: &ViewModel) {
+    let Some(inputs) = &vm.insight else {
+        return;
+    };
+    let s = strings(vm.language());
+    let p = palette(vm.theme());
+    let text = insight_text(
+        inputs,
+        vm.language(),
+        |id| {
+            id.and_then(|id| vm.category(id))
+                .map_or(s.qa_no_category, |c| c.name.as_str())
+                .to_string()
+        },
+        |id| vm.person(id).map_or("", |p| p.name.as_str()).to_string(),
+        true,
+    );
+    Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(16))
+        .inner_margin(Margin::symmetric(16, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(s.insight_title)
+                        .text_style(egui::TextStyle::Small)
+                        .color(p.muted),
+                );
+                if let Some(heading) = text.heading {
+                    ui.label(RichText::new(heading).strong().color(p.accent));
+                }
+            });
+            ui.label(RichText::new(&text.headline).strong());
+            if let Some(comparison) = &text.comparison {
+                ui.label(RichText::new(comparison).color(p.muted));
+            }
+            for detail in &text.details {
+                ui.label(RichText::new(detail).color(p.muted));
+            }
+        });
+}
+
+/// The Days toggle above the register and, when on, the shared day grid and detail.
+fn days(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState, event: &mut Option<MonthEvent>) {
+    let s = strings(vm.language());
+    let p = palette(vm.theme());
+    let id = egui::Id::unique("month-days-toggle");
+    let name = s
+        .days_of_month
+        .replace("{month}", &month_label(state.month, vm.language()));
+    let toggle = day_grid::toggle(ui, &p, id, s.days, &name, state.month_days);
+    day_grid::take_pending_focus(state, id, &toggle);
+    if toggle.clicked() {
+        state.month_days = !state.month_days;
+        state.clear_day_selection();
+    }
+    if !state.month_days {
+        return;
+    }
+    ui.add_space(8.0);
+    let out = day_grid::show(ui, vm, state, id);
+    match out.row {
+        Some(RowAction::Edit(id)) => *event = Some(MonthEvent::Edit(id)),
+        Some(RowAction::Delete(id)) => *event = Some(MonthEvent::Delete(id)),
+        None => {}
+    }
 }
 
 fn filters(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) {
@@ -482,6 +556,10 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Mo
     ui.add_space(12.0);
     summaries(ui, vm);
     ui.add_space(12.0);
+    insight(ui, vm);
+    ui.add_space(12.0);
+    days(ui, vm, state, &mut event);
+    ui.add_space(8.0);
     filters(ui, vm, state);
     ui.add_space(8.0);
     let width = ui.available_width();
@@ -566,7 +644,7 @@ mod tests {
 
     fn harness(core: &AppCore) -> egui_kittest::Harness<'static, MonthApp> {
         egui_kittest::Harness::builder()
-            .with_size(Vec2::new(1100.0, 900.0))
+            .with_size(Vec2::new(1100.0, 1200.0))
             .build_ui_state(
                 |ui, (vm, state, event): &mut MonthApp| {
                     // The harness only has egui's bundled fonts, which lack some of our symbols.

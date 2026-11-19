@@ -5,7 +5,8 @@ use rusqlite::Connection;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::reports::{
-    CalendarMonthTotal, CategoryTotal, DayTotal, MonthSummary, PersonTotal,
+    CalendarMonthTotal, CategoryTotal, DayActivity, DayTotal, InsightInputs, MonthPhase,
+    MonthSummary, PersonTotal,
 };
 use crate::infrastructure::db::reports_repo;
 use crate::shared::error::{AppError, Result};
@@ -41,13 +42,64 @@ pub fn day_totals(conn: &Connection, month: YearMonth) -> Result<Vec<DayTotal>> 
 /// Database errors.
 pub fn year_calendar(conn: &Connection, year: i32) -> Result<Vec<CalendarMonthTotal>> {
     let mut by_month = reports_repo::summaries_for_year(conn, year)?;
+    let mut activity = reports_repo::activity_counts_for_year(conn, year)?;
     Ok((1..=12)
         .filter_map(|m| YearMonth::new(year, m))
         .map(|month| CalendarMonthTotal {
             month,
             summary: by_month.remove(&month).unwrap_or_default(),
+            activity_count: activity.remove(&month).unwrap_or(0),
         })
         .collect())
+}
+
+/// Every day of `month` with live activity (all kinds), oldest first. The display model
+/// zero-fills the rest.
+///
+/// # Errors
+/// Database errors.
+pub fn day_activity(conn: &Connection, month: YearMonth) -> Result<Vec<DayActivity>> {
+    reports_repo::day_activity(conn, month)
+}
+
+/// The structured inputs of a month's insight. The unfiltered month is read through `today` when
+/// it is the current month, so scheduled future entries never leak in; a completed or future
+/// month is read whole. The comparison month is always the full previous month.
+///
+/// # Errors
+/// Database errors or [`AppError::Validation`] on arithmetic overflow.
+pub fn insight_inputs(
+    conn: &Connection,
+    month: YearMonth,
+    today: chrono::NaiveDate,
+) -> Result<InsightInputs> {
+    let phase = MonthPhase::of(month, today);
+    let (start, month_end) = month.bounds();
+    let end = match phase {
+        MonthPhase::ToDate => today.succ_opt().unwrap_or(month_end).min(month_end),
+        MonthPhase::Completed | MonthPhase::Planned => month_end,
+    };
+    let current = reports_repo::summary_between(conn, start, end)?;
+    let prior_month = month.prev();
+    let prior = month_summary(conn, prior_month)?;
+    let winning_category = reports_repo::category_totals_between(conn, start, end)?
+        .into_iter()
+        .find(|t| t.net.cents() > 0)
+        .map(|t| (t.category_id, t.net));
+    let leading_person = reports_repo::person_totals_between(conn, start, end)?
+        .into_iter()
+        .find(|t| t.net.cents() > 0)
+        .map(|t| (t.person_id, t.net));
+    Ok(InsightInputs {
+        month,
+        phase,
+        current,
+        prior_spending: prior.checked_spending()?,
+        prior_count: prior.count,
+        winning_category,
+        largest_expense: reports_repo::largest_expense_between(conn, start, end)?,
+        leading_person,
+    })
 }
 
 /// Start balance + all income - all expenses + all refunds.
@@ -71,11 +123,12 @@ mod tests {
 
     use super::*;
     use crate::domain::reports::bar_fraction;
-    use crate::domain::transaction::Allocation;
+    use crate::domain::transaction::{Allocation, TransactionType};
     use crate::infrastructure::db::{Db, integrity, transactions_repo};
     use crate::shared::test_fixtures::{
         date, draft_with, seed_mixed, seed_month, seed_people, seed_shared, seeded_category,
     };
+    use chrono::NaiveDate;
 
     fn nov() -> YearMonth {
         YearMonth::new(2026, 11).unwrap()
@@ -451,5 +504,318 @@ mod tests {
 
         let err = tracked_balance(db.conn(), Money::from_cents(i64::MAX)).unwrap_err();
         assert!(matches!(err, crate::shared::error::AppError::Validation(_)));
+    }
+
+    fn tx(
+        db: &Db,
+        owner: i64,
+        title: &str,
+        cents: i64,
+        kind: TransactionType,
+        day: NaiveDate,
+        category: Option<i64>,
+    ) -> i64 {
+        let mut draft = draft_with(vec![]);
+        draft.title = title.into();
+        draft.amount = Money::from_cents(cents);
+        draft.kind = kind;
+        draft.date = day;
+        draft.category_id = category;
+        if kind != TransactionType::Income {
+            draft.payer_id = Some(owner);
+            draft.allocations = vec![Allocation {
+                person_id: owner,
+                amount: Money::from_cents(cents),
+            }];
+        }
+        transactions_repo::create(db.conn(), &draft).unwrap()
+    }
+
+    #[test]
+    fn day_activity_counts_every_kind_but_spends_only_expenses_minus_refunds() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = seed_people(db.conn());
+        let d = |day| date(2026, 11, day);
+        tx(
+            &db,
+            owner,
+            "Salary",
+            300_000,
+            TransactionType::Income,
+            d(5),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "Payback",
+            4_000,
+            TransactionType::Refund,
+            d(8),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "Lunch",
+            2_500,
+            TransactionType::Expense,
+            d(12),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "Lunch back",
+            2_500,
+            TransactionType::Refund,
+            d(12),
+            None,
+        );
+        let trashed = tx(
+            &db,
+            owner,
+            "Gone",
+            900,
+            TransactionType::Expense,
+            d(14),
+            None,
+        );
+        transactions_repo::delete(db.conn(), trashed).unwrap();
+        let mut settlement = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(1_000),
+        }]);
+        settlement.kind = TransactionType::Settlement;
+        settlement.payer_id = Some(partner);
+        settlement.date = d(20);
+        transactions_repo::create(db.conn(), &settlement).unwrap();
+
+        let days = day_activity(db.conn(), nov()).unwrap();
+        let on = |day| days.iter().find(|a| a.date == d(day));
+        // Income-only: discoverable by count, no spending.
+        assert_eq!(
+            (on(5).unwrap().activity_count, on(5).unwrap().spending),
+            (1, Money::ZERO)
+        );
+        // Refund-only: negative spending, still one activity.
+        assert_eq!(on(8).unwrap().spending, Money::from_cents(-4_000));
+        // Offsetting expense and refund: two activities, zero net spending.
+        assert_eq!(
+            (on(12).unwrap().activity_count, on(12).unwrap().spending),
+            (2, Money::ZERO)
+        );
+        // Settlement-only: one activity, zero spending.
+        assert_eq!(
+            (on(20).unwrap().activity_count, on(20).unwrap().spending),
+            (1, Money::ZERO)
+        );
+        // Trashed and empty days are absent here and zero-filled by the display model.
+        assert!(on(14).is_none());
+        let filled = crate::domain::reports::zero_filled_days(nov(), &days);
+        assert_eq!(filled.len(), 30);
+        assert_eq!(filled[13].activity_count, 0);
+        // The financial count is unchanged: settlements stay out of it.
+        assert_eq!(month_summary(db.conn(), nov()).unwrap().count, 4);
+        assert!(integrity::check(db.conn()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn calendar_activity_count_makes_a_settlement_only_month_discoverable() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = seed_people(db.conn());
+        let mut settlement = draft_with(vec![Allocation {
+            person_id: owner,
+            amount: Money::from_cents(1_000),
+        }]);
+        settlement.kind = TransactionType::Settlement;
+        settlement.payer_id = Some(partner);
+        settlement.date = date(2026, 3, 2);
+        transactions_repo::create(db.conn(), &settlement).unwrap();
+        let calendar = year_calendar(db.conn(), 2026).unwrap();
+        let march = &calendar[2];
+        assert_eq!(
+            march.summary.count, 0,
+            "financial counts keep their meaning"
+        );
+        assert_eq!(march.activity_count, 1);
+        assert_eq!(calendar.iter().filter(|m| m.activity_count > 0).count(), 1);
+    }
+
+    #[test]
+    fn the_day_filter_is_exact_across_kinds_and_ignores_the_month() {
+        use crate::domain::transaction::TxFilter;
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        tx(
+            &db,
+            owner,
+            "A",
+            100,
+            TransactionType::Expense,
+            date(2026, 12, 31),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "B",
+            100,
+            TransactionType::Income,
+            date(2026, 12, 31),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "C",
+            100,
+            TransactionType::Expense,
+            date(2027, 1, 1),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "D",
+            100,
+            TransactionType::Expense,
+            date(2024, 2, 29),
+            None,
+        );
+        let on = |day| {
+            transactions_repo::list(
+                db.conn(),
+                &TxFilter {
+                    day: Some(day),
+                    ..TxFilter::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(on(date(2026, 12, 31)).len(), 2);
+        assert_eq!(on(date(2027, 1, 1)).len(), 1);
+        assert_eq!(on(date(2024, 2, 29)).len(), 1);
+        assert!(on(date(2026, 12, 30)).is_empty());
+    }
+
+    #[test]
+    fn insights_read_the_current_month_through_today_and_the_full_prior_month() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, _) = seed_people(db.conn());
+        let food = seeded_category(db.conn(), "Food");
+        let d = |m, day| date(2026, m, day);
+        tx(
+            &db,
+            owner,
+            "Oct rent",
+            50_000,
+            TransactionType::Expense,
+            d(10, 3),
+            None,
+        );
+        tx(
+            &db,
+            owner,
+            "Oct late",
+            10_000,
+            TransactionType::Expense,
+            d(10, 28),
+            Some(food),
+        );
+        tx(
+            &db,
+            owner,
+            "Nov early",
+            8_000,
+            TransactionType::Expense,
+            d(11, 4),
+            Some(food),
+        );
+        tx(
+            &db,
+            owner,
+            "Nov later",
+            90_000,
+            TransactionType::Expense,
+            d(11, 25),
+            None,
+        );
+        let today = d(11, 10);
+        let nov_inputs = insight_inputs(db.conn(), nov(), today).unwrap();
+        assert_eq!(nov_inputs.phase, MonthPhase::ToDate);
+        // Scheduled future entries never leak into a month in progress.
+        assert_eq!(nov_inputs.current.spending(), Money::from_cents(8_000));
+        assert_eq!(nov_inputs.prior_spending, Money::from_cents(60_000));
+        assert_eq!(nov_inputs.prior_count, 2);
+        assert_eq!(
+            nov_inputs.winning_category,
+            Some((Some(food), Money::from_cents(8_000)))
+        );
+        assert_eq!(
+            nov_inputs.largest_expense.as_ref().unwrap().title,
+            "Nov early"
+        );
+        assert_eq!(
+            nov_inputs.leading_person,
+            Some((owner, Money::from_cents(8_000)))
+        );
+        // A completed month reads whole; a future month is planned.
+        let oct = insight_inputs(db.conn(), YearMonth::new(2026, 10).unwrap(), d(11, 10)).unwrap();
+        assert_eq!(oct.phase, MonthPhase::Completed);
+        assert_eq!(oct.current.spending(), Money::from_cents(60_000));
+        assert_eq!(oct.largest_expense.unwrap().title, "Oct rent");
+        let dec = insight_inputs(db.conn(), YearMonth::new(2026, 12).unwrap(), d(11, 10)).unwrap();
+        assert_eq!(dec.phase, MonthPhase::Planned);
+        assert_eq!(dec.current.count, 0);
+        assert_eq!(
+            dec.prior_spending,
+            Money::from_cents(98_000),
+            "full November"
+        );
+    }
+
+    #[test]
+    fn insight_ties_prefer_uncategorized_then_the_lowest_id() {
+        let db = Db::open_in_memory().unwrap();
+        let (owner, partner) = seed_people(db.conn());
+        let food = seeded_category(db.conn(), "Food");
+        let day = date(2026, 10, 5);
+        let a = tx(
+            &db,
+            owner,
+            "Alpha",
+            5_000,
+            TransactionType::Expense,
+            day,
+            Some(food),
+        );
+        tx(
+            &db,
+            partner,
+            "Beta",
+            5_000,
+            TransactionType::Expense,
+            day,
+            None,
+        );
+        let inputs = insight_inputs(
+            db.conn(),
+            YearMonth::new(2026, 10).unwrap(),
+            date(2026, 11, 20),
+        )
+        .unwrap();
+        assert_eq!(
+            inputs.winning_category,
+            Some((None, Money::from_cents(5_000))),
+            "an uncategorized tie wins"
+        );
+        assert_eq!(
+            inputs.largest_expense.unwrap().id,
+            a,
+            "equal amounts: lowest id"
+        );
+        // Equal people: the lower id leads.
+        assert_eq!(inputs.leading_person.unwrap().0, owner.min(partner));
     }
 }

@@ -116,6 +116,10 @@ pub fn list(conn: &Connection, filter: &TxFilter) -> Result<Vec<Transaction>> {
         args.push(Value::Text(date_text(start)));
         args.push(Value::Text(date_text(end)));
     }
+    if let Some(day) = filter.day {
+        sql.push_str(" AND t.date = ?");
+        args.push(Value::Text(date_text(day)));
+    }
     let needle = fold(filter.text.trim());
     if !needle.is_empty() {
         let pattern = format!("%{}%", escape_like(&needle));

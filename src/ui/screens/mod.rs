@@ -68,6 +68,8 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
         Screen::Calendar => calendar::show(ui, vm, state)
             .map(|event| match event {
                 calendar::CalendarEvent::OpenMonth(month) => ScreenEvent::OpenMonth(month),
+                calendar::CalendarEvent::Edit(id) => ScreenEvent::EditTransaction(id),
+                calendar::CalendarEvent::Delete(id) => ScreenEvent::DeleteTransaction(id),
             })
             .into_iter()
             .collect(),

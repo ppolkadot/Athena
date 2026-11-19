@@ -1,6 +1,7 @@
 //! Reusable widgets. Added by the tasks that need them.
 
 pub mod confirm_dialog;
+pub mod day_grid;
 pub mod empty_state;
 pub mod import_preview;
 pub mod money_input;
