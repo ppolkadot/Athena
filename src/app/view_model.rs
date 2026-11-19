@@ -6,6 +6,7 @@ use super::navigation::Screen;
 use super::store::Store;
 use super::ui_state::UiState;
 use crate::application::services::{reports, settlement};
+use crate::domain::appearance::AppearancePrefs;
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
@@ -18,6 +19,7 @@ use crate::domain::settlement::SettlementView;
 use crate::domain::template::Template;
 use crate::domain::transaction::{Transaction, TransactionType, TxFilter};
 use crate::infrastructure::db::{
+    appearance_repo,
     backup::{self, BackupFile},
     categories_repo, people_repo, profile_repo, templates_repo, transactions_repo,
     trash_repo::{self, TrashItem},
@@ -43,6 +45,12 @@ struct LoadKey {
 pub struct ViewModel {
     fallback_language: Language,
     pub profile: Option<Profile>,
+    /// The applied appearance row; `None` means defaults derived from the profile theme.
+    pub appearance: Option<AppearancePrefs>,
+    /// The stored appearance row exists but could not be read (solid defaults are in use).
+    pub appearance_unreadable: bool,
+    /// The theme the shell paints with, once the app resolved it; the profile theme until then.
+    effective_theme: Option<Theme>,
     /// Archived people included, so history labels always resolve.
     pub all_people: Vec<Person>,
     /// Archived categories included.
@@ -95,6 +103,9 @@ impl ViewModel {
         Self {
             fallback_language,
             profile: None,
+            appearance: None,
+            appearance_unreadable: false,
+            effective_theme: None,
             all_people: Vec::new(),
             all_categories: Vec::new(),
             transactions: Vec::new(),
@@ -131,9 +142,21 @@ impl ViewModel {
             .map_or(self.fallback_language, |p| p.language)
     }
 
+    /// The theme the shell paints with: the resolved appearance theme, else the legacy profile theme.
     #[must_use]
     pub fn theme(&self) -> Theme {
+        self.effective_theme.unwrap_or_else(|| self.profile_theme())
+    }
+
+    /// The legacy profile theme (the fallback when no appearance is applied).
+    #[must_use]
+    pub fn profile_theme(&self) -> Theme {
         self.profile.as_ref().map_or(Theme::Dark, |p| p.theme)
+    }
+
+    /// Record the theme the app resolved this frame; `None` returns to the profile theme.
+    pub fn set_effective_theme(&mut self, theme: Option<Theme>) {
+        self.effective_theme = theme;
     }
 
     #[must_use]
@@ -317,6 +340,12 @@ impl ViewModel {
         }
     }
 
+    /// Optional read: an unreadable row falls back to defaults and never fails the workspace.
+    fn stage_appearance(&mut self, read: std::result::Result<Option<AppearancePrefs>, Unreadable>) {
+        self.appearance_unreadable = read.is_err();
+        self.appearance = read.unwrap_or(None);
+    }
+
     /// A failed read leaves no day detail behind to be mistaken for current data.
     fn fail_day_cache(&mut self) {
         self.day_activity.clear();
@@ -380,6 +409,7 @@ impl ViewModel {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn load_scope(
         &mut self,
         store: &Store,
@@ -399,6 +429,9 @@ impl ViewModel {
             }
             RefreshScope::Templates => {
                 self.templates = templates_repo::list(conn)?;
+            }
+            RefreshScope::Appearance => {
+                self.stage_appearance(read_appearance(conn));
             }
             RefreshScope::Trash => {
                 let trash_count = trash_repo::count(conn)?;
@@ -426,6 +459,7 @@ impl ViewModel {
                 let all_categories = categories_repo::list(conn, true)?;
                 let transactions = transactions_repo::list(conn, &key.filter)?;
                 let templates = templates_repo::list(conn)?;
+                let appearance = (scope == RefreshScope::All).then(|| read_appearance(conn));
                 let summary = reports::month_summary(conn, ui.month)?;
                 let category_totals = reports::category_totals(conn, ui.month)?;
                 let person_totals = reports::person_totals(conn, ui.month)?;
@@ -465,6 +499,9 @@ impl ViewModel {
                 self.all_categories = all_categories;
                 self.transactions = transactions;
                 self.templates = templates;
+                if let Some(appearance) = appearance {
+                    self.stage_appearance(appearance);
+                }
                 self.summary = summary;
                 self.category_totals = category_totals;
                 self.person_totals = person_totals;
@@ -488,6 +525,29 @@ impl ViewModel {
         Ok(())
     }
 }
+
+/// The appearance row. `None` means it could not be read; it is logged without row content.
+fn read_appearance(
+    conn: &rusqlite::Connection,
+) -> std::result::Result<Option<AppearancePrefs>, Unreadable> {
+    match appearance_repo::load(conn) {
+        Ok(prefs) => Ok(prefs),
+        Err(err) => {
+            tracing::warn!(
+                "stored appearance preferences are unreadable ({}); using defaults",
+                match err {
+                    crate::shared::error::AppError::Db(_) => "invalid or unreadable row",
+                    _ => "unexpected failure",
+                }
+            );
+            Err(Unreadable)
+        }
+    }
+}
+
+/// The stored appearance row could not be read.
+#[derive(Debug, Clone, Copy)]
+struct Unreadable;
 
 /// The month's insight inputs; a failed read hides the card instead of failing the screen.
 fn read_insight(

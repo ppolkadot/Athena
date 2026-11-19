@@ -48,16 +48,32 @@ pub fn medium_family() -> FontFamily {
     named_family(POLARIS_UI_MEDIUM)
 }
 
-/// Frozen-tabular face for money and table dates.
+/// `size` multiplied by the active text scale (100% when none is applied).
+#[must_use]
+pub fn scaled(size: f32) -> f32 {
+    scaled_by(size, super::active::text_scale_percent())
+}
+
+fn scaled_by(size: f32, percent: u16) -> f32 {
+    size * f32::from(percent) / 100.0
+}
+
+/// Proportional body-family `FontId` at the scaled `size`.
+#[must_use]
+pub fn proportional(size: f32) -> FontId {
+    FontId::new(scaled(size), FontFamily::Proportional)
+}
+
+/// Frozen-tabular face for money and table dates, at the scaled `size`.
 #[must_use]
 pub fn tabular_font(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Monospace)
+    FontId::new(scaled(size), FontFamily::Monospace)
 }
 
 /// `FontId` for 20 px section titles with the Bold face.
 #[must_use]
 pub fn section_font() -> FontId {
-    FontId::new(SECTION, display_family())
+    FontId::new(scaled(SECTION), display_family())
 }
 
 /// `TextStyle` for 20 px section titles.
@@ -79,19 +95,34 @@ pub fn money_font() -> FontId {
     tabular_font(BODY)
 }
 
-/// Apply the size scale and family mapping to a style.
+/// Apply the size scale and family mapping to a style at 100% text scale.
 pub fn apply_text_styles(style: &mut Style) {
+    apply_text_styles_scaled(style, 100);
+}
+
+/// Apply the size scale and family mapping to a style with every size scaled by `percent`.
+pub fn apply_text_styles_scaled(style: &mut Style, percent: u16) {
+    let size = |base: f32| scaled_by(base, percent);
     style.text_styles = [
         (
             TextStyle::Small,
-            FontId::new(SECONDARY, FontFamily::Proportional),
+            FontId::new(size(SECONDARY), FontFamily::Proportional),
         ),
-        (TextStyle::Body, FontId::new(BODY, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(BODY, medium_family())),
-        (TextStyle::Heading, FontId::new(HEADING, display_family())),
-        (TextStyle::Monospace, tabular_font(BODY)),
-        (section(), section_font()),
-        (display(), FontId::new(DISPLAY, display_family())),
+        (
+            TextStyle::Body,
+            FontId::new(size(BODY), FontFamily::Proportional),
+        ),
+        (TextStyle::Button, FontId::new(size(BODY), medium_family())),
+        (
+            TextStyle::Heading,
+            FontId::new(size(HEADING), display_family()),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(size(BODY), FontFamily::Monospace),
+        ),
+        (section(), FontId::new(size(SECTION), display_family())),
+        (display(), FontId::new(size(DISPLAY), display_family())),
     ]
     .into();
 }

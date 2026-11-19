@@ -440,4 +440,7 @@ pub const STRINGS: Strings = Strings {
     xlsx_participant: "Participant",
     export_xlsx_month: "Export Excel for {month}",
     export_xlsx_all: "Export Excel (all time)",
+    toast_appearance_saved: "Appearance applied.",
+    toast_appearance_reset: "Appearance reset to defaults.",
+    appearance_unreadable_notice: "Saved appearance settings could not be read, so Athena is using the default look. Your finances are unaffected.",
 };

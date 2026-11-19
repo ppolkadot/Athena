@@ -28,8 +28,19 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
+/// The palette painters and widgets use for `theme`: the resolved palette when the app has applied
+/// an appearance for that theme, otherwise the stock one.
 #[must_use]
 pub fn palette(theme: Theme) -> Palette {
+    match super::active::get() {
+        Some(key) if key.theme == theme => key.palette,
+        _ => stock_palette(theme),
+    }
+}
+
+/// The shipped Dark and Light palettes, before any accent or high-contrast resolution.
+#[must_use]
+pub fn stock_palette(theme: Theme) -> Palette {
     match theme {
         Theme::Dark => Palette {
             bg: rgb(0x05_06_08),

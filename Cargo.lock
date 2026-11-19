@@ -397,6 +397,7 @@ dependencies = [
  "tracing-subscriber",
  "ttf-parser",
  "unicode-normalization",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

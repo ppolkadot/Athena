@@ -10,8 +10,8 @@ use crate::domain::transaction::Transaction;
 use crate::i18n::ToastKey;
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::{
-    Db, backup, categories_repo, import_repo, integrity, people_repo, profile_repo, restore,
-    templates_repo, transactions_repo, trash_repo,
+    Db, appearance_repo, backup, categories_repo, import_repo, integrity, people_repo,
+    profile_repo, restore, templates_repo, transactions_repo, trash_repo,
 };
 use crate::shared::error::{AppError, ImportError, Result};
 
@@ -233,6 +233,9 @@ impl Store {
             | AppAction::RestoreTransaction(_)
             | AppAction::PurgeTransaction(_)
             | AppAction::EmptyTrash => Self::run_transaction_action(conn, action),
+            AppAction::ApplyAppearance(_) | AppAction::ResetAppearance => {
+                Self::run_appearance_action(conn, action)
+            }
             AppAction::SaveProfile(_)
             | AppAction::SavePerson(_)
             | AppAction::ArchivePerson(_)
@@ -370,6 +373,31 @@ impl Store {
                     None,
                     Some(ToastKey::TemplateDeleted),
                     RefreshScope::Templates,
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_appearance_action(
+        conn: &rusqlite::Connection,
+        action: AppAction,
+    ) -> Result<ActionOutcome> {
+        match action {
+            AppAction::ApplyAppearance(apply) => {
+                appearance_repo::save(conn, &apply.prefs)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::AppearanceSaved),
+                    RefreshScope::Appearance,
+                ))
+            }
+            AppAction::ResetAppearance => {
+                appearance_repo::reset(conn)?;
+                Ok(outcome(
+                    None,
+                    Some(ToastKey::AppearanceReset),
+                    RefreshScope::Appearance,
                 ))
             }
             _ => unreachable!(),

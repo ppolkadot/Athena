@@ -1,8 +1,8 @@
 //! Sidebar and content frame.
 
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Rect, RichText,
-    Role, Sense, Vec2, WidgetInfo,
+    self, Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, Role, Sense,
+    Vec2, WidgetInfo,
 };
 
 use crate::app::navigation::Screen;
@@ -28,7 +28,7 @@ fn nav_item(
     active: bool,
     rail: bool,
 ) -> bool {
-    let size = Vec2::new(ui.available_width(), tokens::CONTROL_HEIGHT);
+    let size = Vec2::new(ui.available_width(), tokens::control_height());
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::selected(Role::Button, true, active, label));
     let fill = if active {
@@ -69,7 +69,7 @@ fn nav_item(
             rect.left_center() + Vec2::new(14.0 + tokens::ICON_SIZE + 10.0, 0.0),
             Align2::LEFT_CENTER,
             label,
-            FontId::proportional(typography::BODY),
+            typography::proportional(typography::BODY),
             color,
         );
     }
@@ -120,7 +120,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutp
                         .color(p.accent),
                 );
             }
-            ui.add_space(tokens::SPACE_L);
+            ui.add_space(tokens::space_l());
             for screen in Screen::ALL {
                 if nav_item(
                     ui,
@@ -173,7 +173,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> ShellOutp
                                     }
                                 });
                             });
-                        ui.add_space(tokens::SPACE_M);
+                        ui.add_space(tokens::space_m());
                         output.events = screens::show(ui, vm, state);
                         if retry {
                             output.events.push(ScreenEvent::RetryRefresh);

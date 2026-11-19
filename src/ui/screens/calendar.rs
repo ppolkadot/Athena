@@ -3,8 +3,8 @@
 
 use chrono::Datelike;
 use eframe::egui::{
-    self, Align2, Button, CornerRadius, FontId, Id, Rect, RichText, Role, Sense, Stroke,
-    StrokeKind, Vec2, WidgetInfo,
+    self, Align2, Button, CornerRadius, Id, Rect, RichText, Role, Sense, Stroke, StrokeKind, Vec2,
+    WidgetInfo,
 };
 
 use crate::app::ui_state::UiState;
@@ -93,7 +93,7 @@ fn month_card(
 
     let summary = &entry.summary;
     let money = typography::money_font();
-    let small = FontId::new(typography::SECONDARY, egui::FontFamily::Proportional);
+    let small = typography::proportional(typography::SECONDARY);
     let right = rect.right() - 16.0;
     let row = |y: f32, label: &str, value: String, color: egui::Color32| {
         painter.text(
@@ -204,7 +204,7 @@ fn days_button(
         button.center(),
         Align2::CENTER_CENTER,
         s.days,
-        FontId::new(typography::SECONDARY, egui::FontFamily::Proportional),
+        typography::proportional(typography::SECONDARY),
         p.accent,
     );
     days.on_hover_cursor(egui::CursorIcon::PointingHand)
