@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod appearance_edit;
+pub mod clock;
 pub mod files;
 pub mod instance;
 pub mod modals;
@@ -18,6 +19,8 @@ mod appearance_tests;
 #[cfg(test)]
 mod day_flow_tests;
 #[cfg(test)]
+mod goal_flow_tests;
+#[cfg(test)]
 mod quick_flow_tests;
 #[cfg(test)]
 mod wallpaper_tests;
@@ -29,10 +32,13 @@ use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::appearance::{AppearancePrefs, Wallpaper};
 use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
+use crate::domain::goal::{GoalStatus, GoalTransition};
 use crate::domain::person::Person;
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::transaction::TxDraft;
-use crate::i18n::{ToastKey, backup_error_message, format_import_errors, strings};
+use crate::i18n::{
+    ToastKey, backup_error_message, format_import_errors, goal_error_message, strings,
+};
 use crate::infrastructure::config::AppDirs;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::media::MediaError;
@@ -48,8 +54,10 @@ use crate::ui::components::discard_prompt::{self, DiscardChoice};
 use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
 use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::components::toast::{self, Toast, ToastAction};
+use crate::ui::goal_form::{self, GoalFormEvent, GoalFormState};
 use crate::ui::quick_add::{self, QuickAddState};
 use crate::ui::screens::ScreenEvent;
+use crate::ui::screens::goals::GoalEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
 use crate::ui::screens::settings::SettingsPage;
 use crate::ui::theme::active::StyleKey;
@@ -62,14 +70,15 @@ use self::files::{
     now_rfc3339, open_folder, pick_export_path, pick_import_path, pick_restore_path,
 };
 pub use self::modals::{
-    ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action, begin_edit,
-    begin_edit_template, delete_backup_confirmation, delete_confirmation,
+    ModalAfter, apply_confirmed, apply_confirmed_outcome, apply_settings_action,
+    archive_goal_confirmation, begin_edit, begin_edit_template, complete_goal_confirmation,
+    delete_backup_confirmation, delete_confirmation, delete_contribution_confirmation,
     delete_template_confirmation, empty_trash_confirmation, handle_quick_add,
     import_preview_dialog, purge_confirmation, restore_confirmation,
 };
 use self::navigation::Screen;
 use self::store::Store;
-use self::ui_state::UiState;
+use self::ui_state::{GoalFocus, UiState};
 use self::view_model::ViewModel;
 
 /// What the user was doing when the Keep editing / Discard prompt for Appearance opened. Discard
@@ -153,7 +162,12 @@ impl AppCore {
     /// # Errors
     /// Database errors.
     pub fn sync(&mut self) -> Result<bool> {
-        self.vm.sync(&self.store, &self.ui)
+        let mut reloaded = self.vm.sync(&self.store, &self.ui)?;
+        // A goal that vanished or left the open tab clears the selection; its detail follows.
+        if self.ui.goals.reconcile(&self.vm.goals) {
+            reloaded |= self.vm.sync(&self.store, &self.ui)?;
+        }
+        Ok(reloaded)
     }
 
     /// Apply an action and reload what it affected.
@@ -187,9 +201,19 @@ impl AppCore {
             self.ui.clear_day_view();
             self.ui.set_screen(Screen::Month);
             self.ui.settings.reset_all();
+            self.ui.goals.reset();
+        }
+        if let Some(id) = outcome.created_goal {
+            self.ui.goals.set_filter(GoalStatus::Active);
+            self.ui.goals.select(id);
         }
         if let Err(err) = self.vm.reload(&self.store, &self.ui, outcome.refresh) {
             tracing::error!("could not refresh the view after applying action: {err}");
+        }
+        if self.ui.goals.reconcile(&self.vm.goals)
+            && let Err(err) = self.vm.sync(&self.store, &self.ui)
+        {
+            tracing::error!("could not refresh the goal detail: {err}");
         }
         Ok(outcome)
     }
@@ -318,6 +342,8 @@ pub struct AthenaApp {
     test_wallpaper_picks: Vec<Option<std::path::PathBuf>>,
     onboarding: OnboardingState,
     quick_add: Option<QuickAddState>,
+    /// The goal or contribution form, when open.
+    goal_form: Option<GoalFormState>,
     confirm: Option<ConfirmDialog>,
     import_preview: Option<ImportPreviewDialog>,
     toast: Option<Toast>,
@@ -368,6 +394,7 @@ impl AthenaApp {
             test_wallpaper_picks: Vec::new(),
             onboarding,
             quick_add: None,
+            goal_form: None,
             confirm: None,
             import_preview: None,
             toast: None,
@@ -531,6 +558,7 @@ impl AthenaApp {
     #[allow(clippy::too_many_lines)]
     fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
         let idle = self.quick_add.is_none()
+            && self.goal_form.is_none()
             && self.confirm.is_none()
             && self.import_preview.is_none()
             && self.appearance_intent.is_none();
@@ -559,6 +587,7 @@ impl AthenaApp {
                     action: AppAction::ResetAppearance,
                 });
             }
+            ScreenEvent::Goal(event) if idle => self.handle_goal_event(ctx, event),
             ScreenEvent::NewTransaction if self.quick_add.is_none() => {
                 self.remember_modal_opener(ctx);
                 self.open_quick_add();
@@ -771,7 +800,9 @@ impl AthenaApp {
 
     /// An app around `core` for tests, with the date pinned to [`crate::shared::test_fixtures::today`].
     #[cfg(test)]
-    pub(crate) fn for_test(core: AppCore) -> Self {
+    pub(crate) fn for_test(mut core: AppCore) -> Self {
+        core.store
+            .freeze_today(crate::shared::test_fixtures::today());
         Self {
             platform: PlatformWatch::new(
                 Box::new(platform::UnknownPlatform),
@@ -792,6 +823,7 @@ impl AthenaApp {
             onboarding: OnboardingState::new(core.vm.language()),
             core,
             quick_add: None,
+            goal_form: None,
             confirm: None,
             import_preview: None,
             toast: None,
@@ -834,6 +866,7 @@ impl AthenaApp {
 
     #[cfg(test)]
     pub(crate) fn pin_today(&mut self, today: chrono::NaiveDate) {
+        self.core.store.freeze_today(today);
         self.pinned_today = Some(today);
     }
 
@@ -855,6 +888,104 @@ impl AthenaApp {
     fn today(&self) -> chrono::NaiveDate {
         self.pinned_today
             .unwrap_or_else(|| chrono::Local::now().date_naive())
+    }
+
+    /// Wake the app at the next local midnight (or sooner, so a changed system clock is noticed)
+    /// to re-read the date. Independent of wallpaper playback and platform preference polls.
+    fn schedule_date_check(&self, ctx: &egui::Context) {
+        if self.pinned_today.is_none() {
+            ctx.request_repaint_after(clock::next_date_check(&chrono::Local::now()));
+        }
+    }
+
+    /// Open a goal form, confirmation or lifecycle step the Goals screen asked for.
+    fn handle_goal_event(&mut self, ctx: &egui::Context, event: GoalEvent) {
+        let language = self.core.vm.language();
+        match event {
+            GoalEvent::New => {
+                self.remember_modal_opener(ctx);
+                self.goal_form = Some(GoalFormState::new_goal(language));
+            }
+            GoalEvent::Edit(id) => {
+                if let Some(item) = self.core.vm.goals.iter().find(|g| g.goal.id == id) {
+                    let form = GoalFormState::edit_goal(&item.goal, language);
+                    self.remember_modal_opener(ctx);
+                    self.goal_form = Some(form);
+                }
+            }
+            GoalEvent::AddContribution(id) => {
+                self.remember_modal_opener(ctx);
+                self.goal_form = Some(GoalFormState::contribution(id, self.today(), language));
+            }
+            GoalEvent::DeleteContribution {
+                goal_id,
+                contribution_id,
+            } => {
+                if let Some(dialog) =
+                    delete_contribution_confirmation(&self.core, goal_id, contribution_id)
+                {
+                    self.remember_modal_opener(ctx);
+                    self.confirm = Some(dialog);
+                }
+            }
+            GoalEvent::Transition(id, transition) => {
+                let dialog = match transition {
+                    GoalTransition::Complete => complete_goal_confirmation(&self.core, id),
+                    GoalTransition::Archive => archive_goal_confirmation(&self.core, id),
+                    _ => None,
+                };
+                if let Some(dialog) = dialog {
+                    self.remember_modal_opener(ctx);
+                    self.confirm = Some(dialog);
+                } else {
+                    match self.core.apply(AppAction::ChangeGoalStatus(id, transition)) {
+                        Ok(outcome) => self.raise_toast(ctx, outcome.toast),
+                        Err(err) => {
+                            tracing::warn!("could not change the goal: {err}");
+                            let text = match err {
+                                AppError::GoalInvalid(rules) => {
+                                    rules.first().map(|r| goal_error_message(*r, language))
+                                }
+                                _ => None,
+                            }
+                            .unwrap_or(strings(language).goal_err_save);
+                            self.raise_toast_text(ctx, Some(text.to_owned()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run the goal form: a committed write closes it (and selects a created goal); a refused one
+    /// keeps every typed value and shows the reason next to its field.
+    fn handle_goal_form(&mut self, ctx: &egui::Context) {
+        let Some(mut state) = self.goal_form.take() else {
+            return;
+        };
+        match goal_form::show(ctx, &mut state, &self.core.vm) {
+            Some(GoalFormEvent::Close) => self.restore_modal_opener(ctx),
+            Some(GoalFormEvent::Submit(action)) => match self.core.apply(action) {
+                Ok(outcome) => {
+                    self.raise_toast(ctx, outcome.toast);
+                    if outcome.created_goal.is_some() {
+                        self.core.ui.goals.pending_focus = Some(GoalFocus::Primary);
+                        self.modal_opener = None;
+                    } else {
+                        self.restore_modal_opener(ctx);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("could not save the goal form: {err}");
+                    match err {
+                        AppError::GoalInvalid(rules) => state.refuse(&rules),
+                        _ => state.refuse(&[]),
+                    }
+                    self.goal_form = Some(state);
+                }
+            },
+            None => self.goal_form = Some(state),
+        }
     }
 
     fn open_quick_add(&mut self) {
@@ -910,6 +1041,7 @@ impl AthenaApp {
             tracing::error!("could not refresh the view: {err}");
         }
         let frame_ctx = ui.ctx().clone();
+        self.schedule_date_check(&frame_ctx);
         if self.refresh_appearance(&frame_ctx) {
             ui.set_style(frame_ctx.global_style());
         }
@@ -933,6 +1065,7 @@ impl AthenaApp {
         }
         let ctx = ui.ctx().clone();
         if self.quick_add.is_none()
+            && self.goal_form.is_none()
             && self.confirm.is_none()
             && self.import_preview.is_none()
             && self.appearance_intent.is_none()
@@ -1203,6 +1336,7 @@ impl AthenaApp {
                 None => self.quick_add = Some(state),
             }
         }
+        self.handle_goal_form(ctx);
         if let Some(dialog) = self.confirm.take() {
             match confirm_dialog::show(ctx, &dialog, self.core.vm.theme(), self.core.vm.language())
             {
@@ -1216,6 +1350,12 @@ impl AthenaApp {
                     };
                     let emptied_trash = matches!(action, AppAction::EmptyTrash);
                     let was_reset = matches!(action, AppAction::ResetAppearance);
+                    let goal_step = matches!(
+                        action,
+                        AppAction::ChangeGoalStatus(_, _) | AppAction::DeleteContribution { .. }
+                    );
+                    let removed_contribution =
+                        matches!(action, AppAction::DeleteContribution { .. });
                     let before_version = self.core.store.data_version();
                     let toast = apply_confirmed_outcome(&mut self.core, action);
                     if was_reset && self.core.store.data_version() != before_version {
@@ -1254,6 +1394,12 @@ impl AthenaApp {
                     if is_purge {
                         self.core.ui.trash_focus_row = self.core.ui.pending_purge_focus_row.take();
                         self.modal_opener = None;
+                    } else if goal_step && self.core.store.data_version() != before_version {
+                        // The opener (a menu or a contribution row) is gone; focus moves on.
+                        self.modal_opener = None;
+                        if removed_contribution {
+                            self.core.ui.goals.pending_focus = Some(GoalFocus::Primary);
+                        }
                     } else if is_delete || restored_ok {
                         self.modal_opener = None;
                     } else {
@@ -2090,6 +2236,14 @@ mod tests {
         harness.key_press_modifiers(ctrl, Key::Num4);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Trash);
+        harness.key_press_modifiers(ctrl, Key::Num5);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Goals);
+        harness.key_press_modifiers(ctrl, Key::Num1);
+        harness.run_steps(3);
+        assert_eq!(harness.state().core.ui.screen, Screen::Month);
+        harness.key_press_modifiers(ctrl, Key::Num5);
+        harness.run_steps(3);
         harness.key_press_modifiers(ctrl, Key::Num3);
         harness.run_steps(3);
         assert_eq!(harness.state().core.ui.screen, Screen::Settings);

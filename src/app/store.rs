@@ -51,6 +51,11 @@ impl Store {
         self
     }
 
+    /// Freeze the local date in place (tests that pin the app's date).
+    pub fn freeze_today(&mut self, today: NaiveDate) {
+        self.clock = Clock::Fixed(today);
+    }
+
     /// The local calendar date write rules are checked against.
     #[must_use]
     pub fn today(&self) -> NaiveDate {

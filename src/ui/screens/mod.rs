@@ -11,6 +11,7 @@ use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::theme::{palette, typography};
 
 pub mod calendar;
+pub mod goals;
 pub mod month;
 pub mod onboarding;
 pub mod recovery;
@@ -31,6 +32,8 @@ pub enum ExportRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScreenEvent {
     NewTransaction,
+    /// A goals screen request: forms, confirmations and lifecycle steps.
+    Goal(goals::GoalEvent),
     EditTransaction(i64),
     DeleteTransaction(i64),
     /// Open the template editor (Quick Add form without a date).
@@ -81,6 +84,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
             })
             .into_iter()
             .collect(),
+        Screen::Goals => goals::show(ui, vm, state),
         Screen::Trash => trash::show(ui, vm, state),
         Screen::Settings => settings::show(ui, vm, state),
     }

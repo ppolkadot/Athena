@@ -40,6 +40,8 @@ struct LoadKey {
     grid_month: Option<YearMonth>,
     /// The selected day, if any.
     day: Option<chrono::NaiveDate>,
+    /// The open goal, whose detail is cached.
+    goal: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +99,10 @@ pub struct ViewModel {
     pub today: chrono::NaiveDate,
     #[cfg(test)]
     pub(crate) trash_loads: usize,
+    #[cfg(test)]
+    pub(crate) goal_list_loads: usize,
+    #[cfg(test)]
+    pub(crate) goal_detail_loads: usize,
     loaded: Option<LoadKey>,
     failed_load_key: Option<LoadKey>,
 }
@@ -137,6 +143,10 @@ impl ViewModel {
             today: chrono::Local::now().date_naive(),
             #[cfg(test)]
             trash_loads: 0,
+            #[cfg(test)]
+            goal_list_loads: 0,
+            #[cfg(test)]
+            goal_detail_loads: 0,
             loaded: None,
             failed_load_key: None,
         }
@@ -216,6 +226,7 @@ impl ViewModel {
             screen: ui.screen,
             grid_month: ui.grid_month(),
             day: ui.selected_day,
+            goal: ui.goals.selected,
         }
     }
 
@@ -299,13 +310,29 @@ impl ViewModel {
                 None
             };
             let (day_activity, day_rows) = read_days(conn, prev, &key)?;
-            Ok((transactions, trash, backups, day_activity, day_rows))
+            let goal_detail = if prev.goal == key.goal {
+                None
+            } else {
+                Some(read_goal_detail(conn, key.goal)?)
+            };
+            Ok((
+                transactions,
+                trash,
+                backups,
+                day_activity,
+                day_rows,
+                goal_detail,
+            ))
         })();
 
         match staged {
-            Ok((transactions, trash, backups, day_activity, day_rows)) => {
+            Ok((transactions, trash, backups, day_activity, day_rows, goal_detail)) => {
                 if let Some(txs) = transactions {
                     self.transactions = txs;
+                }
+                if let Some(detail) = goal_detail {
+                    self.goal_detail = detail;
+                    self.record_goal_detail_load();
                 }
                 self.stage_days(day_activity, day_rows);
                 if ui.screen == Screen::Trash {
@@ -351,6 +378,28 @@ impl ViewModel {
     fn stage_appearance(&mut self, read: std::result::Result<Option<AppearancePrefs>, Unreadable>) {
         self.appearance_unreadable = read.is_err();
         self.appearance = read.unwrap_or(None);
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)
+    )]
+    fn record_goal_detail_load(&mut self) {
+        #[cfg(test)]
+        {
+            self.goal_detail_loads += 1;
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)
+    )]
+    fn record_goal_list_load(&mut self) {
+        #[cfg(test)]
+        {
+            self.goal_list_loads += 1;
+        }
     }
 
     /// A failed read leaves no day detail behind to be mistaken for current data.
@@ -441,7 +490,12 @@ impl ViewModel {
                 self.stage_appearance(read_appearance(conn));
             }
             RefreshScope::Goals => {
-                self.goals = goals::list_items(conn)?;
+                let list = goals::list_items(conn)?;
+                let detail = read_goal_detail(conn, key.goal)?;
+                self.goals = list;
+                self.goal_detail = detail;
+                self.record_goal_list_load();
+                self.record_goal_detail_load();
             }
             RefreshScope::Trash => {
                 let trash_count = trash_repo::count(conn)?;
@@ -476,6 +530,8 @@ impl ViewModel {
                 let calendar = reports::year_calendar(conn, ui.calendar_year)?;
                 let (day_activity, day_rows) = read_all_days(conn, key)?;
                 let insight = read_insight(conn, ui.month, key.today);
+                let goal_list = goals::list_items(conn)?;
+                let goal_detail = read_goal_detail(conn, key.goal)?;
                 let start = profile.as_ref().map_or(Money::ZERO, |p| p.start_balance);
                 let balance = reports::tracked_balance(conn, start)?;
                 let trash_count = trash_repo::count(conn)?;
@@ -519,6 +575,10 @@ impl ViewModel {
                 self.day_activity = day_activity;
                 self.day_rows = day_rows;
                 self.insight = insight;
+                self.goals = goal_list;
+                self.goal_detail = goal_detail;
+                self.record_goal_list_load();
+                self.record_goal_detail_load();
                 self.balance = balance;
                 self.settlement = settlement;
                 self.settlement_unavailable = settlement_unavailable;
@@ -533,6 +593,14 @@ impl ViewModel {
             }
         }
         Ok(())
+    }
+}
+
+/// The open goal's detail; `None` when nothing is selected or the goal no longer exists.
+fn read_goal_detail(conn: &rusqlite::Connection, goal: Option<i64>) -> Result<Option<GoalDetail>> {
+    match goal {
+        Some(id) => goals::detail(conn, id),
+        None => Ok(None),
     }
 }
 

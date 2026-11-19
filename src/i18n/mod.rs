@@ -13,6 +13,7 @@ pub use insight::{InsightText, insight_text};
 use chrono::{Datelike as _, NaiveDate, Weekday};
 
 use crate::domain::date::YearMonth;
+use crate::domain::goal::GoalError;
 use crate::domain::money::MoneyError;
 use crate::domain::settings::Language;
 use crate::domain::template::TemplateError;
@@ -574,6 +575,86 @@ strings! {
     toast_goal_restored,
     toast_contribution_added,
     toast_contribution_deleted,
+    goals,
+    shortcut_hint,
+    goals_new,
+    goals_tab_active,
+    goals_tab_paused,
+    goals_tab_completed,
+    goals_tab_archived,
+    goals_list_label,
+    goals_empty_title,
+    goals_empty_hint,
+    goals_empty_filter_title,
+    goals_empty_filter_hint,
+    goals_select_hint,
+    goals_back,
+    goal_funded,
+    goal_status_active,
+    goal_status_paused,
+    goal_status_completed,
+    goal_status_archived,
+    goal_progress,
+    goal_remaining,
+    goal_excess,
+    goal_progress_a11y,
+    goal_deadline,
+    goal_for_person,
+    goal_add_contribution,
+    goal_reopen,
+    goal_more,
+    goal_edit,
+    goal_pause,
+    goal_resume,
+    goal_complete,
+    goal_archive,
+    goal_contributions_title,
+    goal_no_contributions,
+    contribution_remove,
+    contribution_remove_a11y,
+    goal_plan_due_today,
+    goal_plan_overdue,
+    goal_plan_daily_one,
+    goal_plan_daily_many,
+    goal_plan_weekly_one,
+    goal_plan_weekly_many,
+    goal_plan_monthly_one,
+    goal_plan_monthly_many,
+    goal_form_new_title,
+    goal_form_edit_title,
+    goal_f_name,
+    goal_f_target,
+    goal_f_date,
+    goal_f_frequency,
+    goal_freq_daily,
+    goal_freq_weekly,
+    goal_freq_monthly,
+    goal_f_person,
+    goal_f_nobody,
+    contrib_form_title,
+    contrib_f_date,
+    contrib_f_note,
+    goal_err_name,
+    goal_err_target,
+    goal_err_date,
+    goal_err_person_archived,
+    goal_err_person_missing,
+    goal_err_amount,
+    goal_err_future,
+    goal_err_note,
+    goal_err_overflow,
+    goal_err_not_editable,
+    goal_err_transition,
+    goal_err_save,
+    goal_complete_title,
+    goal_complete_body,
+    goal_complete_confirm,
+    goal_archive_title,
+    goal_archive_body,
+    goal_archive_confirm,
+    contrib_delete_title,
+    contrib_delete_body,
+    contrib_delete_confirm,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -935,6 +1016,24 @@ pub fn money_error_message(error: MoneyError, language: Language) -> &'static st
         MoneyError::Invalid => s.m_invalid,
         MoneyError::TooPrecise => s.m_too_precise,
         MoneyError::TooLarge => s.m_too_large,
+    }
+}
+
+/// Localized message for a refused goal rule.
+#[must_use]
+pub fn goal_error_message(error: GoalError, language: Language) -> &'static str {
+    let s = strings(language);
+    match error {
+        GoalError::NameEmpty => s.goal_err_name,
+        GoalError::TargetNotPositive => s.goal_err_target,
+        GoalError::AttributionMissing => s.goal_err_person_missing,
+        GoalError::AttributionArchived => s.goal_err_person_archived,
+        GoalError::AmountNotPositive => s.goal_err_amount,
+        GoalError::DateInFuture => s.goal_err_future,
+        GoalError::NoteTooLong => s.goal_err_note,
+        GoalError::InvalidTransition => s.goal_err_transition,
+        GoalError::NotEditable => s.goal_err_not_editable,
+        GoalError::Overflow => s.goal_err_overflow,
     }
 }
 

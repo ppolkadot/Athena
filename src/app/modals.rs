@@ -24,6 +24,88 @@ use crate::ui::screens::settings::SettingsError;
 use super::AppCore;
 use super::actions::{AppAction, OperationKind};
 
+fn goal_item(
+    core: &AppCore,
+    id: i64,
+) -> Option<&crate::application::services::goals::GoalListItem> {
+    core.vm.goals.iter().find(|g| g.goal.id == id)
+}
+
+/// The confirmation before completing a goal that is still short of its target, naming the money
+/// left. `None` when the goal is funded (or missing): completing it needs no question.
+#[must_use]
+pub fn complete_goal_confirmation(core: &AppCore, id: i64) -> Option<ConfirmDialog> {
+    let item = goal_item(core, id)?;
+    if item.progress.funded {
+        return None;
+    }
+    let s = strings(core.vm.language());
+    Some(ConfirmDialog {
+        title: s.goal_complete_title.to_owned(),
+        body: s
+            .goal_complete_body
+            .replace("{name}", &item.goal.name)
+            .replace(
+                "{remaining}",
+                &crate::ui::components::summary_card::plain_brl(item.progress.remaining),
+            ),
+        confirm_label: s.goal_complete_confirm.to_owned(),
+        danger: false,
+        action: AppAction::ChangeGoalStatus(id, crate::domain::goal::GoalTransition::Complete),
+    })
+}
+
+/// The confirmation before archiving a goal.
+#[must_use]
+pub fn archive_goal_confirmation(core: &AppCore, id: i64) -> Option<ConfirmDialog> {
+    let item = goal_item(core, id)?;
+    let s = strings(core.vm.language());
+    Some(ConfirmDialog {
+        title: s.goal_archive_title.to_owned(),
+        body: s.goal_archive_body.replace("{name}", &item.goal.name),
+        confirm_label: s.goal_archive_confirm.to_owned(),
+        danger: false,
+        action: AppAction::ChangeGoalStatus(id, crate::domain::goal::GoalTransition::Archive),
+    })
+}
+
+/// The confirmation before removing one contribution, naming its date and amount.
+#[must_use]
+pub fn delete_contribution_confirmation(
+    core: &AppCore,
+    goal_id: i64,
+    contribution_id: i64,
+) -> Option<ConfirmDialog> {
+    let detail = core
+        .vm
+        .goal_detail
+        .as_ref()
+        .filter(|d| d.goal.id == goal_id)?;
+    let contribution = detail
+        .contributions
+        .iter()
+        .find(|c| c.id == contribution_id)?;
+    let language = core.vm.language();
+    let s = strings(language);
+    Some(ConfirmDialog {
+        title: s.contrib_delete_title.to_owned(),
+        body: s
+            .contrib_delete_body
+            .replace(
+                "{amount}",
+                &crate::ui::components::summary_card::plain_brl(contribution.amount),
+            )
+            .replace("{date}", &format_date(contribution.date, language))
+            .replace("{name}", &detail.goal.name),
+        confirm_label: s.contrib_delete_confirm.to_owned(),
+        danger: true,
+        action: AppAction::DeleteContribution {
+            goal_id,
+            contribution_id,
+        },
+    })
+}
+
 /// Whether the quick-add modal stays up after handling an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalAfter {
