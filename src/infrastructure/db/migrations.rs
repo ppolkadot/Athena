@@ -13,6 +13,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0004_templates.sql"),
     include_str!("../../../migrations/0005_appearance.sql"),
     include_str!("../../../migrations/0006_goals.sql"),
+    include_str!("../../../migrations/0007_closings.sql"),
 ];
 
 /// The schema version this build produces: the number of embedded migrations.

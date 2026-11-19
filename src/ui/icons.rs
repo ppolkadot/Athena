@@ -34,10 +34,14 @@ pub enum Icon {
     /// Goals (1.4).
     Target,
     Search,
+    /// A saved closing (1.4).
+    Bookmark,
+    /// A closing that changed or could not be checked (1.4).
+    TriangleAlert,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 15] = [
+    pub const ALL: [Icon; 17] = [
         Icon::List,
         Icon::CalendarDays,
         Icon::Trash2,
@@ -53,6 +57,8 @@ impl Icon {
         Icon::ArrowLeftRight,
         Icon::Target,
         Icon::Search,
+        Icon::Bookmark,
+        Icon::TriangleAlert,
     ];
 
     /// Upstream Lucide name, the provenance key.
@@ -74,6 +80,8 @@ impl Icon {
             Icon::ArrowLeftRight => "arrow-left-right",
             Icon::Target => "target",
             Icon::Search => "search",
+            Icon::Bookmark => "bookmark",
+            Icon::TriangleAlert => "triangle-alert",
         }
     }
 
@@ -96,6 +104,8 @@ impl Icon {
             Icon::ArrowLeftRight => icon_paths::ARROW_LEFT_RIGHT,
             Icon::Target => icon_paths::TARGET,
             Icon::Search => icon_paths::SEARCH,
+            Icon::Bookmark => icon_paths::BOOKMARK,
+            Icon::TriangleAlert => icon_paths::TRIANGLE_ALERT,
         }
     }
 

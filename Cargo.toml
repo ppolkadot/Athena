@@ -25,6 +25,7 @@ fs4 = "1.1"
 unicode-normalization = "0.1"
 rust_xlsxwriter = "0.102.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::domain::closing::ClosingError;
 use crate::domain::goal::GoalError;
 use crate::domain::template::TemplateError;
 use crate::infrastructure::db::integrity::IntegrityIssue;
@@ -205,6 +206,8 @@ pub enum AppError {
     CategoryScopeInUse,
     #[error("the template is invalid ({} issue(s))", .0.len())]
     TemplateInvalid(Vec<TemplateError>),
+    #[error("the closing request is invalid: {0}")]
+    ClosingInvalid(ClosingError),
     #[error("the goal request is invalid ({} issue(s))", .0.len())]
     GoalInvalid(Vec<GoalError>),
     #[error(transparent)]

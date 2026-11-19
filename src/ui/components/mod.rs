@@ -1,5 +1,6 @@
 //! Reusable widgets. Added by the tasks that need them.
 
+pub mod closing_card;
 pub mod confirm_dialog;
 pub mod day_grid;
 pub mod discard_prompt;

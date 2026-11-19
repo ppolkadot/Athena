@@ -20,6 +20,7 @@ use crate::domain::transaction::{SettlementIssue, Transaction};
 use crate::i18n::{
     format_date, format_short_month_year, insight_text, month_label, strings, weekday_short,
 };
+use crate::ui::components::closing_card::{self, ClosingEvent};
 use crate::ui::components::day_grid;
 use crate::ui::components::settlement_card::{self, SettlementEvent};
 use crate::ui::components::summary_card::{self, Tone, plain_brl, signed_brl};
@@ -38,6 +39,7 @@ pub enum MonthEvent {
     Edit(i64),
     Delete(i64),
     Settlement(SettlementEvent),
+    Closing(ClosingEvent),
 }
 
 /// Newest day first; entries keep their incoming order within a day.
@@ -556,6 +558,12 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Option<Mo
     ui.add_space(12.0);
     summaries(ui, vm);
     ui.add_space(12.0);
+    if let Some(closing) = closing_card::show(ui, vm, state.month) {
+        event = Some(MonthEvent::Closing(closing));
+    }
+    if vm.closings.contains_key(&state.month) || state.month < YearMonth::from_date(vm.today) {
+        ui.add_space(12.0);
+    }
     insight(ui, vm);
     ui.add_space(12.0);
     days(ui, vm, state, &mut event);
