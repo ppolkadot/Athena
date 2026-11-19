@@ -11,7 +11,7 @@
 | Plan | Scope | Status |
 |---|---|---|
 | [2026-11-18-athena-1.2.0-daily-speed.md](2026-11-18-athena-1.2.0-daily-speed.md) | Daily Speed (`0004_templates.sql`, format 3, Quick Add, day drill-down, XLSX, tokens/icons) | Tasks 1–8 pending. Start with the roadmap's §14.1 freeze task. |
-| [2026-11-17-athena-native-appearance.md](2026-11-17-athena-native-appearance.md) | Native Appearance (`0005_appearance.sql`, format 4, Settings Appearance, wallpaper) | A2–A5 pending after verified 1.2. Production Glass has separate open gates. |
+| [2026-11-17-athena-native-appearance.md](2026-11-17-athena-native-appearance.md) | Native Appearance (`0005_appearance.sql`, format 4, Settings Appearance, wallpaper) | A2–A5 implemented in the 1.3.0 candidate (see [smoke-1.3](../../smoke-1.3.md)); native, hardware and release-artifact checks are open. Production Glass is not shipped and has separate open gates. |
 | [Roadmap 1.4.0 milestone](2026-11-18-athena-stalled-ui-roadmap-plan.md#140-goals-and-closings) | Goals and Closings (`0006_goals`, `0007_closings`, format 5) | Tasks G1–G6 pending after verified 1.3. |
 
 ## Shipped and historical plans
