@@ -1,6 +1,6 @@
 # Athena contracts
 
-**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md); §14.1 is **Frozen for 1.2**. Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
+**Status:** Canonical. Sections marked **Frozen for 1.1** are the binding interface for the [1.1.0 Safe Data plan](../plans/2026-11-16-athena-1.1.0-safe-data.md); §14.1 is **Frozen for 1.2** and §14.2 is **Frozen for 1.3**. Sections marked **Draft** reserve names and rules for later releases; they become frozen when their release plan is written.
 **Created:** 2026-11-16, from the [roadmap decisions](2026-11-13-athena-roadmap-revision.md), the [1.1](2026-11-13-athena-1.1.0-revision-brief.md) / [1.2](2026-11-13-athena-1.2.0-revision-brief.md) briefs, and the [readiness review](2026-11-16-athena-readiness-and-appearance-review.md), checked against source at `2093257`.
 
 ## §0 Authority and change rules
@@ -30,7 +30,7 @@
 | 1.0.x | Shipped foundation | `0001_init` (1) | 1 (written, never read) |
 | **1.1.0** | Safe data | `0002_settlement_kind`, `0003_trash` (3) | **2** |
 | **1.2.0** | Daily speed | `0004_templates` (4) | **3** (frozen for 1.2, §14.1) |
-| 1.3.0 | Appearance | reserved `0005_appearance` (5) | reserved 4 |
+| **1.3.0** | Appearance | `0005_appearance` (5) | **4** (frozen for 1.3, §14.2) |
 | 1.4.0 | Goals & closings | reserved `0006_goals`, `0007_closings` (7) | reserved 5 |
 
 Rules:
@@ -272,6 +272,7 @@ pub struct SuggestedTransfer { pub from: i64, pub to: i64, pub amount: Money }
 | existing profile/people/category actions | unchanged | unchanged | |
 | `SaveTemplate` / `UpdateTemplate` / `DeleteTemplate` (1.2, §14.1) | `None` | `Templates` | Settings and Quick Add |
 | `SaveTransactionFromTemplate(TxDraft, i64)` (1.2) | `DeleteTransaction(id)` | `Month` + `Templates` | one transaction, one timestamp |
+| `ApplyAppearance(Box<AppearanceApply>)` / `ResetAppearance` (1.3, §14.2) | `None` | `Appearance` | Settings → Appearance; Apply may publish a staged managed wallpaper first |
 
 - `RestoreSource` is `Listed(PathBuf)` (inside `backups_dir`) or `External(PathBuf)` (picked file).
 - `ImportPlan` derives `Clone` and `PartialEq` because `AppAction` does.
@@ -414,6 +415,10 @@ Restore is synchronous on the UI thread in 1.1, with a measured budget of < 1 s 
 
 Format 3 is format 2 plus a required `templates` array (`id, name, title, amount_cents, kind, category_id, payer_id, responsibility, description, created_at, last_used_at, allocations: [{ person_id, amount_cents }]`), ordered by id. Formats 1 and 2 import with no templates. A version above 3 is `TooNew` before any body parsing. Import replaces templates in the same transaction (children and parents before people and categories, inserted after them). <!-- lint:allow -->
 
+### §10.2.2 Format 4 (written by 1.3)
+
+Format 4 is format 3 plus an optional `appearance` object (§14.2). Portable fields are theme mode, preset, accent, density, text scale, motion, reduce transparency, quality, background (`none|builtin`), fit, dim and paused; a local wallpaper exports as `none`. Formats 1–3 and a format-4 document without `appearance` clear the appearance row in the replacement transaction. A version above 4 is `TooNew` before any body parsing; invalid enums or ranges in `appearance` are an import validation error. <!-- lint:allow -->
+
 ### §10.3 Format 1 adapter
 
 `format_v1.rs` freezes the 1.0 shapes (domain-derived serde as of `2093257`, `schema_version: 1`).
@@ -500,6 +505,7 @@ enum AppSession { Active(AppCore), Recovery(RecoveryState) }
   - the latest operation notice
   - Changing a category's scope is refused with its own message (`SettingsError::ScopeInUse`) when entries already use it and the new scope would hide them; the generic save failure is reserved for everything else.
 - Successful restore/import clears filters and opens Month.
+- **1.3 additions (§14.2):** Settings gains an Appearance page (theme and presets, accent/density/text scale, background, accessibility) with a live shell preview, Apply/Cancel/Reset and a dirty-leave guard; General links to it instead of switching the theme directly. Wallpaper spans Month, Calendar, Settings and Trash behind an opaque-card shell.
 - **1.2 additions (§14.1):** Create Quick Add gains a Templates picker, Save as template and a one-line entry field with a Review button; Settings gains a Templates page; the sidebar becomes a labeled icon rail when content would be narrower than 480 pt; Calendar and Month expose a day grid with a shared day detail panel; Settings → Data & backups gains XLSX export for the viewed month and all history.
 - **Dialogs** return keyboard focus to the control that opened them.
 - **All new copy** is added to both languages in the same commit, including error variants for every `RestoreError` and `ImportError`.
@@ -551,22 +557,29 @@ Implementation design for 1.2.0 (schema 4, document format 3). Rationale and tes
   - published atomically with `atomic_write`
 - **Design tokens (`ui/tokens.rs`) and an embedded icon set (`ui/icons.rs`)**: Lucide 0.468.0 24-unit path data vendored under `assets/icons/` with the upstream license replace the Unicode glyphs. Content narrower than 480 pt collapses the sidebar to a labeled icon rail.
 
-### §14.2 1.3 Appearance (Draft)
+### §14.2 1.3 Appearance — Frozen for 1.3
 
-- **`0005_appearance.sql`:** a single-row `appearance` table, leaving `profile.theme` untouched. Its CHECK allows only `dark|light`, and a SQLite CHECK cannot be altered in place. Fields:
-  - `theme_mode` (system|dark|light), `preset`, `accent`, `density`, `text_scale`
-  - `motion` (system|reduced|full), `reduce_transparency`, `quality`
-  - `wallpaper_asset_id`, `fit`, `dim`, `paused`
-- **Media** lives under `root/appearance/` as managed copies. Database backups keep the reference only. Format 4 adds an optional `appearance` section without media bytes or paths.
+Implementation design for 1.3.0 (schema 5, document format 4). Rationale and test lists live in the [Native Appearance plan](../plans/2026-11-17-athena-native-appearance.md) and the [roadmap](../plans/2026-11-18-athena-stalled-ui-roadmap-plan.md). Production Glass is **not** part of 1.3; it stays behind the separate gates recorded in the [glass spike](../../design/athena-glass-spike.md).
+
+- **`0005_appearance.sql`:** a single-row `appearance` table (`id = 1`), leaving `profile.theme` untouched as the legacy fallback. A row exists only after Apply or a format-4 import with appearance. Closed CHECKs match the domain allowlist:
+  - `theme_mode` (`system|dark|light`), `preset` (`onyx|pearl|aurora`), `accent` (`blue|teal|violet`), `density` (`comfortable|compact`), `text_scale` (`100|115|130|150`)
+  - `motion` (`system|reduced|full`), `reduce_transparency` (0/1), `quality` (`auto|low|high`)
+  - `wallpaper_kind` (`none|builtin|local`), `wallpaper_asset_id` (required only for `local`; opaque lowercase 32-hex), `fit` (`fit|fill`), `dim` (0–100), `paused` (0/1)
+- **Defaults** (no row, or Reset): theme follows the legacy profile theme; Onyx is stock Dark, Pearl is stock Light; blue; comfortable; 100; motion System; Reduce transparency off; Auto; wallpaper None, Fill, dim 0, not paused. Presets set theme and accent in the draft only (Onyx: Dark + blue, Pearl: Light + blue, Aurora: Dark + teal); the Aurora background is the embedded static `builtin` gradient chosen in the Background control. "Customized" shows when settings differ from the preset recipe.
+- **Accent colors** (Dark / Light): blue is stock; teal `#59DDCC` / `#006F66`; violet `#C2ACFF` / `#5939A6`. Composed states are checked with palette contrast helpers; role-safe stock colors are the fallback. Status colors stay semantic.
+- **Density and scale:** Compact maps the 8/12/16/24 spacing steps to 6/8/12/18 and the 36 pt control height to a 32 pt minimum; controls never shrink below their measured wrapped text. Text scale multiplies every application `FontId` through shared typography helpers; OS DPI and hit testing are independent.
+- **Motion and transparency:** High contrast forces Solid and Reduced. Motion System follows the OS client-area animation preference (unknown means Reduced); Full opts into motion regardless. User Reduce transparency, or OS transparency off or unknown, forces opaque chrome.
+- **Actions:** `ApplyAppearance(Box<AppearanceApply>)` writes the full row in one transaction (publishing a staged managed asset first when one is attached); `ResetAppearance` deletes the row. Both use `RefreshScope::Appearance`, which stages only the optional appearance read. An unreadable or invalid row is logged without paths or personal data, surfaces a localized notice, and keeps the financial workspace available (solid legacy theme). Import validation rejects invalid appearance and aborts that import.
+- **Platform preferences:** `src/infrastructure/platform/windows_prefs.rs` (direct `windows-sys`, scoped `#[allow(unsafe_code)]`) behind a portable `PlatformPreferences` provider returns optional animation, high-contrast (plus system colors) and transparency (`EnableTransparency` DWORD). Read at startup and on focus regain/resume, plus a two-second check only while focused and visible. Failure returns unknown.
+- **Media** lives under `root/appearance/` as managed `<id>.media` files (opaque lowercase 32-hex ids). Sources are at most 16 MiB, 2048 px per axis and 300 frames; retained RGBA is at most 128 MiB (active + preview) after downscale, charged with checked `width * height * 4` before retention; quality tiers cap frames at 1920×1080 (Auto), 960×540 (Low) and 2048×2048 (High) and never upsample. The directory quota is 256 MiB and 32 files. Symlinks and reparse points are rejected. The file is published and synced before the DB transaction; a failed Apply leaves at most an unreferenced managed file. No automatic collection in 1.3. Database backups keep the reference and resolve it under the current root; a missing file falls back to solid with a localized notice.
+- **Playback rules:** GIF delays of 10 ms or less become 100 ms; absent loop metadata is one play-through, finite repeats follow the first play, infinite loops repeat; the last frame holds when finished. Uploads are at least 33.34 ms apart. Reduced motion shows frame 0; user Pause freezes the frame; blur, hidden or minimized suspends elapsed time without catch-up; at most two GPU textures with same-size sub-updates. No decorative wake-ups while paused, reduced or minimized.
 - **Rendering rules:**
   - Never use `egui::Image` or the `egui_extras` loaders for wallpaper. <!-- lint:allow -->
-  - Paint the wallpaper on `Order::Background` behind transparent panels.
-  - Use one or two GPU textures updated in place.
-  - Downscale frames at decode time to the largest display size.
-  - Budgets (source ≤ 16 MiB; retained ≤ 128 MiB after downscale) are enforced before retention.
-  - Minimum scrim opacity per theme is computed so text over pure white and pure black is ≥ 4.5:1; the dimming control cannot go below it.
-  - Glass is gated on `wgpu_render_state.is_some()` and on `examples/glass_spike.rs` passing its criteria.
-- **Windows preferences** (reduced motion, high contrast, transparency) are read in `src/infrastructure/platform/windows_prefs.rs` with a direct `windows-sys` dependency and a scoped `#[allow(unsafe_code)]`, and refreshed on focus and resume.
+  - Paint the wallpaper on `Order::Background` behind the shell chrome; cards, inputs, rows and modals stay opaque.
+  - Fit letterboxes on the palette canvas; Fill is a centered aspect-cover crop (one shared geometry helper).
+  - The scrim is `p.bg` at the minimum alpha computed in 8-bit steps so ordinary, muted and accent text over pure black and pure white is at least 4.5:1 and focus or essential icons at least 3:1; Dim is clamped to that floor at render time. High contrast omits the wallpaper. Missing media or a failed decode or texture uses a solid canvas plus a localized notice.
+- **Glass** is not selectable in 1.3. It needs a revised contract and every gate in the spike record (swapchain p95, focused idle, native DPI, iGPU/dGPU, device-loss fallback).
+- **Format 4** (written by 1.3) is format 3 plus optional `appearance` with the portable typed scalars and a `none|builtin` background. A local wallpaper exports as `none` while keeping fit, dim and paused; asset ids, paths and bytes are never exported. Formats 1–3 and a format-4 document without `appearance` clear the appearance row on replacement (solid legacy theme). A version above 4 is `TooNew` before body parsing.
 
 ### §14.3 1.4 Goals & closings (Draft)
 
@@ -595,3 +608,4 @@ Implementation design for 1.2.0 (schema 4, document format 3). Rationale and tes
 - 2026-11-18 — §11 adds a startup recovery probe distinguishing first launch, missing/empty with evidence or scan failures, indeterminate live metadata, and intent conflicts, plus durable `recovery-intent.json` reconciliation with checksum-verified publish and fail-closed rollback.
 - 2026-11-18 — §11 hardens non-clobbering file moves without destructor ownership of existing files, shares post-publish verification across normal and reconciled paths, rechecks live state at move/sidecar boundaries, keeps blocked recoverable directories non-fatal at startup, and documents `athena.lock` and process-kill vs power-loss boundaries.
 - 2026-11-18 — Froze §14.1 for 1.2.0 (schema 4, format 3): templates, dirty-draft guard, one-line entry, duplicate consent, day drill-down, insights, XLSX and tokens/icons. Synced §2 (release ledger), §8 (template actions, `RefreshScope::Templates`), §10 (format 3 envelope: required `templates`, accepted formats 1–3) and §12 (Quick Add template/one-line controls, Settings Templates page, icon rail). Historical 1.1 behavior is unchanged.
+- 2026-11-19 — Froze §14.2 for 1.3.0 (schema 5, format 4): single-row `appearance` preferences, Windows platform preferences, managed local wallpaper (static + GIF) with bounded decode/playback and a contrast-floor scrim, Settings → Appearance, and the portable local→none export rule. Synced §2 (release ledger), §8 (`ApplyAppearance`/`ResetAppearance`, `RefreshScope::Appearance`), §10 (format 4 envelope, accepted formats 1–4) and §12 (Appearance page). Glass stays unshipped behind the spike gates. Historical 1.1/1.2 behavior is unchanged.
