@@ -10,7 +10,9 @@ use crate::domain::category::Category;
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
-use crate::domain::reports::{CalendarMonthTotal, CategoryTotal, MonthSummary, PersonTotal};
+use crate::domain::reports::{
+    CalendarMonthTotal, CategoryTotal, DayActivity, InsightInputs, MonthSummary, PersonTotal,
+};
 use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::settlement::SettlementView;
 use crate::domain::template::Template;
@@ -31,6 +33,10 @@ struct LoadKey {
     filter: TxFilter,
     today: chrono::NaiveDate,
     screen: Screen,
+    /// The month whose day grid is shown, if any.
+    grid_month: Option<YearMonth>,
+    /// The selected day, if any.
+    day: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +54,12 @@ pub struct ViewModel {
     pub category_totals: Vec<CategoryTotal>,
     pub person_totals: Vec<PersonTotal>,
     pub calendar: Vec<CalendarMonthTotal>,
+    /// Days with live activity in the displayed grid month (sparse; the display zero-fills).
+    pub day_activity: Vec<DayActivity>,
+    /// Every live row (any kind) on the selected day.
+    pub day_rows: Vec<Transaction>,
+    /// Structured insight inputs for the viewed month; `None` if they could not be read.
+    pub insight: Option<InsightInputs>,
     /// Start balance plus all income, expenses and refunds, all time.
     pub balance: Money,
     /// Cumulative household settlement balances and suggested transfers as of `ui.month`.
@@ -91,6 +103,9 @@ impl ViewModel {
             category_totals: Vec::new(),
             person_totals: Vec::new(),
             calendar: Vec::new(),
+            day_activity: Vec::new(),
+            day_rows: Vec::new(),
+            insight: None,
             balance: Money::ZERO,
             settlement: None,
             settlement_unavailable: false,
@@ -169,6 +184,8 @@ impl ViewModel {
             filter: ui.filter.clone(),
             today: self.today,
             screen: ui.screen,
+            grid_month: ui.grid_month(),
+            day: ui.selected_day,
         }
     }
 
@@ -212,7 +229,11 @@ impl ViewModel {
                     .sync_filter_or_screen(store, ui, &prev, key)
                     .map(|()| true);
             }
-            if prev.filter == key.filter && prev.screen == key.screen {
+            if prev.filter == key.filter
+                && prev.screen == key.screen
+                && prev.grid_month == key.grid_month
+                && prev.day == key.day
+            {
                 return self.sync_calendar_year(store, ui, key).map(|()| true);
             }
         }
@@ -247,14 +268,16 @@ impl ViewModel {
             } else {
                 None
             };
-            Ok((transactions, trash, backups))
+            let (day_activity, day_rows) = read_days(conn, prev, &key)?;
+            Ok((transactions, trash, backups, day_activity, day_rows))
         })();
 
         match staged {
-            Ok((transactions, trash, backups)) => {
+            Ok((transactions, trash, backups, day_activity, day_rows)) => {
                 if let Some(txs) = transactions {
                     self.transactions = txs;
                 }
+                self.stage_days(day_activity, day_rows);
                 if ui.screen == Screen::Trash {
                     if let Some((count, items)) = trash {
                         self.trash_count = count;
@@ -277,11 +300,27 @@ impl ViewModel {
                 Ok(())
             }
             Err(err) => {
+                self.fail_day_cache();
                 self.failed_load_key = Some(key);
                 self.refresh_failed = true;
                 Err(err)
             }
         }
+    }
+
+    fn stage_days(&mut self, activity: Option<Vec<DayActivity>>, rows: Option<Vec<Transaction>>) {
+        if let Some(activity) = activity {
+            self.day_activity = activity;
+        }
+        if let Some(rows) = rows {
+            self.day_rows = rows;
+        }
+    }
+
+    /// A failed read leaves no day detail behind to be mistaken for current data.
+    fn fail_day_cache(&mut self) {
+        self.day_activity.clear();
+        self.day_rows.clear();
     }
 
     /// Refresh only the backups listing (used after a failed restore or import that already wrote
@@ -304,6 +343,7 @@ impl ViewModel {
                 Ok(())
             }
             Err(err) => {
+                self.fail_day_cache();
                 self.failed_load_key = Some(key);
                 self.refresh_failed = true;
                 Err(err)
@@ -332,6 +372,7 @@ impl ViewModel {
                 Ok(())
             }
             Err(err) => {
+                self.fail_day_cache();
                 self.failed_load_key = Some(key);
                 self.refresh_failed = true;
                 Err(err)
@@ -389,6 +430,8 @@ impl ViewModel {
                 let category_totals = reports::category_totals(conn, ui.month)?;
                 let person_totals = reports::person_totals(conn, ui.month)?;
                 let calendar = reports::year_calendar(conn, ui.calendar_year)?;
+                let (day_activity, day_rows) = read_all_days(conn, key)?;
+                let insight = read_insight(conn, ui.month, key.today);
                 let start = profile.as_ref().map_or(Money::ZERO, |p| p.start_balance);
                 let balance = reports::tracked_balance(conn, start)?;
                 let trash_count = trash_repo::count(conn)?;
@@ -426,6 +469,9 @@ impl ViewModel {
                 self.category_totals = category_totals;
                 self.person_totals = person_totals;
                 self.calendar = calendar;
+                self.day_activity = day_activity;
+                self.day_rows = day_rows;
+                self.insight = insight;
                 self.balance = balance;
                 self.settlement = settlement;
                 self.settlement_unavailable = settlement_unavailable;
@@ -441,6 +487,75 @@ impl ViewModel {
         }
         Ok(())
     }
+}
+
+/// The month's insight inputs; a failed read hides the card instead of failing the screen.
+fn read_insight(
+    conn: &rusqlite::Connection,
+    month: YearMonth,
+    today: chrono::NaiveDate,
+) -> Option<InsightInputs> {
+    match reports::insight_inputs(conn, month, today) {
+        Ok(inputs) => Some(inputs),
+        Err(err) => {
+            tracing::warn!("insight unavailable: {err}");
+            None
+        }
+    }
+}
+
+/// The day grid and day detail to restage, each only when it changed.
+type DayReads = (Option<Vec<DayActivity>>, Option<Vec<Transaction>>);
+
+/// The whole day cache for a full reload.
+fn read_all_days(
+    conn: &rusqlite::Connection,
+    key: &LoadKey,
+) -> Result<(Vec<DayActivity>, Vec<Transaction>)> {
+    let activity = match key.grid_month {
+        Some(month) => reports::day_activity(conn, month)?,
+        None => Vec::new(),
+    };
+    Ok((activity, day_rows(conn, key.day)?))
+}
+
+/// What the day cache needs after a selection change: selecting a day refreshes only the detail,
+/// and a text filter change refreshes neither.
+fn read_days(conn: &rusqlite::Connection, prev: &LoadKey, key: &LoadKey) -> Result<DayReads> {
+    let grid_changed = prev.grid_month != key.grid_month;
+    let activity = if grid_changed {
+        Some(match key.grid_month {
+            Some(month) => reports::day_activity(conn, month)?,
+            None => Vec::new(),
+        })
+    } else {
+        None
+    };
+    let rows = if grid_changed || prev.day != key.day {
+        Some(day_rows(conn, key.day)?)
+    } else {
+        None
+    };
+    Ok((activity, rows))
+}
+
+/// Every live row of any kind on `day`, newest id last; empty when no day is selected.
+fn day_rows(
+    conn: &rusqlite::Connection,
+    day: Option<chrono::NaiveDate>,
+) -> Result<Vec<Transaction>> {
+    let Some(day) = day else {
+        return Ok(Vec::new());
+    };
+    let mut rows = transactions_repo::list(
+        conn,
+        &TxFilter {
+            day: Some(day),
+            ..TxFilter::default()
+        },
+    )?;
+    rows.sort_by_key(|t| t.id);
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -911,5 +1026,185 @@ mod tests {
         let snap2 = outcome2.notice.and_then(|n| n.snapshot).unwrap();
         assert_eq!(core.vm.backups.len(), 2);
         assert!(core.vm.backups.iter().any(|b| b.path == snap2));
+    }
+
+    /// A store with salary, a market expense, a refund and a deleted row across two days.
+    fn day_store(name: &str) -> (Store, i64) {
+        use crate::app::actions::AppAction;
+        use crate::domain::transaction::TransactionType;
+        use crate::shared::test_fixtures::{date, draft_with};
+
+        let mut store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join(name)),
+        );
+        let mut add = |title: &str, kind, cents, day| {
+            let mut d = draft_with(vec![]);
+            d.title = title.into();
+            d.kind = kind;
+            d.amount = Money::from_cents(cents);
+            d.date = date(2026, 11, day);
+            store.apply(AppAction::SaveTransaction(d)).unwrap();
+        };
+        add("Salary", TransactionType::Income, 300_000, 5);
+        add("Market", TransactionType::Expense, 4_000, 10);
+        add("Refund", TransactionType::Refund, 1_000, 10);
+        add("Gone", TransactionType::Expense, 700, 10);
+        let gone = transactions_repo::list(store.db().conn(), &TxFilter::default())
+            .unwrap()
+            .iter()
+            .find(|t| t.title == "Gone")
+            .unwrap()
+            .id;
+        store.apply(AppAction::DeleteTransaction(gone)).unwrap();
+        (store, gone)
+    }
+
+    fn month_ui() -> UiState {
+        let mut ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        ui.month_days = true;
+        ui
+    }
+
+    #[test]
+    fn day_cache_separates_spending_heat_from_activity_count() {
+        use crate::shared::test_fixtures::date;
+        let (store, _) = day_store("athena-vm-day-cache");
+        let mut ui = month_ui();
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 18);
+        vm.sync(&store, &ui).unwrap();
+
+        let on = |d| vm.day_activity.iter().find(|a| a.date == date(2026, 11, d));
+        let salary = on(5).expect("a salary-only day is discoverable");
+        assert_eq!(salary.activity_count, 1);
+        assert_eq!(salary.spending, Money::ZERO, "income is not spending");
+        let market = on(10).unwrap();
+        assert_eq!(market.activity_count, 2, "the trashed row is not activity");
+        assert_eq!(market.spending, Money::from_cents(3_000));
+        assert!(vm.day_rows.is_empty(), "nothing selected yet");
+
+        // Selecting a day loads that day's live rows, newest id last, trash excluded.
+        ui.select_day(date(2026, 11, 10));
+        vm.sync(&store, &ui).unwrap();
+        let titles: Vec<_> = vm.day_rows.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Market", "Refund"]);
+
+        // An empty day is selectable and shows no rows.
+        ui.select_day(date(2026, 11, 20));
+        vm.sync(&store, &ui).unwrap();
+        assert!(vm.day_rows.is_empty());
+
+        // Changing month clears the selection and the grid follows the month.
+        ui.select_day(date(2026, 11, 10));
+        ui.set_month(YearMonth::new(2026, 12).unwrap());
+        assert_eq!(ui.selected_day, None);
+        vm.sync(&store, &ui).unwrap();
+        assert!(vm.day_activity.is_empty() && vm.day_rows.is_empty());
+    }
+
+    #[test]
+    fn day_grid_months_cross_december_january_and_leap_february() {
+        use crate::shared::test_fixtures::{date, draft_with};
+        let mut store = Store::new(
+            Db::open_in_memory().unwrap(),
+            AppDirs::from_root(std::env::temp_dir().join("athena-vm-day-edges")),
+        );
+        for (y, m, d) in [(2025, 12, 31), (2026, 1, 1), (2024, 2, 29)] {
+            let mut draft = draft_with(vec![]);
+            draft.date = date(y, m, d);
+            store
+                .apply(crate::app::actions::AppAction::SaveTransaction(draft))
+                .unwrap();
+        }
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 1, 15);
+        let mut ui = month_ui();
+        for (month, last_day) in [
+            (YearMonth::new(2025, 12).unwrap(), 31),
+            (YearMonth::new(2026, 1).unwrap(), 31),
+            (YearMonth::new(2024, 2).unwrap(), 29),
+        ] {
+            ui.set_month(month);
+            vm.sync(&store, &ui).unwrap();
+            let days = crate::domain::reports::zero_filled_days(month, &vm.day_activity);
+            assert_eq!(days.len(), last_day, "{month:?}");
+            assert_eq!(days.iter().map(|d| d.activity_count).sum::<i64>(), 1);
+        }
+    }
+
+    #[test]
+    fn midnight_reloads_the_insight_through_the_new_today() {
+        use crate::domain::reports::MonthPhase;
+        use crate::shared::test_fixtures::date;
+        let (store, _) = day_store("athena-vm-insight-midnight");
+        let ui = UiState::new(YearMonth::new(2026, 11).unwrap());
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 7);
+        vm.sync(&store, &ui).unwrap();
+        // Through the 7th only the salary counts: the 10th is still ahead.
+        let first = vm.insight.clone().unwrap();
+        assert_eq!(first.current.count, 1);
+        assert_eq!(first.phase, MonthPhase::ToDate);
+        vm.today = date(2026, 11, 12);
+        assert!(vm.sync(&store, &ui).unwrap(), "midnight changes the key");
+        assert_eq!(vm.insight.as_ref().unwrap().current.count, 3);
+        vm.today = date(2026, 12, 1);
+        vm.sync(&store, &ui).unwrap();
+        assert_eq!(vm.insight.as_ref().unwrap().phase, MonthPhase::Completed);
+    }
+
+    #[test]
+    fn a_text_filter_change_reloads_only_the_register() {
+        use crate::shared::test_fixtures::date;
+        let (store, _) = day_store("athena-vm-filter-only");
+        let mut ui = month_ui();
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 18);
+        ui.select_day(date(2026, 11, 10));
+        vm.sync(&store, &ui).unwrap();
+        let (activity, rows) = (vm.day_activity.clone(), vm.day_rows.clone());
+        ui.filter.text = "salary".into();
+        assert!(vm.sync(&store, &ui).unwrap());
+        assert_eq!(vm.transactions.len(), 1, "the register is filtered");
+        assert_eq!(
+            vm.day_activity, activity,
+            "the grid ignores register filters"
+        );
+        assert_eq!(vm.day_rows, rows, "so does the day detail");
+    }
+
+    #[test]
+    fn a_failed_day_read_clears_the_day_cache_and_suppresses_retry() {
+        use crate::shared::test_fixtures::date;
+        let (store, _) = day_store("athena-vm-day-fail");
+        let mut ui = month_ui();
+        let mut vm = ViewModel::new(Language::En);
+        vm.today = date(2026, 11, 18);
+        ui.select_day(date(2026, 11, 5));
+        vm.sync(&store, &ui).unwrap();
+        assert_eq!(vm.day_rows.len(), 1);
+        // Corrupt the selected day's row so only the detail read fails.
+        let conn = store.db().conn();
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        conn.execute(
+            "UPDATE transactions SET kind = 'bogus' WHERE title = 'Salary'",
+            [],
+        )
+        .unwrap();
+        ui.select_day(date(2026, 11, 10));
+        vm.sync(&store, &ui).unwrap();
+        ui.select_day(date(2026, 11, 5));
+        assert!(vm.sync(&store, &ui).is_err());
+        assert!(vm.refresh_failed);
+        assert!(
+            vm.day_rows.is_empty() && vm.day_activity.is_empty(),
+            "no stale detail is left to be mistaken for current data"
+        );
+        assert!(
+            !vm.sync(&store, &ui).unwrap(),
+            "same key is not retried per frame"
+        );
     }
 }

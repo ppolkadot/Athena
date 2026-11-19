@@ -213,6 +213,50 @@ fn snapshot_calendar() {
     results.unwrap();
 }
 
+/// The Month screen with its day grid open and a day selected, wide and narrow.
+#[test]
+fn snapshot_month_day_detail_and_insight() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        for (size, name) in [
+            (egui::Vec2::new(1280.0, 1000.0), "month_days"),
+            (egui::Vec2::new(640.0, 1500.0), "month_days_narrow"),
+        ] {
+            let mut core = onboarded_core(language, theme, true);
+            core.ui.month_days = true;
+            core.ui
+                .select_day(crate::shared::test_fixtures::date(2026, 11, 5));
+            snapshot(
+                &mut results,
+                &format!("{name}_{tag}"),
+                AthenaApp::for_test(core),
+                size,
+            );
+        }
+    }
+    results.unwrap();
+}
+
+/// The Calendar with one month's grid open.
+#[test]
+fn snapshot_calendar_days() {
+    let mut results = SnapshotResults::new();
+    for (language, theme, tag) in variants() {
+        let mut core = onboarded_core(language, theme, true);
+        core.set_screen(Screen::Calendar);
+        core.ui.calendar_days = crate::domain::date::YearMonth::new(2026, 11);
+        core.ui
+            .select_day(crate::shared::test_fixtures::date(2026, 11, 8));
+        snapshot(
+            &mut results,
+            &format!("calendar_days_{tag}"),
+            AthenaApp::for_test(core),
+            SIZE,
+        );
+    }
+    results.unwrap();
+}
+
 #[test]
 fn snapshot_settings() {
     let mut results = SnapshotResults::new();

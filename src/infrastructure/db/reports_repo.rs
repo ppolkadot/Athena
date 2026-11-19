@@ -8,7 +8,9 @@ use rusqlite::{Connection, params};
 
 use crate::domain::date::YearMonth;
 use crate::domain::money::Money;
-use crate::domain::reports::{CategoryTotal, DayTotal, MonthSummary, PersonTotal};
+use crate::domain::reports::{
+    CategoryTotal, DayActivity, DayTotal, LargestExpense, MonthSummary, PersonTotal,
+};
 use crate::shared::error::{AppError, Result};
 
 const SPEND_SIGN: &str =
@@ -112,10 +114,23 @@ pub fn summaries_for_year(
 /// Database errors.
 pub fn category_totals(conn: &Connection, month: YearMonth) -> Result<Vec<CategoryTotal>> {
     let (start, end) = month.bounds();
+    category_totals_between(conn, start, end)
+}
+
+/// [`category_totals`] over a half-open date range. Ties keep a stable order: amount descending,
+/// then Uncategorized first, then ascending category id.
+///
+/// # Errors
+/// Database errors.
+pub fn category_totals_between(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<CategoryTotal>> {
     let sql = format!(
         "SELECT t.category_id, SUM({SPEND_SIGN}) AS net FROM live_transactions t
          WHERE t.date >= ?1 AND t.date < ?2 AND t.kind IN ('expense', 'refund')
-         GROUP BY t.category_id ORDER BY net DESC, t.category_id"
+         GROUP BY t.category_id ORDER BY net DESC, t.category_id IS NOT NULL, t.category_id"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -136,6 +151,18 @@ pub fn category_totals(conn: &Connection, month: YearMonth) -> Result<Vec<Catego
 /// Database errors.
 pub fn person_totals(conn: &Connection, month: YearMonth) -> Result<Vec<PersonTotal>> {
     let (start, end) = month.bounds();
+    person_totals_between(conn, start, end)
+}
+
+/// [`person_totals`] over a half-open date range.
+///
+/// # Errors
+/// Database errors.
+pub fn person_totals_between(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<PersonTotal>> {
     let sql = "SELECT a.person_id,
             SUM(CASE t.kind WHEN 'expense' THEN a.amount_cents WHEN 'refund' THEN -a.amount_cents END) AS net
         FROM allocations a JOIN live_transactions t ON t.id = a.transaction_id
@@ -151,6 +178,94 @@ pub fn person_totals(conn: &Connection, month: YearMonth) -> Result<Vec<PersonTo
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// The largest expense in a half-open date range: amount descending, then ascending id.
+///
+/// # Errors
+/// Database errors.
+pub fn largest_expense_between(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Option<LargestExpense>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.title, t.amount_cents FROM live_transactions t
+         WHERE t.date >= ?1 AND t.date < ?2 AND t.kind = 'expense'
+         ORDER BY t.amount_cents DESC, t.id LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![text(start), text(end)], |r| {
+        Ok(LargestExpense {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            amount: Money::from_cents(r.get(2)?),
+        })
+    })?;
+    Ok(rows.next().transpose()?)
+}
+
+/// Every day of a month with live activity, oldest first. All kinds count once toward the
+/// activity count; spending is expenses minus refunds only.
+///
+/// # Errors
+/// Database errors.
+pub fn day_activity(conn: &Connection, month: YearMonth) -> Result<Vec<DayActivity>> {
+    let (start, end) = month.bounds();
+    let sql = format!(
+        "SELECT t.date, COALESCE(SUM({SPEND_SIGN}), 0), COUNT(*) FROM live_transactions t
+         WHERE t.date >= ?1 AND t.date < ?2 GROUP BY t.date ORDER BY t.date"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![text(start), text(end)], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (date, spending, count) = row?;
+        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+            .map_err(|_| AppError::Validation(format!("bad stored date {date}")))?;
+        out.push(DayActivity {
+            date,
+            spending: Money::from_cents(spending),
+            activity_count: count,
+        });
+    }
+    Ok(out)
+}
+
+/// Live rows (every kind) per month of one calendar year, for months with any activity.
+///
+/// # Errors
+/// Database errors; [`AppError::Validation`] for an out-of-range year.
+pub fn activity_counts_for_year(conn: &Connection, year: i32) -> Result<HashMap<YearMonth, i64>> {
+    let start =
+        YearMonth::new(year, 1).ok_or_else(|| AppError::Validation("year out of range".into()))?;
+    let end = YearMonth::new(year + 1, 1)
+        .ok_or_else(|| AppError::Validation("year out of range".into()))?;
+    let mut stmt = conn.prepare(
+        "SELECT substr(t.date, 6, 2), COUNT(*) FROM live_transactions t
+         WHERE t.date >= ?1 AND t.date < ?2 GROUP BY substr(t.date, 6, 2)",
+    )?;
+    let rows = stmt.query_map(
+        params![text(start.first_day()), text(end.first_day())],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (month, count) = row?;
+        if let Some(ym) = month
+            .parse::<u32>()
+            .ok()
+            .and_then(|m| YearMonth::new(year, m))
+        {
+            out.insert(ym, count);
+        }
+    }
+    Ok(out)
 }
 
 /// Net spending per day with activity, oldest first.
