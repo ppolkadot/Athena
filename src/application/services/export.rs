@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn export_writes_format_3_with_record_timestamps_and_settlements() {
+    fn export_writes_format_4_with_record_timestamps_and_settlements() {
         let db = crate::infrastructure::db::Db::open_in_memory().unwrap();
         seed_all_kinds(&db);
         let dir = tempfile::tempdir().unwrap();
@@ -151,7 +151,11 @@ mod tests {
         assert!(text.contains("\"templates\": []"), "{text}");
         let doc: DocumentV3 = serde_json::from_str(&text).unwrap();
         assert_eq!(doc.format, "athena-profile");
-        assert_eq!(doc.format_version, 3);
+        assert_eq!(doc.format_version, FORMAT_VERSION);
+        assert!(
+            !text.contains("\"appearance\""),
+            "no appearance row means no section"
+        );
         let settlement = doc
             .transactions
             .iter()

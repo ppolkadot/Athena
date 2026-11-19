@@ -1199,6 +1199,7 @@ mod tests {
             transactions: vec![],
             templates: vec![],
             widened_categories: Vec::new(),
+            appearance: None,
         }
     }
 

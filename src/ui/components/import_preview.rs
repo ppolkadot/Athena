@@ -26,7 +26,7 @@ pub enum ImportPreviewChoice {
 
 /// Draw the import preview dialog. Returns the user's choice once they confirm or cancel (Esc
 /// counts as cancel).
-#[allow(clippy::must_use_candidate)]
+#[allow(clippy::must_use_candidate, clippy::too_many_lines)]
 pub fn show(
     ctx: &egui::Context,
     dialog: &ImportPreviewDialog,
@@ -39,7 +39,8 @@ pub fn show(
     let format_label = match dialog.plan.format_version {
         1 => s.import_preview_format_v1,
         2 => s.import_preview_format_v2,
-        _ => s.import_preview_format_v3,
+        3 => s.import_preview_format_v3,
+        _ => s.import_preview_format_v4,
     };
     let meta = s
         .import_preview_meta
@@ -97,6 +98,18 @@ pub fn show(
         }
         ui.add_space(8.0);
         ui.label(RichText::new(counts).color(p.text));
+        ui.add_space(6.0);
+        // Appearance is replaced too: by the file's settings, or back to the defaults.
+        let appearance_note = if dialog.plan.appearance.is_some() {
+            s.ap_import_has
+        } else {
+            s.ap_import_none
+        };
+        ui.label(
+            RichText::new(appearance_note)
+                .text_style(egui::TextStyle::Small)
+                .color(p.muted),
+        );
         ui.add_space(8.0);
         ui.label(
             RichText::new(s.import_preview_consequence)
@@ -160,6 +173,7 @@ mod tests {
                 categories: vec![],
                 transactions: vec![],
                 templates: vec![],
+                appearance: None,
             }),
             current_people: 3,
             current_categories: 12,

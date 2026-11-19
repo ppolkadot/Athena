@@ -49,6 +49,17 @@ impl PlatformPreferences for UnknownPlatform {
     }
 }
 
+/// A provider that always reports the same state (tests).
+#[cfg(test)]
+pub struct FixedPlatform(pub PlatformPrefs);
+
+#[cfg(test)]
+impl PlatformPreferences for FixedPlatform {
+    fn read(&self) -> PlatformPrefs {
+        self.0
+    }
+}
+
 /// The provider for the running OS.
 #[must_use]
 pub fn system_provider() -> Box<dyn PlatformPreferences> {

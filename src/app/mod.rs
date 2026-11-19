@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod appearance_edit;
 pub mod files;
 pub mod instance;
 pub mod modals;
@@ -8,6 +9,8 @@ pub mod store;
 pub mod ui_state;
 pub mod view_model;
 
+#[cfg(test)]
+mod appearance_flow_tests;
 #[cfg(test)]
 mod appearance_platform_tests;
 #[cfg(test)]
@@ -21,6 +24,7 @@ mod wallpaper_tests;
 
 use eframe::egui::{self, Key, Modifiers};
 
+use self::appearance_edit::{AppearanceEdit, PreviewStatus};
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::appearance::{AppearancePrefs, Wallpaper};
 use crate::domain::category::Category;
@@ -40,12 +44,14 @@ use crate::shared::error::{AppError, Result};
 use crate::ui::appearance::background::Backdrop;
 use crate::ui::appearance::{WallpaperRuntime, Wanted};
 use crate::ui::components::confirm_dialog::{self, ConfirmChoice, ConfirmDialog};
+use crate::ui::components::discard_prompt::{self, DiscardChoice};
 use crate::ui::components::import_preview::{self, ImportPreviewChoice, ImportPreviewDialog};
 use crate::ui::components::settlement_card::SettlementEvent;
 use crate::ui::components::toast::{self, Toast, ToastAction};
 use crate::ui::quick_add::{self, QuickAddState};
 use crate::ui::screens::ScreenEvent;
 use crate::ui::screens::onboarding::{self, OnboardingIssue, OnboardingState};
+use crate::ui::screens::settings::SettingsPage;
 use crate::ui::theme::active::StyleKey;
 use crate::ui::theme::effective::{self, EffectiveAppearance};
 use crate::ui::{shell, theme};
@@ -65,6 +71,15 @@ use self::navigation::Screen;
 use self::store::Store;
 use self::ui_state::UiState;
 use self::view_model::ViewModel;
+
+/// What the user was doing when the Keep editing / Discard prompt for Appearance opened. Discard
+/// performs it once.
+#[derive(Debug, Clone, PartialEq)]
+enum AppearanceIntent {
+    Navigate(Screen),
+    SettingsPage(SettingsPage),
+    Event(ScreenEvent),
+}
 
 /// Thin composition root. It owns the three state parts and holds no logic: every method builds an
 /// [`AppAction`] (or sets UI state), applies it through the store, and refreshes the view model.
@@ -294,6 +309,13 @@ pub struct AthenaApp {
     announced_media_failure: Option<MediaError>,
     /// Tests pin the monotonic clock the wallpaper playback reads.
     pinned_instant: Option<std::time::Instant>,
+    /// A leave or import/restore that is waiting on the Appearance discard prompt.
+    appearance_intent: Option<AppearanceIntent>,
+    /// Move focus to Keep editing on the first frame of the prompt.
+    appearance_prompt_focus: bool,
+    /// Tests answer the wallpaper file dialog from here.
+    #[cfg(test)]
+    test_wallpaper_picks: Vec<Option<std::path::PathBuf>>,
     onboarding: OnboardingState,
     quick_add: Option<QuickAddState>,
     confirm: Option<ConfirmDialog>,
@@ -340,6 +362,10 @@ impl AthenaApp {
             media_failure: None,
             announced_media_failure: None,
             pinned_instant: None,
+            appearance_intent: None,
+            appearance_prompt_focus: false,
+            #[cfg(test)]
+            test_wallpaper_picks: Vec::new(),
             onboarding,
             quick_add: None,
             confirm: None,
@@ -432,6 +458,17 @@ impl AthenaApp {
             .appearance_preview
             .as_ref()
             .map(|p| p.wallpaper.clone());
+        if self.seen_media_epoch != self.core.media_epoch {
+            // Reset, import or restore replaced what was applied: an open draft is stale, and the
+            // wallpaper rebinds even if the new preferences compare equal to the old.
+            self.seen_media_epoch = self.core.media_epoch;
+            self.core.ui.settings.appearance = None;
+            self.appearance_preview = None;
+            self.preview_staged = None;
+            if let Some(runtime) = self.wallpaper.as_mut() {
+                runtime.invalidate_all();
+            }
+        }
         let wanted =
             applied != Wallpaper::None || preview.as_ref().is_some_and(|w| *w != Wallpaper::None);
         if !wanted && self.wallpaper.is_none() {
@@ -444,10 +481,6 @@ impl AthenaApp {
         let runtime = self
             .wallpaper
             .get_or_insert_with(|| WallpaperRuntime::new(ctx));
-        if self.seen_media_epoch != self.core.media_epoch {
-            runtime.invalidate_all();
-            self.seen_media_epoch = self.core.media_epoch;
-        }
         let store = MediaStore::new(self.core.store.dirs());
         let (focused, minimized) =
             ctx.input(|i| (i.focused, i.viewport().minimized.unwrap_or(false)));
@@ -469,7 +502,7 @@ impl AthenaApp {
         if let Some(wake) = wake {
             ctx.request_repaint_after(wake);
         }
-        self.media_failure = runtime.failure(preview.is_some());
+        self.media_failure = runtime.displayed_failure();
         if self.media_failure != self.announced_media_failure {
             self.announced_media_failure = self.media_failure;
             if let Some(error) = self
@@ -497,9 +530,35 @@ impl AthenaApp {
     /// Act on what a screen asked for. Returns `false` when an applied action was refused.
     #[allow(clippy::too_many_lines)]
     fn handle_screen_event(&mut self, ctx: &egui::Context, event: ScreenEvent) -> bool {
-        let idle =
-            self.quick_add.is_none() && self.confirm.is_none() && self.import_preview.is_none();
+        let idle = self.quick_add.is_none()
+            && self.confirm.is_none()
+            && self.import_preview.is_none()
+            && self.appearance_intent.is_none();
+        if idle
+            && matches!(
+                event,
+                ScreenEvent::PickImportFile
+                    | ScreenEvent::RequestRestoreListed(_)
+                    | ScreenEvent::PickRestoreFile
+            )
+            && !self.guard_appearance(ctx, AppearanceIntent::Event(event.clone()))
+        {
+            return true;
+        }
         match event {
+            ScreenEvent::PickWallpaper if idle => self.pick_wallpaper(),
+            ScreenEvent::ApplyAppearance if idle => self.apply_appearance(ctx),
+            ScreenEvent::ResetAppearance if idle => {
+                let s = strings(self.core.vm.language());
+                self.remember_modal_opener(ctx);
+                self.confirm = Some(ConfirmDialog {
+                    title: s.ap_reset_title.to_owned(),
+                    body: s.ap_reset_body.to_owned(),
+                    confirm_label: s.ap_reset_confirm.to_owned(),
+                    danger: false,
+                    action: AppAction::ResetAppearance,
+                });
+            }
             ScreenEvent::NewTransaction if self.quick_add.is_none() => {
                 self.remember_modal_opener(ctx);
                 self.open_quick_add();
@@ -727,6 +786,9 @@ impl AthenaApp {
             media_failure: None,
             announced_media_failure: None,
             pinned_instant: None,
+            appearance_intent: None,
+            appearance_prompt_focus: false,
+            test_wallpaper_picks: Vec::new(),
             onboarding: OnboardingState::new(core.vm.language()),
             core,
             quick_add: None,
@@ -749,6 +811,20 @@ impl AthenaApp {
         let mut app = Self::for_test(core);
         app.platform = PlatformWatch::new(provider, std::time::Instant::now());
         app
+    }
+
+    /// Whether the wallpaper shown has finished loading (or failed), so a snapshot is stable.
+    #[cfg(test)]
+    pub(crate) fn wallpaper_settled_for_test(&self) -> bool {
+        let wanted = self.look.wallpaper != Wallpaper::None;
+        match (&self.wallpaper, wanted) {
+            (_, false) => true,
+            (None, true) => false,
+            (Some(rt), true) => {
+                !rt.displayed_loading()
+                    && (rt.is_ready(false) || rt.is_ready(true) || rt.displayed_failure().is_some())
+            }
+        }
     }
 
     #[cfg(test)]
@@ -856,7 +932,11 @@ impl AthenaApp {
             return;
         }
         let ctx = ui.ctx().clone();
-        if self.quick_add.is_none() && self.confirm.is_none() && self.import_preview.is_none() {
+        if self.quick_add.is_none()
+            && self.confirm.is_none()
+            && self.import_preview.is_none()
+            && self.appearance_intent.is_none()
+        {
             if self.pending_focus_restore.is_some() {
                 if ctx.memory(|m| m.top_modal_layer().is_none()) {
                     if let Some(id) = self.pending_focus_restore.take() {
@@ -872,7 +952,7 @@ impl AthenaApp {
             }
             for &(key, screen) in &navigation::SHORTCUTS {
                 if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, key)) {
-                    self.core.set_screen(screen);
+                    self.navigate(&ctx, screen);
                 }
             }
             let text_focused = ctx
@@ -887,10 +967,12 @@ impl AthenaApp {
             }
         }
         let backdrop = self.update_wallpaper(&ctx);
+        let page_before = self.core.ui.settings.page;
         let output = shell::show_with(ui, &self.core.vm, &mut self.core.ui, &backdrop);
         if let Some(screen) = output.navigate {
-            self.core.set_screen(screen);
+            self.navigate(&ctx, screen);
         }
+        self.guard_appearance_page(&ctx, page_before);
         let mut settings_failed = false;
         for event in output.events {
             // After one refused settings change, the rest of that batch is dropped.
@@ -900,6 +982,7 @@ impl AthenaApp {
             settings_failed |= !self.handle_screen_event(&ctx, event);
         }
 
+        self.sync_appearance_session(&ctx);
         self.handle_modals(&ctx);
         if let Some(undo_action) = toast::show(
             &ctx,
@@ -929,7 +1012,179 @@ impl AthenaApp {
         }
     }
 
+    /// Whether the open Appearance session has changes that are not applied yet.
+    fn appearance_dirty(&self) -> bool {
+        self.core
+            .ui
+            .settings
+            .appearance
+            .as_ref()
+            .is_some_and(AppearanceEdit::is_dirty)
+    }
+
+    /// Run `intent` now, or park it behind the Keep editing / Discard prompt when the Appearance
+    /// draft is dirty. Returns whether it may proceed now.
+    fn guard_appearance(&mut self, ctx: &egui::Context, intent: AppearanceIntent) -> bool {
+        if !self.appearance_dirty() {
+            return true;
+        }
+        if self.appearance_intent.is_none() {
+            self.remember_modal_opener(ctx);
+            self.appearance_intent = Some(intent);
+            self.appearance_prompt_focus = true;
+            ctx.request_repaint();
+        }
+        false
+    }
+
+    /// Switch screens, guarding a dirty Appearance draft.
+    fn navigate(&mut self, ctx: &egui::Context, screen: Screen) {
+        if screen != self.core.ui.screen
+            && self.core.ui.screen == Screen::Settings
+            && !self.guard_appearance(ctx, AppearanceIntent::Navigate(screen))
+        {
+            return;
+        }
+        self.core.set_screen(screen);
+    }
+
+    /// A Settings sub-page switch away from a dirty Appearance draft is undone and prompted.
+    fn guard_appearance_page(&mut self, ctx: &egui::Context, before: SettingsPage) {
+        let now = self.core.ui.settings.page;
+        if before == SettingsPage::Appearance && now != before && self.appearance_dirty() {
+            self.core.ui.settings.page = before;
+            self.guard_appearance(ctx, AppearanceIntent::SettingsPage(now));
+        }
+    }
+
+    fn perform_intent(&mut self, ctx: &egui::Context, intent: AppearanceIntent) {
+        match intent {
+            AppearanceIntent::Navigate(screen) => self.core.set_screen(screen),
+            AppearanceIntent::SettingsPage(page) => self.core.ui.settings.page = page,
+            AppearanceIntent::Event(event) => {
+                self.handle_screen_event(ctx, event);
+            }
+        }
+    }
+
+    /// Open the file dialog and stage the chosen image for the preview.
+    fn pick_wallpaper(&mut self) {
+        #[cfg(test)]
+        let picked = if self.test_wallpaper_picks.is_empty() {
+            None
+        } else {
+            self.test_wallpaper_picks.remove(0)
+        };
+        #[cfg(not(test))]
+        let picked = files::pick_wallpaper_path();
+        let Some(path) = picked else { return };
+        let store = MediaStore::new(self.core.store.dirs());
+        let staged = crate::infrastructure::media::assets::read_source(&path)
+            .and_then(|bytes| store.stage(std::sync::Arc::new(bytes)));
+        if let Some(edit) = self.core.ui.settings.appearance.as_mut() {
+            match staged {
+                Ok(staged) => edit.choose_file(staged),
+                Err(error) => edit.pick_error = Some(error),
+            }
+        }
+    }
+
+    /// Commit the Appearance draft. A failure keeps the draft, the staged file and the current
+    /// wallpaper, and is shown on the page.
+    fn apply_appearance(&mut self, ctx: &egui::Context) {
+        let Some(edit) = self.core.ui.settings.appearance.as_mut() else {
+            return;
+        };
+        if !edit.can_apply() {
+            return;
+        }
+        let action = edit.apply_action();
+        match self.core.apply(action) {
+            Ok(outcome) => {
+                self.core.ui.settings.appearance = None;
+                self.appearance_preview = None;
+                self.preview_staged = None;
+                self.raise_toast(ctx, outcome.toast);
+            }
+            Err(err) => {
+                tracing::warn!("appearance could not be applied: {err}");
+                if let Some(edit) = self.core.ui.settings.appearance.as_mut() {
+                    edit.apply_failed = true;
+                    edit.apply_error = match err {
+                        AppError::Media(error) => Some(error),
+                        _ => None,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Keep the live preview in step with the open Appearance draft: end the session when the
+    /// page is left, publish the draft and its staged file to the shell, and report decode status
+    /// and effective fallbacks back to the page.
+    fn sync_appearance_session(&mut self, ctx: &egui::Context) {
+        let on_page = self.core.ui.screen == Screen::Settings
+            && self.core.ui.settings.page == SettingsPage::Appearance;
+        if !on_page && self.appearance_intent.is_none() {
+            self.core.ui.settings.appearance = None;
+        }
+        let (draft, staged) = self
+            .core
+            .ui
+            .settings
+            .appearance
+            .as_ref()
+            .map_or((None, None), |e| (Some(e.draft.clone()), e.staged.clone()));
+        if draft != self.appearance_preview {
+            ctx.request_repaint();
+        }
+        self.appearance_preview = draft;
+        self.preview_staged = staged;
+        let loading = self
+            .wallpaper
+            .as_ref()
+            .is_some_and(WallpaperRuntime::displayed_loading);
+        let failure = self
+            .wallpaper
+            .as_ref()
+            .and_then(WallpaperRuntime::displayed_failure);
+        let look = &self.look;
+        if let Some(edit) = self.core.ui.settings.appearance.as_mut() {
+            edit.status = PreviewStatus {
+                loading,
+                failure,
+                high_contrast: look.high_contrast,
+                reduced_motion: look.reduced_motion,
+                motion_forced_by_os: look.motion_forced && !look.high_contrast,
+                transparency_forced: look.transparency_forced,
+            };
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn handle_modals(&mut self, ctx: &egui::Context) {
+        if let Some(intent) = self.appearance_intent.take() {
+            let s = strings(self.core.vm.language());
+            let focus = std::mem::take(&mut self.appearance_prompt_focus);
+            match discard_prompt::show(
+                ctx,
+                self.core.vm.theme(),
+                self.core.vm.language(),
+                s.ap_discard_title,
+                s.ap_discard_body,
+                focus,
+            ) {
+                Some(DiscardChoice::Keep) => self.restore_modal_opener(ctx),
+                Some(DiscardChoice::Discard) => {
+                    self.core.ui.settings.appearance = None;
+                    self.appearance_preview = None;
+                    self.preview_staged = None;
+                    self.modal_opener = None;
+                    self.perform_intent(ctx, intent);
+                }
+                None => self.appearance_intent = Some(intent),
+            }
+        }
         if let Some(mut state) = self.quick_add.take() {
             match quick_add::show(ctx, &mut state, &self.core.vm) {
                 Some(quick_add::QuickAddEvent::QuitConfirmed) => {
@@ -960,8 +1215,14 @@ impl AthenaApp {
                         _ => None,
                     };
                     let emptied_trash = matches!(action, AppAction::EmptyTrash);
+                    let was_reset = matches!(action, AppAction::ResetAppearance);
                     let before_version = self.core.store.data_version();
                     let toast = apply_confirmed_outcome(&mut self.core, action);
+                    if was_reset && self.core.store.data_version() != before_version {
+                        self.core.ui.settings.appearance = None;
+                        self.appearance_preview = None;
+                        self.preview_staged = None;
+                    }
                     let restored_ok =
                         is_restore && self.core.store.data_version() != before_version;
                     if self.core.store.data_version() != before_version {
@@ -1695,10 +1956,24 @@ mod tests {
         );
         assert!(harness.state().toast.is_some());
 
+        // The immediate theme control moved to Appearance: a link opens the page, the choice
+        // previews live, and Apply stores it without touching the legacy profile theme.
+        harness.get_by_label("Open Appearance").click();
+        harness.run_steps(4);
+        assert_eq!(
+            harness.state().core.ui.settings.page,
+            SettingsPage::Appearance
+        );
         harness.get_by_label("Light").click();
         harness.run_steps(4);
+        assert_eq!(harness.state().look.theme, Theme::Light, "live preview");
+        assert_eq!(harness.state().core.vm.profile_theme(), Theme::Dark);
+        harness.get_by_label("Apply").click();
+        harness.run_steps(4);
         assert_eq!(harness.state().core.vm.theme(), Theme::Light);
-        assert_eq!(harness.state().look.theme, Theme::Light);
+        assert_eq!(harness.state().core.vm.profile_theme(), Theme::Dark);
+        harness.get_by_label("General").click();
+        harness.run_steps(3);
         harness.get_by_label("Português").click();
         harness.run_steps(4);
         assert_eq!(harness.state().core.vm.language(), Language::PtBr);

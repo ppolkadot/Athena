@@ -11,6 +11,8 @@ pub mod theme;
 pub mod tokens;
 
 #[cfg(test)]
+mod appearance_snapshot_tests;
+#[cfg(test)]
 mod quick_add_flow_tests;
 #[cfg(test)]
 pub(crate) mod snapshot_tests;

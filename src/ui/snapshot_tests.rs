@@ -21,7 +21,7 @@ use crate::ui::theme;
 use eframe::egui;
 
 /// A fully set-up app, optionally with November's sample data.
-fn onboarded_core(language: Language, theme: Theme, with_data: bool) -> AppCore {
+pub(crate) fn onboarded_core(language: Language, theme: Theme, with_data: bool) -> AppCore {
     let db = Db::open_in_memory().unwrap();
     if with_data {
         seed_month(&db);
@@ -80,9 +80,9 @@ fn snapshot(results: &mut SnapshotResults, name: &str, mut app: AthenaApp, size:
     results.extend_harness(&mut harness);
 }
 
-const SIZE: egui::Vec2 = egui::Vec2::new(1100.0, 760.0);
+pub(crate) const SIZE: egui::Vec2 = egui::Vec2::new(1100.0, 760.0);
 
-fn variants() -> [(Language, Theme, &'static str); 2] {
+pub(crate) fn variants() -> [(Language, Theme, &'static str); 2] {
     [
         (Language::En, Theme::Dark, "en_dark"),
         (Language::PtBr, Theme::Light, "pt_light"),

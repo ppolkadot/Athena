@@ -1,6 +1,7 @@
 //! Settings: profile, people, categories, data location and version. Edits become `AppAction`s
 //! for the app to apply; language and theme changes take effect immediately.
 
+mod appearance;
 mod categories;
 mod data;
 mod general;
@@ -12,6 +13,7 @@ use std::collections::HashMap;
 use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, Stroke, TextEdit, Vec2};
 
 use crate::app::actions::AppAction;
+use crate::app::appearance_edit::AppearanceEdit;
 use crate::app::ui_state::UiState;
 use crate::app::view_model::ViewModel;
 use crate::domain::category::{Category, CategoryScope, DEFAULT_CATEGORY_COLOR};
@@ -27,6 +29,7 @@ use crate::ui::theme::{Palette, palette, parse_hex, typography};
 pub enum SettingsPage {
     #[default]
     General,
+    Appearance,
     People,
     Categories,
     Templates,
@@ -84,6 +87,8 @@ pub struct SettingsState {
     pub restore_error: Option<String>,
     pub backup_error: Option<String>,
     pub import_error: Option<String>,
+    /// The open Appearance edit session, if the Appearance page is showing.
+    pub appearance: Option<AppearanceEdit>,
 }
 
 impl Default for SettingsState {
@@ -106,6 +111,7 @@ impl Default for SettingsState {
             restore_error: None,
             backup_error: None,
             import_error: None,
+            appearance: None,
         }
     }
 }
@@ -334,6 +340,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
     ui.horizontal_wrapped(|ui| {
         for (page, label) in [
             (SettingsPage::General, s.settings_tab_general),
+            (SettingsPage::Appearance, s.settings_tab_appearance),
             (SettingsPage::People, s.settings_tab_people),
             (SettingsPage::Categories, s.settings_tab_categories),
             (SettingsPage::Templates, s.settings_templates),
@@ -353,6 +360,9 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, ui_state: &mut UiState) -> Vec<Sc
         SettingsPage::General => {
             general::profile_card(ui, vm, ui_state, &mut events);
             data::about_card(ui, vm);
+        }
+        SettingsPage::Appearance => {
+            appearance::appearance_page(ui, vm, ui_state, &mut events);
         }
         SettingsPage::People => {
             people::people_card(ui, vm, ui_state, &mut events);
@@ -661,13 +671,13 @@ mod tests {
         for label in [
             "Settings",
             "General",
+            "Appearance",
             "People",
             "Categories",
             "Data & backups",
             "Profile",
             "About",
-            "Dark",
-            "Light",
+            "Open Appearance",
             "English",
             "Português",
         ] {
@@ -696,24 +706,108 @@ mod tests {
     }
 
     #[test]
-    fn theme_and_language_switch_with_one_click() {
+    fn language_switches_with_one_click_and_theme_moved_to_appearance() {
         use egui_kittest::kittest::Queryable;
         let core = core(None);
         let mut harness = harness(&core);
         harness.run_steps(3);
-        harness.get_by_label("Light").click();
-        harness.run_steps(2);
+        // General no longer switches the theme: Light/Dark live on the Appearance page.
+        assert!(harness.query_by_label("Light").is_none());
+        assert!(harness.query_by_label("Dark").is_none());
         harness.get_by_label("Português").click();
         harness.run_steps(2);
         let events = harness.state().2.clone();
-        let theme = events.iter().find_map(|e| match e {
-            ScreenEvent::Apply(AppAction::SaveProfile(p)) if p.theme == Theme::Light => {
-                Some(p.clone())
-            }
-            _ => None,
-        });
-        assert!(theme.is_some(), "{events:?}");
         assert!(events.iter().any(|e| matches!(e, ScreenEvent::Apply(AppAction::SaveProfile(p)) if p.language == Language::PtBr)));
+        assert!(
+            !events.iter().any(|e| matches!(e, ScreenEvent::Apply(AppAction::SaveProfile(p)) if p.theme == Theme::Light)),
+            "{events:?}"
+        );
+        harness.get_by_label("Open Appearance").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().1.settings.page, SettingsPage::Appearance);
+    }
+
+    #[test]
+    fn the_appearance_page_lists_every_control_in_order() {
+        use egui_kittest::kittest::{NodeT as _, Queryable};
+        let core = core(None);
+        let mut harness = harness(&core);
+        harness.run_steps(3);
+        harness.get_by_label("Appearance").click();
+        harness.run_steps(4);
+        for label in [
+            "Theme and presets",
+            "System",
+            "Dark",
+            "Light",
+            "Onyx",
+            "Pearl",
+            "Aurora",
+            "Accent, density and text size",
+            "Blue",
+            "Teal",
+            "Violet",
+            "Comfortable",
+            "Compact",
+            "100%",
+            "115%",
+            "130%",
+            "150%",
+            "Background",
+            "None",
+            "Built-in Aurora gradient",
+            "Image or GIF from this computer",
+            "Choose file",
+            "Accessibility",
+            "Follow Windows",
+            "Reduced",
+            "Full",
+            "Reduce transparency",
+            "Automatic",
+            "Apply",
+            "Cancel",
+            "Reset to defaults",
+            "No unsaved changes.",
+        ] {
+            assert!(harness.query_all_by_label(label).count() > 0, "{label}");
+        }
+        // Apply and Cancel wait for a change; Reset is always reachable.
+        let apply = harness.get_by_label("Apply");
+        assert!(apply.accesskit_node().is_disabled());
+        assert!(
+            !harness
+                .get_by_label("Reset to defaults")
+                .accesskit_node()
+                .is_disabled()
+        );
+        // Choosing a preset makes the draft dirty, shows "Customized" only when the recipe differs.
+        harness.get_by_label("Aurora").click();
+        harness.run_steps(3);
+        let draft = harness.state().1.settings.appearance.clone().unwrap();
+        assert!(
+            draft.is_dirty() && draft.draft.preset == crate::domain::appearance::Preset::Aurora
+        );
+        assert!(harness.query_by_label("Customized").is_none());
+        harness.get_by_label("Violet").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Customized").is_some());
+        assert!(
+            !harness.get_by_label("Apply").accesskit_node().is_disabled(),
+            "a changed draft can be applied"
+        );
+        // Cancel restores the baseline.
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(3);
+        assert!(
+            !harness
+                .state()
+                .1
+                .settings
+                .appearance
+                .clone()
+                .unwrap()
+                .is_dirty()
+        );
     }
 
     #[test]

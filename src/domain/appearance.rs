@@ -223,6 +223,17 @@ impl AppearancePrefs {
         self.theme_mode == recipe.theme_mode && self.accent == recipe.accent
     }
 
+    /// The preferences as exported: a local wallpaper becomes `None` (fit, dim and paused are
+    /// kept), because asset ids, paths and image bytes are never written to a document.
+    #[must_use]
+    pub fn portable(&self) -> Self {
+        let mut out = self.clone();
+        if matches!(out.wallpaper, Wallpaper::Local(_)) {
+            out.wallpaper = Wallpaper::None;
+        }
+        out
+    }
+
     /// # Errors
     /// [`AppError::Validation`] when `dim` is out of range. The enum fields are closed by type.
     pub fn validate(&self) -> Result<()> {
@@ -298,6 +309,30 @@ mod tests {
                 .kind(),
             WallpaperKind::Local
         );
+    }
+
+    #[test]
+    fn portable_preferences_drop_a_local_wallpaper_but_keep_its_settings() {
+        let local = AppearancePrefs {
+            wallpaper: Wallpaper::Local(
+                AssetId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            ),
+            fit: Fit::Fit,
+            dim: 70,
+            paused: true,
+            ..AppearancePrefs::default()
+        };
+        let portable = local.portable();
+        assert_eq!(portable.wallpaper, Wallpaper::None);
+        assert_eq!(
+            (portable.fit, portable.dim, portable.paused),
+            (Fit::Fit, 70, true)
+        );
+        let builtin = AppearancePrefs {
+            wallpaper: Wallpaper::Builtin,
+            ..AppearancePrefs::default()
+        };
+        assert_eq!(builtin.portable(), builtin);
     }
 
     #[test]

@@ -315,6 +315,9 @@ pub struct WallpaperRuntime {
     preview: SlotState,
     /// The slot with a request in flight and its generation. One request runs at a time.
     in_flight: Option<(Slot, u64)>,
+    /// Whether the last sync showed the preview slot (a preview of something other than the
+    /// applied wallpaper).
+    displayed_preview: bool,
     stats: Stats,
 }
 
@@ -334,6 +337,7 @@ impl WallpaperRuntime {
             active: SlotState::new(),
             preview: SlotState::new(),
             in_flight: None,
+            displayed_preview: false,
             stats: Stats::default(),
         }
     }
@@ -389,6 +393,18 @@ impl WallpaperRuntime {
         }
     }
 
+    /// Whether the wallpaper currently shown is still decoding.
+    #[must_use]
+    pub fn displayed_loading(&self) -> bool {
+        self.is_loading(self.displayed_preview)
+    }
+
+    /// Why the wallpaper currently shown cannot be used, if it cannot.
+    #[must_use]
+    pub fn displayed_failure(&self) -> Option<MediaError> {
+        self.failure(self.displayed_preview)
+    }
+
     /// Whether the slot's wallpaper is still decoding.
     #[must_use]
     pub fn is_loading(&self, preview: bool) -> bool {
@@ -417,6 +433,27 @@ impl WallpaperRuntime {
             quality,
             display,
         })
+    }
+
+    /// Move a ready, staged preview into the active slot when `want` is that same file, now
+    /// managed. Returns whether it did.
+    fn adopt_preview(&mut self, want: Option<&Want>) -> bool {
+        let Some(want) = want else { return false };
+        let WantSource::Managed(id) = &want.source else {
+            return false;
+        };
+        let matches_staged = self.preview.want.as_ref().is_some_and(|pw| {
+            pw.source == WantSource::Staged(id.clone())
+                && pw.quality == want.quality
+                && pw.display == want.display
+        });
+        if !matches_staged || !matches!(self.preview.load, Load::Ready(_)) {
+            return false;
+        }
+        let mut taken = std::mem::replace(&mut self.preview, SlotState::new());
+        taken.want = Some(want.clone());
+        self.active = taken;
+        true
     }
 
     fn receive(&mut self) {
@@ -519,6 +556,11 @@ impl WallpaperRuntime {
                     continue;
                 }
             } else {
+                // A preview that finished decoding exactly what is being applied is adopted
+                // instead of decoded again, so Apply never flashes the plain canvas.
+                if slot_id == Slot::Active && self.adopt_preview(want.as_ref()) {
+                    continue;
+                }
                 if matches!(self.in_flight, Some((busy, _)) if busy == slot_id) {
                     self.worker.cancel_all();
                     self.in_flight = None;
@@ -539,6 +581,7 @@ impl WallpaperRuntime {
         } else {
             Slot::Active
         };
+        self.displayed_preview = displayed == Slot::Preview;
         let mode = Mode::for_look(look, window.0, window.1);
         let wake = self.advance(ctx, displayed, mode, now);
         let slot = self.slot_mut(displayed);

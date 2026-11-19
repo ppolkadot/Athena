@@ -9,6 +9,10 @@ use std::path::Path;
 use chrono::{DateTime, Datelike, NaiveDate};
 use rusqlite::Connection;
 
+use crate::domain::appearance::{
+    Accent, AppearancePrefs, Density, Fit, MotionPref, Preset, Quality, TextScale, ThemeMode,
+    Wallpaper,
+};
 use crate::domain::category::{Category, CategoryScope};
 use crate::domain::export::ExportScope;
 use crate::domain::money::Money;
@@ -17,12 +21,15 @@ use crate::domain::settings::{Language, Profile, Theme};
 use crate::domain::template::{ResponsibilityMode, Template, TemplateDraft, name_key};
 use crate::domain::text::fold;
 use crate::domain::transaction::{Allocation, SplitMode, Transaction, TransactionType};
-use crate::infrastructure::db::{categories_repo, people_repo, templates_repo, transactions_repo};
+use crate::infrastructure::db::{
+    appearance_repo, categories_repo, people_repo, templates_repo, transactions_repo,
+};
 use crate::infrastructure::export::format_v1::DocumentV1;
 use crate::infrastructure::export::format_v2::{
     CategoryV2, DocumentV2, PersonV2, ProfileV2, TransactionV2,
 };
 use crate::infrastructure::export::format_v3::DocumentV3;
+use crate::infrastructure::export::format_v4::{AppearanceV4, DocumentV4};
 use crate::infrastructure::export::json::{FORMAT_NAME, FORMAT_VERSION};
 use crate::shared::error::{AppError, ImportError, Result};
 
@@ -47,6 +54,8 @@ pub struct ImportPlan {
     pub transactions: Vec<Transaction>,
     /// Entry templates (format 3); empty for formats 1 and 2.
     pub templates: Vec<Template>,
+    /// Portable appearance (format 4). `None` clears the stored appearance on replacement.
+    pub appearance: Option<AppearancePrefs>,
 }
 
 impl ImportPlan {
@@ -66,6 +75,10 @@ impl ImportPlan {
         }
         let mut templates = templates_repo::list(conn)?;
         templates.sort_by_key(|t| t.id);
+        let appearance = appearance_repo::load(conn)
+            .ok()
+            .flatten()
+            .map(|a| a.portable());
         Ok(Self {
             source_name: String::new(),
             format_version: FORMAT_VERSION,
@@ -78,6 +91,7 @@ impl ImportPlan {
             categories,
             transactions,
             templates,
+            appearance,
         })
     }
 }
@@ -114,6 +128,7 @@ struct RawDocument {
     categories: Vec<RawCategory>,
     transactions: Vec<RawTransaction>,
     templates: Vec<RawTemplate>,
+    appearance: Option<AppearanceV4>,
 }
 
 struct RawPerson {
@@ -245,6 +260,12 @@ fn dispatch_value(value: serde_json::Value, errors: &mut ErrorCollector) -> Resu
                 })?;
                 Ok(adapt_v3(doc))
             }
+            4 => {
+                let doc: DocumentV4 = serde_json::from_value(value).map_err(|e| {
+                    AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
+                })?;
+                Ok(adapt_v4(doc))
+            }
             _ => Err(AppError::Import(vec![ImportError::InvalidVersion])),
         };
     }
@@ -334,6 +355,7 @@ fn adapt_v1(doc: DocumentV1, errors: &mut ErrorCollector) -> RawDocument {
             })
             .collect(),
         templates: Vec::new(),
+        appearance: None,
     }
 }
 
@@ -384,6 +406,48 @@ fn adapt_v3(doc: DocumentV3) -> RawDocument {
         })
         .collect();
     raw
+}
+
+fn adapt_v4(doc: DocumentV4) -> RawDocument {
+    let v3 = DocumentV3 {
+        format: doc.format,
+        format_version: doc.format_version,
+        app_version: doc.app_version,
+        exported_at: doc.exported_at,
+        profile: doc.profile,
+        people: doc.people,
+        categories: doc.categories,
+        transactions: doc.transactions,
+        templates: doc.templates,
+    };
+    let mut raw = adapt_v3(v3);
+    raw.appearance = doc.appearance;
+    raw
+}
+
+/// Validate the portable appearance section. Every enum must be in its allowlist and every number
+/// in range; a local wallpaper never appears in a document.
+fn validate_appearance(raw: &AppearanceV4) -> Option<AppearancePrefs> {
+    let wallpaper = match raw.background.as_str() {
+        "none" => Wallpaper::None,
+        "builtin" => Wallpaper::Builtin,
+        _ => return None,
+    };
+    let dim = u8::try_from(raw.dim).ok().filter(|d| *d <= 100)?;
+    Some(AppearancePrefs {
+        theme_mode: ThemeMode::from_code(&raw.theme_mode)?,
+        preset: Preset::from_code(&raw.preset)?,
+        accent: Accent::from_code(&raw.accent)?,
+        density: Density::from_code(&raw.density)?,
+        text_scale: TextScale::from_percent(raw.text_scale)?,
+        motion: MotionPref::from_code(&raw.motion)?,
+        reduce_transparency: raw.reduce_transparency,
+        quality: Quality::from_code(&raw.quality)?,
+        wallpaper,
+        fit: Fit::from_code(&raw.fit)?,
+        dim,
+        paused: raw.paused,
+    })
 }
 
 /// The record shapes format 2 and 3 share, as a [`RawDocument`] without templates.
@@ -451,6 +515,7 @@ fn adapt_shared(
             })
             .collect(),
         templates: Vec::new(),
+        appearance: None,
     }
 }
 
@@ -520,6 +585,13 @@ fn validate_raw(
     if !check_aggregates_and_settlement(raw.start_balance_cents, &transactions) {
         errors.push(ImportError::Overflow);
     }
+    let appearance = raw.appearance.as_ref().and_then(|a| {
+        let valid = validate_appearance(a);
+        if valid.is_none() {
+            errors.push(ImportError::InvalidAppearance);
+        }
+        valid
+    });
 
     if !errors.is_empty() {
         return Err(AppError::Import(errors.0));
@@ -555,6 +627,7 @@ fn validate_raw(
         categories,
         transactions,
         templates,
+        appearance,
     })
 }
 
@@ -1770,7 +1843,7 @@ mod tests {
             );
         }
 
-        for future_ver in [4u64, 5, 99] {
+        for future_ver in [5u64, 6, 99] {
             let mut doc = valid_v2_value();
             doc["format_version"] = json!(future_ver);
             assert_eq!(
@@ -1791,14 +1864,29 @@ mod tests {
             );
         }
 
-        valid_v1["schema_version"] = json!(4);
+        // The legacy envelope only ever means format 1; anything above the current format is too
+        // new, and the versions in between are not legacy versions.
+        valid_v1["schema_version"] = json!(5);
         assert_eq!(
             parse_val(&valid_v1).unwrap_err(),
             vec![ImportError::TooNew {
-                found: 4,
+                found: 5,
                 supported: FORMAT_VERSION,
             }]
         );
+        valid_v1["schema_version"] = json!(4);
+        assert_eq!(
+            parse_val(&valid_v1).unwrap_err(),
+            vec![ImportError::InvalidVersion]
+        );
+
+        // Format 4 (1.3) is accepted through its own adapter, with its appearance.
+        let v4_fixture: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/format4-1.3.0.json"))
+                .unwrap();
+        let v4 = parse_val(&v4_fixture).unwrap();
+        assert_eq!(v4.format_version, 4);
+        assert!(v4.appearance.is_some());
     }
 
     #[test]
@@ -1884,10 +1972,36 @@ mod tests {
                 .is_empty()
         );
         let mut from_db3 = ImportPlan::from_db(db3.conn(), &v3_plan.profile).unwrap();
+        from_db3.format_version = v3_plan.format_version;
         v3_plan.source_name.clear();
         v3_plan.exported_at.clear();
         v3_plan.app_version.clear();
         from_db3.app_version.clear();
         assert_eq!(v3_plan, from_db3);
+
+        // Format 4 (1.3): the same data plus a non-default portable appearance, canonical now.
+        let v4_bytes = include_bytes!("../../../tests/fixtures/format4-1.3.0.json");
+        assert!(
+            !v4_bytes.windows(2).any(|w| w
+                == b"
+"),
+            "format4-1.3.0.json must stay pinned to LF"
+        );
+        let mut v4_plan = parse_and_validate(v4_bytes, "format4-1.3.0.json").unwrap();
+        assert_eq!(v4_plan.format_version, 4);
+        assert!(v4_plan.appearance.is_some());
+        let db4 = Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db4.conn(), &v4_plan).unwrap();
+        assert!(
+            crate::infrastructure::db::integrity::check(db4.conn())
+                .unwrap()
+                .is_empty()
+        );
+        let mut from_db4 = ImportPlan::from_db(db4.conn(), &v4_plan.profile).unwrap();
+        v4_plan.source_name.clear();
+        v4_plan.exported_at.clear();
+        v4_plan.app_version.clear();
+        from_db4.app_version.clear();
+        assert_eq!(v4_plan, from_db4);
     }
 }

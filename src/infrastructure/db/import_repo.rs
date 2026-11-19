@@ -2,7 +2,9 @@
 
 use rusqlite::{Connection, Transaction, params};
 
-use super::{integrity, now_rfc3339, templates_repo, transactions_repo::date_text};
+use super::{
+    appearance_repo, integrity, now_rfc3339, templates_repo, transactions_repo::date_text,
+};
 use crate::application::services::import::ImportPlan;
 use crate::domain::category::Category;
 use crate::domain::person::Person;
@@ -42,6 +44,10 @@ where
     insert_categories(&tx, &plan.categories)?;
     insert_transactions(&tx, &plan.transactions)?;
     insert_templates(&tx, &plan.templates)?;
+    // Formats 1-3 and a format-4 document without `appearance` leave no row (solid legacy theme).
+    if let Some(prefs) = &plan.appearance {
+        appearance_repo::save(&tx, prefs)?;
+    }
     verify_tx(&tx)?;
     tx.commit()?;
     Ok(())
@@ -54,7 +60,8 @@ fn clear_tables(tx: &Transaction<'_>) -> Result<()> {
          DELETE FROM template_allocations;
          DELETE FROM templates;
          DELETE FROM people;
-         DELETE FROM categories;",
+         DELETE FROM categories;
+         DELETE FROM appearance;",
     )?;
     Ok(())
 }
@@ -203,7 +210,7 @@ mod tests {
     fn sample_plan() -> ImportPlan {
         ImportPlan {
             source_name: "incoming.json".into(),
-            format_version: 3,
+            format_version: 4,
             app_version: "1.1.0".into(),
             exported_at: "2026-11-15T10:00:00Z".into(),
             used_timestamp_fallback: false,
@@ -264,6 +271,7 @@ mod tests {
                 ],
             }],
             templates: vec![],
+            appearance: None,
         }
     }
 

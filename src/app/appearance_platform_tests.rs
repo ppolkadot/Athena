@@ -9,6 +9,7 @@ use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::Harness;
 
 use super::actions::{AppAction, AppearanceApply};
+use super::appearance_edit::AppearanceEdit;
 use super::{AppCore, AthenaApp};
 use crate::application::services::onboarding::OnboardingResult;
 use crate::domain::appearance::{Accent, AppearancePrefs, MotionPref, TextScale, Wallpaper};
@@ -18,6 +19,7 @@ use crate::infrastructure::db::Db;
 use crate::infrastructure::platform::{
     HighContrast, PlatformPreferences, PlatformPrefs, SystemColors, WindowState,
 };
+use crate::ui::screens::settings::SettingsPage;
 use crate::ui::theme::effective::Material;
 use crate::ui::theme::{self, contrast_ratio};
 
@@ -129,10 +131,13 @@ fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
     assert!(h.state().quick_add.is_some());
     let focused = h.ctx.memory(egui::Memory::focused);
     assert!(focused.is_some());
-    h.state_mut().appearance_preview = Some(AppearancePrefs {
-        text_scale: TextScale::P150,
-        ..AppearancePrefs::default()
-    });
+    // An open, unapplied Appearance draft previews live.
+    let mut edit = AppearanceEdit::start(&h.state().core.vm);
+    edit.draft.text_scale = TextScale::P150;
+    edit.draft.wallpaper = Wallpaper::None;
+    h.state_mut().core.ui.settings.appearance = Some(edit);
+    h.state_mut().core.ui.settings.page = SettingsPage::Appearance;
+    h.state_mut().core.ui.screen = crate::app::navigation::Screen::Settings;
     h.run_steps(3);
     assert_eq!(h.state().look.text_scale, 150);
     let before_style = h.ctx.global_style().visuals.panel_fill;
@@ -173,7 +178,8 @@ fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
     assert_eq!(h.ctx.memory(egui::Memory::focused), focused);
 
     // Turning it back off (and closing the preview) restores the chosen look.
-    h.state_mut().appearance_preview = None;
+    h.state_mut().core.ui.settings.appearance = None;
+    h.state_mut().core.ui.settings.page = SettingsPage::General;
     cell.set(supported());
     let later = t + Duration::from_secs(5);
     h.state_mut().platform.poll(later, blurred);

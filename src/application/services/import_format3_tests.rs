@@ -142,9 +142,20 @@ fn seeded() -> (Db, Profile) {
 /// Exactly the bytes `write_json` produces, with the release `app_version` pinned.
 fn fixture_bytes() -> Vec<u8> {
     let (db, profile) = seeded();
-    let mut doc = build_document(db.conn(), &profile, EXPORTED_AT).unwrap();
-    doc.app_version = "1.2.0".into();
-    serde_json::to_vec_pretty(&doc).unwrap()
+    // The frozen format-3 shape: today's document without the format-4 appearance section.
+    let doc = build_document(db.conn(), &profile, EXPORTED_AT).unwrap();
+    let v3 = DocumentV3 {
+        format: doc.format,
+        format_version: 3,
+        app_version: "1.2.0".into(),
+        exported_at: doc.exported_at,
+        profile: doc.profile,
+        people: doc.people,
+        categories: doc.categories,
+        transactions: doc.transactions,
+        templates: doc.templates,
+    };
+    serde_json::to_vec_pretty(&v3).unwrap()
 }
 
 /// Regenerates `tests/fixtures/format3-1.2.0.json`:
@@ -211,7 +222,7 @@ fn format_3_exports_templates_and_allocations_with_deny_unknown_fields() {
 
     // Round trip back through the importer and into a fresh database.
     let mut plan = parse_and_validate(text.as_bytes(), "v3.json").unwrap();
-    assert_eq!(plan.format_version, 3);
+    assert_eq!(plan.format_version, FORMAT_VERSION);
     let fresh = Db::open_in_memory().unwrap();
     import_repo::replace(fresh.conn(), &plan).unwrap();
     assert!(integrity::check(fresh.conn()).unwrap().is_empty());
@@ -244,7 +255,7 @@ fn format_3_exports_templates_and_allocations_with_deny_unknown_fields() {
 }
 
 #[test]
-fn explicit_dispatch_accepts_v1_v2_v3_and_rejects_v4() {
+fn explicit_dispatch_accepts_v1_v2_v3_and_rejects_v5() {
     for (bytes, version) in [(V1, 1), (V2, 2), (V3, 3)] {
         let plan = parse_and_validate(bytes, "f.json").unwrap();
         assert_eq!(plan.format_version, version);
@@ -267,12 +278,12 @@ fn explicit_dispatch_accepts_v1_v2_v3_and_rejects_v4() {
     );
     assert_eq!(parse_and_validate(V3, "f.json").unwrap().templates.len(), 5);
 
-    // Format 4 is rejected before the body is parsed.
-    let future = json!({"format": "athena-profile", "format_version": 4, "garbage": [1]});
+    // A version above the current one is rejected before the body is parsed.
+    let future = json!({"format": "athena-profile", "format_version": 5, "garbage": [1]});
     assert_eq!(
         errors(&future),
         vec![ImportError::TooNew {
-            found: 4,
+            found: 5,
             supported: FORMAT_VERSION
         }]
     );
