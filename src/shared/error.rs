@@ -201,6 +201,8 @@ pub enum AppError {
     CategoryScopeInUse,
     #[error("the template is invalid ({} issue(s))", .0.len())]
     TemplateInvalid(Vec<TemplateError>),
+    #[error(transparent)]
+    Media(#[from] crate::infrastructure::media::MediaError),
     #[error("export failed: {0}")]
     Export(String),
     #[error("interface error: {0}")]

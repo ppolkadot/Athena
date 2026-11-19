@@ -37,6 +37,7 @@ fn appearance_apply_cancel_reset_isolated() {
     let outcome = core
         .apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
             prefs: prefs(),
+            media: None,
         })))
         .unwrap();
     assert_eq!(outcome.refresh, RefreshScope::Appearance);
@@ -55,6 +56,7 @@ fn appearance_apply_cancel_reset_isolated() {
     assert!(
         core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
             prefs: invalid,
+            media: None,
         })))
         .is_err()
     );
@@ -76,6 +78,7 @@ fn bad_appearance_row_leaves_financial_workspace_available() {
     let mut core = core();
     core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
         prefs: prefs(),
+        media: None,
     })))
     .unwrap();
     core.store
@@ -102,6 +105,7 @@ fn bad_appearance_row_leaves_financial_workspace_available() {
     // A new Apply repairs the row.
     core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
         prefs: prefs(),
+        media: None,
     })))
     .unwrap();
     assert!(!core.vm.appearance_unreadable);
@@ -113,6 +117,7 @@ fn language_switch_keeps_the_applied_appearance_and_defaults() {
     let mut core = core();
     core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
         prefs: prefs(),
+        media: None,
     })))
     .unwrap();
     let mut changed = core.vm.profile.clone().unwrap();
@@ -124,4 +129,144 @@ fn language_switch_keeps_the_applied_appearance_and_defaults() {
     core.apply(AppAction::ResetAppearance).unwrap();
     assert_eq!(core.vm.appearance, None);
     assert_eq!(core.vm.profile_theme(), Theme::Dark);
+}
+
+mod media {
+    use std::sync::Arc;
+
+    use image::codecs::png::PngEncoder;
+    use image::{ExtendedColorType, ImageEncoder};
+
+    use super::*;
+    use crate::domain::appearance::{AssetId, Wallpaper};
+    use crate::infrastructure::db::Db;
+    use crate::infrastructure::media::MediaError;
+    use crate::infrastructure::media::assets::{MAX_FILES, MediaStore, StagedMedia};
+    use crate::shared::error::AppError;
+
+    fn png(seed: u8) -> Arc<Vec<u8>> {
+        let mut out = Vec::new();
+        PngEncoder::new(&mut out)
+            .write_image(&[seed, 1, 2, 255], 1, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+        Arc::new(out)
+    }
+
+    fn core_in(root: &tempfile::TempDir) -> AppCore {
+        let db = seeded_db();
+        profile_repo::save(db.conn(), &profile()).unwrap();
+        AppCore::empty_for_test_in(db, root.path().to_path_buf())
+    }
+
+    fn local(staged: &StagedMedia) -> AppearancePrefs {
+        AppearancePrefs {
+            wallpaper: Wallpaper::Local(staged.id.clone()),
+            ..AppearancePrefs::default()
+        }
+    }
+
+    fn apply(
+        core: &mut AppCore,
+        prefs: AppearancePrefs,
+        media: Option<StagedMedia>,
+    ) -> Result<(), AppError> {
+        core.apply(AppAction::ApplyAppearance(Box::new(AppearanceApply {
+            prefs,
+            media,
+        })))
+        .map(|_| ())
+    }
+
+    #[test]
+    fn apply_publishes_the_staged_copy_before_the_row_references_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = core_in(&root);
+        let store = MediaStore::new(core.store.dirs());
+        let staged = store.stage(png(1)).unwrap();
+        apply(&mut core, local(&staged), Some(staged.clone())).unwrap();
+        assert_eq!(core.vm.appearance, Some(local(&staged)));
+        assert_eq!(store.read(&staged.id).unwrap(), *staged.bytes);
+        assert!(integrity::check(core.store.db().conn()).unwrap().is_empty());
+        // The selected wallpaper must be the staged one.
+        let other = store.stage(png(2)).unwrap();
+        let err = apply(&mut core, local(&staged), Some(other)).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        assert_eq!(store.usage().unwrap().0, 1, "nothing extra was published");
+    }
+
+    #[test]
+    fn a_failed_apply_removes_only_its_own_new_file_and_keeps_the_old_state() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = core_in(&root);
+        let store = MediaStore::new(core.store.dirs());
+        let first = store.stage(png(1)).unwrap();
+        apply(&mut core, local(&first), Some(first.clone())).unwrap();
+        let before = core.vm.appearance.clone();
+        let version = core.store.data_version();
+
+        // Break the write after publication: the new copy must be removed again.
+        core.store
+            .db()
+            .conn()
+            .execute_batch("ALTER TABLE appearance RENAME TO appearance_gone")
+            .unwrap();
+        let second = store.stage(png(2)).unwrap();
+        assert!(apply(&mut core, local(&second), Some(second.clone())).is_err());
+        assert_eq!(store.read(&second.id).unwrap_err(), MediaError::Missing);
+        assert_eq!(core.store.data_version(), version);
+        // A failed apply that reused an existing copy never deletes it.
+        let reused = store.stage(png(1)).unwrap();
+        assert_eq!(reused.id, first.id);
+        assert!(apply(&mut core, local(&reused), Some(reused)).is_err());
+        assert_eq!(store.read(&first.id).unwrap(), *first.bytes);
+        core.store
+            .db()
+            .conn()
+            .execute_batch("ALTER TABLE appearance_gone RENAME TO appearance")
+            .unwrap();
+        assert_eq!(core.vm.appearance, before);
+    }
+
+    #[test]
+    fn quota_exhaustion_keeps_the_current_wallpaper_and_explains_the_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = core_in(&root);
+        let store = MediaStore::new(core.store.dirs());
+        let first = store.stage(png(0)).unwrap();
+        apply(&mut core, local(&first), Some(first.clone())).unwrap();
+        for seed in 1..u8::try_from(MAX_FILES).unwrap() {
+            let staged = store.stage(png(seed)).unwrap();
+            store.publish(&staged).unwrap();
+        }
+        let extra = store.stage(png(250)).unwrap();
+        let version = core.store.data_version();
+        let err = apply(&mut core, local(&extra), Some(extra)).unwrap_err();
+        assert!(matches!(err, AppError::Media(MediaError::QuotaExceeded)));
+        assert_eq!(core.vm.appearance, Some(local(&first)));
+        assert_eq!(core.store.data_version(), version);
+        let text = crate::i18n::media_error_message(
+            MediaError::QuotaExceeded,
+            crate::domain::settings::Language::En,
+        );
+        assert!(text.contains("32 files") && text.contains("kept"));
+    }
+
+    #[test]
+    fn a_missing_managed_file_is_not_an_integrity_problem() {
+        let root = tempfile::tempdir().unwrap();
+        let mut core = core_in(&root);
+        let id = AssetId::parse("0123456789abcdef0123456789abcdef").unwrap();
+        let prefs = AppearancePrefs {
+            wallpaper: Wallpaper::Local(id.clone()),
+            ..AppearancePrefs::default()
+        };
+        apply(&mut core, prefs.clone(), None).unwrap();
+        assert_eq!(core.vm.appearance, Some(prefs));
+        assert!(integrity::check(core.store.db().conn()).unwrap().is_empty());
+        assert_eq!(
+            MediaStore::new(core.store.dirs()).read(&id).unwrap_err(),
+            MediaError::Missing
+        );
+        let _ = Db::open_in_memory;
+    }
 }
