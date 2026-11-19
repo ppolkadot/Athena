@@ -1518,6 +1518,11 @@ mod tests {
         assert!(text.contains("all.csv") && csv.exists());
         let csv_text = std::fs::read_to_string(&csv).unwrap();
         assert!(csv_text.contains("Market") && csv_text.contains(";45,90;"));
+
+        let xlsx = dir.path().join("all.xlsx");
+        let text = run_export(&core, ExportRequest::Xlsx(scope), &xlsx, "");
+        assert!(text.starts_with("Exported 1 entry to "), "{text}");
+        assert!(text.contains("all.xlsx") && xlsx.exists());
     }
 
     #[test]

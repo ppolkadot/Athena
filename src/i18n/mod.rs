@@ -467,6 +467,18 @@ strings! {
     insight_top_category,
     insight_largest_expense,
     insight_leading_person,
+    xlsx_sheet_entries,
+    xlsx_sheet_allocations,
+    xlsx_scope,
+    xlsx_scope_all,
+    xlsx_id,
+    xlsx_amount_form,
+    xlsx_form_number,
+    xlsx_form_exact,
+    xlsx_transaction_id,
+    xlsx_participant,
+    export_xlsx_month,
+    export_xlsx_all,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.

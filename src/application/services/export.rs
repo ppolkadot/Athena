@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::domain::export::ExportScope;
 use crate::domain::settings::{Language, Profile};
 pub use crate::infrastructure::export::ExportReceipt;
-use crate::infrastructure::export::{csv as csv_export, json as json_export};
+use crate::infrastructure::export::{csv as csv_export, json as json_export, xlsx as xlsx_export};
 use crate::shared::error::Result;
 
 /// The complete profile as JSON: settings, people, categories and every transaction with its
@@ -36,6 +36,20 @@ pub fn export_csv(
     path: &Path,
 ) -> Result<ExportReceipt> {
     csv_export::write_csv(conn, language, scope, path)
+}
+
+/// The workbook for `scope` (Entries and Allocations sheets), with headings in `language`.
+///
+/// # Errors
+/// Database and I/O errors, or a value beyond a workbook limit; the destination is left untouched
+/// on failure.
+pub fn export_xlsx(
+    conn: &Connection,
+    language: Language,
+    scope: ExportScope,
+    path: &Path,
+) -> Result<ExportReceipt> {
+    xlsx_export::write_xlsx(conn, language, scope, path)
 }
 
 #[cfg(test)]
