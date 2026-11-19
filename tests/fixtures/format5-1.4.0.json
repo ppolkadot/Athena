@@ -1,0 +1,545 @@
+{
+  "format": "athena-profile",
+  "format_version": 5,
+  "app_version": "1.4.0",
+  "exported_at": "2026-11-19T12:00:00Z",
+  "profile": {
+    "start_balance_cents": 100000,
+    "theme": "dark",
+    "language": "en",
+    "onboarding_complete": true
+  },
+  "people": [
+    {
+      "id": 1,
+      "name": "A3",
+      "kind": "owner",
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 2,
+      "name": "Ana",
+      "kind": "partner",
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 3,
+      "name": "Bia",
+      "kind": "other",
+      "archived": true,
+      "created_at": "2026-11-18T11:50:27Z"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "Food",
+      "color": "#FF8A65",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 2,
+      "name": "Transport",
+      "color": "#4FC3F7",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 3,
+      "name": "Housing",
+      "color": "#BA68C8",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 4,
+      "name": "Education",
+      "color": "#64B5F6",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 5,
+      "name": "Health",
+      "color": "#81C784",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 6,
+      "name": "Entertainment",
+      "color": "#FFD54F",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 7,
+      "name": "Shopping",
+      "color": "#F06292",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 8,
+      "name": "Subscriptions",
+      "color": "#9575CD",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 9,
+      "name": "Bills & utilities",
+      "color": "#90A4AE",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 10,
+      "name": "Other",
+      "color": "#8F98A8",
+      "icon": null,
+      "applies_to": "both",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 11,
+      "name": "Salary",
+      "color": "#3DDC97",
+      "icon": null,
+      "applies_to": "income",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 12,
+      "name": "Other income",
+      "color": "#26A69A",
+      "icon": null,
+      "applies_to": "income",
+      "is_default": true,
+      "archived": false,
+      "created_at": "2026-11-18T11:50:27Z"
+    },
+    {
+      "id": 13,
+      "name": "Legacy",
+      "color": "#607D8B",
+      "icon": null,
+      "applies_to": "expense",
+      "is_default": false,
+      "archived": true,
+      "created_at": "2026-11-18T11:50:27Z"
+    }
+  ],
+  "transactions": [
+    {
+      "id": 7,
+      "title": "Bus pass",
+      "amount_cents": 2000,
+      "date": "2026-09-03",
+      "kind": "expense",
+      "category_id": null,
+      "payer_id": 1,
+      "description": null,
+      "split_mode": null,
+      "created_at": "2026-11-18T12:00:00Z",
+      "updated_at": "2026-11-18T12:00:00Z",
+      "allocations": []
+    },
+    {
+      "id": 1,
+      "title": "Paycheck",
+      "amount_cents": 300000,
+      "date": "2026-11-01",
+      "kind": "income",
+      "category_id": 11,
+      "payer_id": null,
+      "description": null,
+      "split_mode": null,
+      "created_at": "2026-11-18T11:50:27Z",
+      "updated_at": "2026-11-18T11:50:27Z",
+      "allocations": []
+    },
+    {
+      "id": 2,
+      "title": "Groceries",
+      "amount_cents": 15000,
+      "date": "2026-11-05",
+      "kind": "expense",
+      "category_id": 1,
+      "payer_id": 1,
+      "description": "Weekly food",
+      "split_mode": "even",
+      "created_at": "2026-11-18T11:50:27Z",
+      "updated_at": "2026-11-18T11:50:27Z",
+      "allocations": [
+        {
+          "person_id": 1,
+          "amount_cents": 7500
+        },
+        {
+          "person_id": 2,
+          "amount_cents": 7500
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Archived dinner",
+      "amount_cents": 4000,
+      "date": "2026-11-06",
+      "kind": "expense",
+      "category_id": 13,
+      "payer_id": 3,
+      "description": null,
+      "split_mode": "custom",
+      "created_at": "2026-11-18T11:50:27Z",
+      "updated_at": "2026-11-18T11:50:27Z",
+      "allocations": [
+        {
+          "person_id": 1,
+          "amount_cents": 1500
+        },
+        {
+          "person_id": 3,
+          "amount_cents": 2500
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Store refund",
+      "amount_cents": 2500,
+      "date": "2026-11-08",
+      "kind": "refund",
+      "category_id": 1,
+      "payer_id": 2,
+      "description": null,
+      "split_mode": null,
+      "created_at": "2026-11-18T11:50:27Z",
+      "updated_at": "2026-11-18T11:50:27Z",
+      "allocations": [
+        {
+          "person_id": 2,
+          "amount_cents": 2500
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Ana -> A3",
+      "amount_cents": 5000,
+      "date": "2026-11-10",
+      "kind": "settlement",
+      "category_id": null,
+      "payer_id": 2,
+      "description": null,
+      "split_mode": null,
+      "created_at": "2026-11-18T11:50:27Z",
+      "updated_at": "2026-11-18T11:50:27Z",
+      "allocations": [
+        {
+          "person_id": 1,
+          "amount_cents": 5000
+        }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": 1,
+      "name": "Weekly groceries",
+      "title": "Groceries",
+      "amount_cents": 10001,
+      "kind": "expense",
+      "category_id": 1,
+      "payer_id": 1,
+      "responsibility": "even",
+      "description": "Every Saturday",
+      "created_at": "2026-11-18T11:55:00Z",
+      "last_used_at": "2026-11-18T11:58:00Z",
+      "allocations": [
+        {
+          "person_id": 1,
+          "amount_cents": 5001
+        },
+        {
+          "person_id": 2,
+          "amount_cents": 5000
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Dinner with Bia",
+      "title": "Dinner",
+      "amount_cents": 4000,
+      "kind": "expense",
+      "category_id": 13,
+      "payer_id": 3,
+      "responsibility": "custom",
+      "description": null,
+      "created_at": "2026-11-18T11:56:00Z",
+      "last_used_at": null,
+      "allocations": [
+        {
+          "person_id": 1,
+          "amount_cents": 1500
+        },
+        {
+          "person_id": 2,
+          "amount_cents": 0
+        },
+        {
+          "person_id": 3,
+          "amount_cents": 2500
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Salary",
+      "title": "Paycheck",
+      "amount_cents": 300000,
+      "kind": "income",
+      "category_id": 11,
+      "payer_id": null,
+      "responsibility": "none",
+      "description": null,
+      "created_at": "2026-11-18T11:57:00Z",
+      "last_used_at": null,
+      "allocations": []
+    },
+    {
+      "id": 4,
+      "name": "Coffee",
+      "title": "Coffee",
+      "amount_cents": 900,
+      "kind": "expense",
+      "category_id": null,
+      "payer_id": 2,
+      "responsibility": "person",
+      "description": null,
+      "created_at": "2026-11-18T11:57:30Z",
+      "last_used_at": "2026-11-18T11:59:00Z",
+      "allocations": [
+        {
+          "person_id": 2,
+          "amount_cents": 900
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Store refund",
+      "title": "Refund",
+      "amount_cents": 2500,
+      "kind": "refund",
+      "category_id": 1,
+      "payer_id": 1,
+      "responsibility": "none",
+      "description": null,
+      "created_at": "2026-11-18T11:58:00Z",
+      "last_used_at": null,
+      "allocations": []
+    }
+  ],
+  "appearance": {
+    "theme_mode": "system",
+    "preset": "aurora",
+    "accent": "teal",
+    "density": "compact",
+    "text_scale": 130,
+    "motion": "reduced",
+    "reduce_transparency": true,
+    "quality": "low",
+    "background": "builtin",
+    "fit": "fit",
+    "dim": 55,
+    "paused": true
+  },
+  "goals": [
+    {
+      "id": 1,
+      "name": "Holiday fund",
+      "target_cents": 500000,
+      "target_date": "2027-03-01",
+      "frequency": "monthly",
+      "attribution_id": 2,
+      "status": "active",
+      "pre_archive_status": null,
+      "created_at": "2026-11-18T12:00:00Z",
+      "updated_at": "2026-11-18T12:30:00Z",
+      "contributions": [
+        {
+          "id": 1,
+          "amount_cents": 120000,
+          "date": "2026-10-05",
+          "note": null,
+          "created_at": "2026-11-18T12:10:00Z"
+        },
+        {
+          "id": 2,
+          "amount_cents": 80050,
+          "date": "2026-11-02",
+          "note": "Bonus, saved in one go.\nSecond line of a long note.",
+          "created_at": "2026-11-18T12:10:00Z"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Emergency reserve",
+      "target_cents": 100000,
+      "target_date": null,
+      "frequency": "weekly",
+      "attribution_id": null,
+      "status": "completed",
+      "pre_archive_status": null,
+      "created_at": "2026-11-18T12:00:00Z",
+      "updated_at": "2026-11-18T12:30:00Z",
+      "contributions": [
+        {
+          "id": 3,
+          "amount_cents": 100000,
+          "date": "2026-11-01",
+          "note": "Exactly funded",
+          "created_at": "2026-11-18T12:10:00Z"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Old laptop",
+      "target_cents": 80000,
+      "target_date": "2026-08-01",
+      "frequency": "daily",
+      "attribution_id": 3,
+      "status": "archived",
+      "pre_archive_status": "paused",
+      "created_at": "2026-11-18T12:00:00Z",
+      "updated_at": "2026-11-18T12:30:00Z",
+      "contributions": [
+        {
+          "id": 4,
+          "amount_cents": 50000,
+          "date": "2026-06-15",
+          "note": null,
+          "created_at": "2026-11-18T12:10:00Z"
+        },
+        {
+          "id": 5,
+          "amount_cents": 45000,
+          "date": "2026-07-20",
+          "note": "Overfunded before archiving",
+          "created_at": "2026-11-18T12:10:00Z"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Paused hobby",
+      "target_cents": 25000,
+      "target_date": "2026-11-15",
+      "frequency": "monthly",
+      "attribution_id": 1,
+      "status": "paused",
+      "pre_archive_status": null,
+      "created_at": "2026-11-18T12:00:00Z",
+      "updated_at": "2026-11-18T12:30:00Z",
+      "contributions": []
+    }
+  ],
+  "closings": [
+    {
+      "month": "2026-09",
+      "closed_at": "2026-11-19T12:00:00Z",
+      "income_cents": 0,
+      "expenses_cents": 2000,
+      "refunds_cents": 0,
+      "result_cents": -2000,
+      "entry_count": 1,
+      "previous_spending_cents": 0,
+      "previous_count": 0,
+      "top_category_id": null,
+      "top_category_net_cents": 2000,
+      "largest_expense_id": 7,
+      "largest_expense_title": "Bus pass",
+      "largest_expense_cents": 2000,
+      "fingerprint_version": 1,
+      "current_fingerprint": "c024447642c8e7011abc74f199d02e16f57e8b65eea683897b2714fbc7fa5911",
+      "previous_fingerprint": "f0dcaba672db7f37da82847beb639253aa3966dea0a22ccfbf4445681523022f"
+    },
+    {
+      "month": "2026-10",
+      "closed_at": "2026-11-19T12:00:00Z",
+      "income_cents": 0,
+      "expenses_cents": 90000,
+      "refunds_cents": 0,
+      "result_cents": -90000,
+      "entry_count": 1,
+      "previous_spending_cents": 2000,
+      "previous_count": 1,
+      "top_category_id": 1,
+      "top_category_net_cents": 90000,
+      "largest_expense_id": null,
+      "largest_expense_title": "Old sofa",
+      "largest_expense_cents": 90000,
+      "fingerprint_version": 1,
+      "current_fingerprint": "cb7b7b9f0cebfb0313d75b129d0274a8dc02fa972766db700e54e36dd28e298c",
+      "previous_fingerprint": "c024447642c8e7011abc74f199d02e16f57e8b65eea683897b2714fbc7fa5911"
+    },
+    {
+      "month": "2026-11",
+      "closed_at": "2026-11-19T12:00:00Z",
+      "income_cents": 300000,
+      "expenses_cents": 19000,
+      "refunds_cents": 2500,
+      "result_cents": 283500,
+      "entry_count": 4,
+      "previous_spending_cents": 90000,
+      "previous_count": 1,
+      "top_category_id": 1,
+      "top_category_net_cents": 12500,
+      "largest_expense_id": 2,
+      "largest_expense_title": "Groceries",
+      "largest_expense_cents": 15000,
+      "fingerprint_version": 1,
+      "current_fingerprint": "3be4d3df6b0c65166f37cb1d52ec4173208d53b2da4d8e13c33094e386ebe6f4",
+      "previous_fingerprint": "cb7b7b9f0cebfb0313d75b129d0274a8dc02fa972766db700e54e36dd28e298c"
+    }
+  ]
+}

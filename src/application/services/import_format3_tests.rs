@@ -10,6 +10,7 @@ use crate::domain::template::{ResponsibilityMode, Template, TemplateDraft};
 use crate::domain::transaction::{Allocation, TransactionType};
 use crate::infrastructure::db::{Db, import_repo, integrity, templates_repo};
 use crate::infrastructure::export::format_v3::DocumentV3;
+use crate::infrastructure::export::format_v5::DocumentV5;
 use crate::infrastructure::export::json::{FORMAT_VERSION, build_document, write_json};
 use crate::shared::error::{AppError, ImportError};
 
@@ -198,7 +199,7 @@ fn format_3_exports_templates_and_allocations_with_deny_unknown_fields() {
     let path = dir.path().join("v3.json");
     write_json(db.conn(), &profile, EXPORTED_AT, &path).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    let doc: DocumentV3 = serde_json::from_str(&text).unwrap();
+    let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
     assert_eq!(doc.format_version, FORMAT_VERSION);
     assert_eq!(doc.templates.len(), 5);
     let ids: Vec<i64> = doc.templates.iter().map(|t| t.id).collect();
@@ -279,11 +280,11 @@ fn explicit_dispatch_accepts_v1_v2_v3_and_rejects_v5() {
     assert_eq!(parse_and_validate(V3, "f.json").unwrap().templates.len(), 5);
 
     // A version above the current one is rejected before the body is parsed.
-    let future = json!({"format": "athena-profile", "format_version": 5, "garbage": [1]});
+    let future = json!({"format": "athena-profile", "format_version": 6, "garbage": [1]});
     assert_eq!(
         errors(&future),
         vec![ImportError::TooNew {
-            found: 5,
+            found: 6,
             supported: FORMAT_VERSION
         }]
     );

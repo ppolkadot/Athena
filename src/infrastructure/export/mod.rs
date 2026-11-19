@@ -6,6 +6,7 @@ pub mod format_v1;
 pub mod format_v2;
 pub mod format_v3;
 pub mod format_v4;
+pub mod format_v5;
 pub mod json;
 pub mod xlsx;
 

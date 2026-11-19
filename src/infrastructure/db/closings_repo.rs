@@ -177,6 +177,11 @@ fn insert_row(conn: &Connection, s: &ClosingSnapshot) -> Result<()> {
     Ok(())
 }
 
+/// Insert a closing exactly as imported, with no regeneration of its fingerprints.
+pub(crate) fn insert_imported(conn: &Connection, snapshot: &ClosingSnapshot) -> Result<()> {
+    insert_row(conn, snapshot)
+}
+
 fn invalid(error: ClosingError) -> AppError {
     AppError::ClosingInvalid(error)
 }

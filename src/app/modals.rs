@@ -524,6 +524,8 @@ pub fn import_preview_dialog(core: &AppCore, plan: ImportPlan) -> ImportPreviewD
     let conn = core.store.db().conn();
     let current_transactions = transactions_repo::count_live(conn).unwrap_or(0);
     let current_templates = templates_repo::count(conn).unwrap_or(0);
+    let current_goals = crate::infrastructure::db::goals_repo::count(conn).unwrap_or(0);
+    let current_closings = crate::infrastructure::db::closings_repo::count(conn).unwrap_or(0);
     let current_trash = trash_repo::count(conn).unwrap_or(core.vm.trash_count);
     let snapshot_dir = if core.vm.backups_dir.is_empty() {
         core.store.dirs().backups_dir.display().to_string()
@@ -536,6 +538,8 @@ pub fn import_preview_dialog(core: &AppCore, plan: ImportPlan) -> ImportPreviewD
         current_categories: core.vm.all_categories.len(),
         current_transactions,
         current_templates,
+        current_goals,
+        current_closings,
         current_trash,
         snapshot_dir,
     }

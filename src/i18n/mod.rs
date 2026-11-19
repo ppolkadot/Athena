@@ -21,7 +21,9 @@ use crate::domain::template::TemplateError;
 use crate::domain::transaction::{TransactionType, ValidationError};
 use crate::infrastructure::db::backup::BackupKind;
 use crate::infrastructure::media::MediaError;
-use crate::shared::error::{AppError, ImportError, RestoreError};
+use crate::shared::error::{
+    AppError, ClosingIssue, ContributionIssue, GoalIssue, ImportError, RestoreError,
+};
 
 /// Declares [`Strings`] and a `fields()` listing used by the completeness tests.
 macro_rules! strings {
@@ -685,6 +687,52 @@ strings! {
     closing_err_exists,
     closing_err_missing,
     closing_err_save,
+    err_import_goal_non_positive_id,
+    err_import_goal_duplicate_id,
+    err_import_goal_blank_name,
+    err_import_goal_target,
+    err_import_goal_date,
+    err_import_goal_frequency,
+    err_import_goal_status,
+    err_import_goal_archive,
+    err_import_goal_person,
+    err_import_goal_timestamp,
+    err_import_contribution_id,
+    err_import_contribution_amount,
+    err_import_contribution_date,
+    err_import_contribution_timestamp,
+    err_import_closing_month,
+    err_import_closing_duplicate,
+    err_import_closing_inconsistent,
+    err_import_closing_category,
+    err_import_closing_expense,
+    err_import_closing_timestamp,
+    import_preview_format_v5,
+    import_preview_history,
+    xlsx_sheet_goals,
+    xlsx_sheet_closings,
+    xlsx_scope_history,
+    xlsx_h_name,
+    xlsx_h_for,
+    xlsx_h_target,
+    xlsx_h_contributed,
+    xlsx_h_remaining,
+    xlsx_h_excess,
+    xlsx_h_deadline,
+    xlsx_h_status,
+    xlsx_h_funded,
+    xlsx_yes,
+    xlsx_no,
+    xlsx_h_month,
+    xlsx_h_saved_at,
+    xlsx_h_refunds,
+    xlsx_h_entries,
+    xlsx_h_prev_spending,
+    xlsx_h_prev_entries,
+    xlsx_h_top_category,
+    xlsx_h_top_category_amount,
+    xlsx_h_largest_title,
+    xlsx_h_largest_amount,
 }
 
 /// Which confirmation to show after an action. Maps one-to-one onto string keys.
@@ -1314,6 +1362,57 @@ pub fn import_error_message(error: &ImportError, language: Language) -> String {
         ImportError::InvalidTemplateTimestamp { id } => s
             .err_import_invalid_template_timestamp
             .replace("{id}", &id.to_string()),
+        ImportError::InvalidGoal { id, issue } => {
+            let template = match issue {
+                GoalIssue::NonPositiveId => s.err_import_goal_non_positive_id,
+                GoalIssue::DuplicateId => s.err_import_goal_duplicate_id,
+                GoalIssue::BlankName => s.err_import_goal_blank_name,
+                GoalIssue::NonPositiveTarget => s.err_import_goal_target,
+                GoalIssue::InvalidDate => s.err_import_goal_date,
+                GoalIssue::InvalidFrequency => s.err_import_goal_frequency,
+                GoalIssue::InvalidStatus => s.err_import_goal_status,
+                GoalIssue::ArchiveShape => s.err_import_goal_archive,
+                GoalIssue::MissingPerson(_) => s.err_import_goal_person,
+                GoalIssue::InvalidTimestamp => s.err_import_goal_timestamp,
+            };
+            let person = match issue {
+                GoalIssue::MissingPerson(person) => person.to_string(),
+                _ => String::new(),
+            };
+            template
+                .replace("{id}", &id.to_string())
+                .replace("{person_id}", &person)
+        }
+        ImportError::InvalidContribution { goal_id, id, issue } => {
+            let template = match issue {
+                ContributionIssue::NonPositiveId | ContributionIssue::DuplicateId => {
+                    s.err_import_contribution_id
+                }
+                ContributionIssue::NonPositiveAmount => s.err_import_contribution_amount,
+                ContributionIssue::InvalidDate => s.err_import_contribution_date,
+                ContributionIssue::InvalidTimestamp => s.err_import_contribution_timestamp,
+            };
+            template
+                .replace("{id}", &id.to_string())
+                .replace("{goal_id}", &goal_id.to_string())
+        }
+        ImportError::InvalidClosing { month, issue } => {
+            let template = match issue {
+                ClosingIssue::InvalidMonth => s.err_import_closing_month,
+                ClosingIssue::DuplicateMonth => s.err_import_closing_duplicate,
+                ClosingIssue::Inconsistent => s.err_import_closing_inconsistent,
+                ClosingIssue::MissingCategory(_) => s.err_import_closing_category,
+                ClosingIssue::MissingExpense(_) => s.err_import_closing_expense,
+                ClosingIssue::InvalidTimestamp => s.err_import_closing_timestamp,
+            };
+            let id = match issue {
+                ClosingIssue::MissingCategory(id) | ClosingIssue::MissingExpense(id) => {
+                    id.to_string()
+                }
+                _ => String::new(),
+            };
+            template.replace("{month}", month).replace("{id}", &id)
+        }
         ImportError::Overflow => s.err_import_overflow.to_string(),
         ImportError::SnapshotFailed(detail) => {
             s.err_import_snapshot_failed.replace("{detail}", detail)

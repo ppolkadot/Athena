@@ -14,7 +14,9 @@ use crate::domain::appearance::{
     Wallpaper,
 };
 use crate::domain::category::{Category, CategoryScope};
+use crate::domain::closing::{ClosingExpense, ClosingSnapshot};
 use crate::domain::export::ExportScope;
+use crate::domain::goal::{Contribution, Frequency, Goal, GoalRecord, GoalStatus};
 use crate::domain::money::Money;
 use crate::domain::person::{Person, PersonKind};
 use crate::domain::settings::{Language, Profile, Theme};
@@ -22,7 +24,8 @@ use crate::domain::template::{ResponsibilityMode, Template, TemplateDraft, name_
 use crate::domain::text::fold;
 use crate::domain::transaction::{Allocation, SplitMode, Transaction, TransactionType};
 use crate::infrastructure::db::{
-    appearance_repo, categories_repo, people_repo, templates_repo, transactions_repo,
+    appearance_repo, categories_repo, closings_repo, goals_repo, people_repo, templates_repo,
+    transactions_repo,
 };
 use crate::infrastructure::export::format_v1::DocumentV1;
 use crate::infrastructure::export::format_v2::{
@@ -30,8 +33,11 @@ use crate::infrastructure::export::format_v2::{
 };
 use crate::infrastructure::export::format_v3::DocumentV3;
 use crate::infrastructure::export::format_v4::{AppearanceV4, DocumentV4};
+use crate::infrastructure::export::format_v5::{ClosingV5, DocumentV5, GoalV5};
 use crate::infrastructure::export::json::{FORMAT_NAME, FORMAT_VERSION};
-use crate::shared::error::{AppError, ImportError, Result};
+use crate::shared::error::{
+    AppError, ClosingIssue, ContributionIssue, GoalIssue, ImportError, Result,
+};
 
 /// Maximum JSON import file size (64 MiB).
 pub const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
@@ -56,6 +62,10 @@ pub struct ImportPlan {
     pub templates: Vec<Template>,
     /// Portable appearance (format 4). `None` clears the stored appearance on replacement.
     pub appearance: Option<AppearancePrefs>,
+    /// Goals with their contributions (format 5); empty for formats 1-4.
+    pub goals: Vec<GoalRecord>,
+    /// Saved monthly closings (format 5); empty for formats 1-4.
+    pub closings: Vec<ClosingSnapshot>,
 }
 
 impl ImportPlan {
@@ -79,6 +89,8 @@ impl ImportPlan {
             .ok()
             .flatten()
             .map(|a| a.portable());
+        let goals = goals_repo::records(conn)?;
+        let closings = closings_repo::list(conn)?;
         Ok(Self {
             source_name: String::new(),
             format_version: FORMAT_VERSION,
@@ -92,6 +104,8 @@ impl ImportPlan {
             transactions,
             templates,
             appearance,
+            goals,
+            closings,
         })
     }
 }
@@ -129,6 +143,8 @@ struct RawDocument {
     transactions: Vec<RawTransaction>,
     templates: Vec<RawTemplate>,
     appearance: Option<AppearanceV4>,
+    goals: Vec<GoalV5>,
+    closings: Vec<ClosingV5>,
 }
 
 struct RawPerson {
@@ -266,6 +282,12 @@ fn dispatch_value(value: serde_json::Value, errors: &mut ErrorCollector) -> Resu
                 })?;
                 Ok(adapt_v4(doc))
             }
+            5 => {
+                let doc: DocumentV5 = serde_json::from_value(value).map_err(|e| {
+                    AppError::Import(vec![ImportError::MalformedJson(e.to_string())])
+                })?;
+                Ok(adapt_v5(doc))
+            }
             _ => Err(AppError::Import(vec![ImportError::InvalidVersion])),
         };
     }
@@ -356,6 +378,8 @@ fn adapt_v1(doc: DocumentV1, errors: &mut ErrorCollector) -> RawDocument {
             .collect(),
         templates: Vec::new(),
         appearance: None,
+        goals: Vec::new(),
+        closings: Vec::new(),
     }
 }
 
@@ -422,6 +446,25 @@ fn adapt_v4(doc: DocumentV4) -> RawDocument {
     };
     let mut raw = adapt_v3(v3);
     raw.appearance = doc.appearance;
+    raw
+}
+
+fn adapt_v5(doc: DocumentV5) -> RawDocument {
+    let v4 = DocumentV4 {
+        format: doc.format,
+        format_version: doc.format_version,
+        app_version: doc.app_version,
+        exported_at: doc.exported_at,
+        profile: doc.profile,
+        people: doc.people,
+        categories: doc.categories,
+        transactions: doc.transactions,
+        templates: doc.templates,
+        appearance: doc.appearance,
+    };
+    let mut raw = adapt_v4(v4);
+    raw.goals = doc.goals;
+    raw.closings = doc.closings;
     raw
 }
 
@@ -516,6 +559,8 @@ fn adapt_shared(
             .collect(),
         templates: Vec::new(),
         appearance: None,
+        goals: Vec::new(),
+        closings: Vec::new(),
     }
 }
 
@@ -592,6 +637,14 @@ fn validate_raw(
         }
         valid
     });
+    let goals = validate_goals(&raw.goals, &seen_person_ids, &mut errors);
+    let transaction_ids: HashSet<i64> = transactions.iter().map(|t| t.id).collect();
+    let closings = validate_closings(
+        &raw.closings,
+        &seen_category_ids,
+        &transaction_ids,
+        &mut errors,
+    );
 
     if !errors.is_empty() {
         return Err(AppError::Import(errors.0));
@@ -628,6 +681,8 @@ fn validate_raw(
         transactions,
         templates,
         appearance,
+        goals,
+        closings,
     })
 }
 
@@ -645,6 +700,211 @@ fn widen_scopes(categories: &mut [Category], widen: &HashSet<i64>) -> Vec<String
     names.sort();
     names.dedup();
     names
+}
+
+fn parse_goal_date(text: &str) -> Option<NaiveDate> {
+    parse_iso_date(text)
+}
+
+#[allow(clippy::too_many_lines)]
+fn validate_goals(
+    raw_goals: &[GoalV5],
+    person_ids: &HashSet<i64>,
+    errors: &mut ErrorCollector,
+) -> Vec<GoalRecord> {
+    let mut seen_goals = HashSet::new();
+    let mut seen_contributions = HashSet::new();
+    let mut out = Vec::with_capacity(raw_goals.len());
+    for g in raw_goals {
+        let mut bad = |issue: GoalIssue| errors.push(ImportError::InvalidGoal { id: g.id, issue });
+        if g.id <= 0 {
+            bad(GoalIssue::NonPositiveId);
+        } else if !seen_goals.insert(g.id) {
+            bad(GoalIssue::DuplicateId);
+        }
+        if g.name.trim().is_empty() {
+            bad(GoalIssue::BlankName);
+        }
+        if g.target_cents <= 0 {
+            bad(GoalIssue::NonPositiveTarget);
+        }
+        let target_date = match g.target_date.as_deref() {
+            None => None,
+            Some(text) => {
+                let parsed = parse_goal_date(text);
+                if parsed.is_none() {
+                    bad(GoalIssue::InvalidDate);
+                }
+                parsed
+            }
+        };
+        let frequency = Frequency::from_code(&g.frequency).unwrap_or_else(|| {
+            bad(GoalIssue::InvalidFrequency);
+            Frequency::Monthly
+        });
+        let status = GoalStatus::from_code(&g.status).unwrap_or_else(|| {
+            bad(GoalIssue::InvalidStatus);
+            GoalStatus::Active
+        });
+        let pre_archive_status = match g.pre_archive_status.as_deref() {
+            None => None,
+            Some(code) => {
+                let parsed = GoalStatus::from_code(code).filter(|s| s.can_be_pre_archive());
+                if parsed.is_none() {
+                    bad(GoalIssue::ArchiveShape);
+                }
+                parsed
+            }
+        };
+        if (status == GoalStatus::Archived) != g.pre_archive_status.is_some() {
+            bad(GoalIssue::ArchiveShape);
+        }
+        if let Some(person) = g.attribution_id
+            && !person_ids.contains(&person)
+        {
+            bad(GoalIssue::MissingPerson(person));
+        }
+        if !is_rfc3339(&g.created_at) || !is_rfc3339(&g.updated_at) {
+            bad(GoalIssue::InvalidTimestamp);
+        }
+        let mut contributions = Vec::with_capacity(g.contributions.len());
+        let mut total = 0_i64;
+        let mut overflow = false;
+        for c in &g.contributions {
+            let mut bad_c = |issue: ContributionIssue| {
+                errors.push(ImportError::InvalidContribution {
+                    goal_id: g.id,
+                    id: c.id,
+                    issue,
+                });
+            };
+            if c.id <= 0 {
+                bad_c(ContributionIssue::NonPositiveId);
+            } else if !seen_contributions.insert(c.id) {
+                bad_c(ContributionIssue::DuplicateId);
+            }
+            if c.amount_cents <= 0 {
+                bad_c(ContributionIssue::NonPositiveAmount);
+            }
+            let date = parse_iso_date(&c.date).unwrap_or_else(|| {
+                bad_c(ContributionIssue::InvalidDate);
+                NaiveDate::MIN
+            });
+            if !is_rfc3339(&c.created_at) {
+                bad_c(ContributionIssue::InvalidTimestamp);
+            }
+            match total.checked_add(c.amount_cents.max(0)) {
+                Some(next) => total = next,
+                None => overflow = true,
+            }
+            contributions.push(Contribution {
+                id: c.id,
+                goal_id: g.id,
+                amount: Money::from_cents(c.amount_cents),
+                date,
+                note: c.note.clone(),
+                created_at: c.created_at.clone(),
+            });
+        }
+        if overflow {
+            errors.push(ImportError::Overflow);
+        }
+        contributions.sort_by_key(|c| c.id);
+        out.push(GoalRecord {
+            goal: Goal {
+                id: g.id,
+                name: g.name.clone(),
+                target: Money::from_cents(g.target_cents),
+                target_date,
+                frequency,
+                attribution_id: g.attribution_id,
+                status,
+                pre_archive_status,
+                created_at: g.created_at.clone(),
+                updated_at: g.updated_at.clone(),
+            },
+            contributions,
+        });
+    }
+    out.sort_by_key(|r| r.goal.id);
+    out
+}
+
+fn validate_closings(
+    raw_closings: &[ClosingV5],
+    category_ids: &HashSet<i64>,
+    transaction_ids: &HashSet<i64>,
+    errors: &mut ErrorCollector,
+) -> Vec<ClosingSnapshot> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raw_closings.len());
+    for c in raw_closings {
+        let mut bad = |issue: ClosingIssue| {
+            errors.push(ImportError::InvalidClosing {
+                month: c.month.clone(),
+                issue,
+            });
+        };
+        let Some(month) = closings_repo::parse_month(&c.month) else {
+            bad(ClosingIssue::InvalidMonth);
+            continue;
+        };
+        if !seen.insert(month) {
+            bad(ClosingIssue::DuplicateMonth);
+        }
+        if !is_rfc3339(&c.closed_at) {
+            bad(ClosingIssue::InvalidTimestamp);
+        }
+        if let Some(category) = c.top_category_id
+            && !category_ids.contains(&category)
+        {
+            bad(ClosingIssue::MissingCategory(category));
+        }
+        if let Some(expense) = c.largest_expense_id
+            && !transaction_ids.contains(&expense)
+        {
+            bad(ClosingIssue::MissingExpense(expense));
+        }
+        // An id without a net amount, or a title without an amount, is not a snapshot.
+        let groups_ok = (c.top_category_id.is_none() || c.top_category_net_cents.is_some())
+            && c.largest_expense_title.is_some() == c.largest_expense_cents.is_some()
+            && (c.largest_expense_id.is_none() || c.largest_expense_title.is_some());
+        let snapshot = ClosingSnapshot {
+            month,
+            closed_at: c.closed_at.clone(),
+            income: Money::from_cents(c.income_cents),
+            expenses: Money::from_cents(c.expenses_cents),
+            refunds: Money::from_cents(c.refunds_cents),
+            result: Money::from_cents(c.result_cents),
+            count: c.entry_count,
+            previous_spending: Money::from_cents(c.previous_spending_cents),
+            previous_count: c.previous_count,
+            top_category: c
+                .top_category_net_cents
+                .map(|net| (c.top_category_id, Money::from_cents(net))),
+            largest_expense: match (&c.largest_expense_title, c.largest_expense_cents) {
+                (Some(title), Some(cents)) => Some(ClosingExpense {
+                    id: c.largest_expense_id,
+                    title: title.clone(),
+                    amount: Money::from_cents(cents),
+                }),
+                _ => None,
+            },
+            fingerprint_version: u32::try_from(c.fingerprint_version).unwrap_or(0),
+            current_fingerprint: c.current_fingerprint.clone(),
+            previous_fingerprint: c.previous_fingerprint.clone(),
+        };
+        match snapshot.validate() {
+            Ok(()) if groups_ok => {}
+            Err(crate::domain::closing::ClosingError::Overflow) => {
+                errors.push(ImportError::Overflow);
+            }
+            _ => bad(ClosingIssue::Inconsistent),
+        }
+        out.push(snapshot);
+    }
+    out.sort_by_key(|s| s.month);
+    out
 }
 
 fn validate_people(
@@ -1843,7 +2103,7 @@ mod tests {
             );
         }
 
-        for future_ver in [5u64, 6, 99] {
+        for future_ver in [6u64, 7, 99] {
             let mut doc = valid_v2_value();
             doc["format_version"] = json!(future_ver);
             assert_eq!(
@@ -1866,15 +2126,15 @@ mod tests {
 
         // The legacy envelope only ever means format 1; anything above the current format is too
         // new, and the versions in between are not legacy versions.
-        valid_v1["schema_version"] = json!(5);
+        valid_v1["schema_version"] = json!(6);
         assert_eq!(
             parse_val(&valid_v1).unwrap_err(),
             vec![ImportError::TooNew {
-                found: 5,
+                found: 6,
                 supported: FORMAT_VERSION,
             }]
         );
-        valid_v1["schema_version"] = json!(4);
+        valid_v1["schema_version"] = json!(5);
         assert_eq!(
             parse_val(&valid_v1).unwrap_err(),
             vec![ImportError::InvalidVersion]
@@ -1887,9 +2147,18 @@ mod tests {
         let v4 = parse_val(&v4_fixture).unwrap();
         assert_eq!(v4.format_version, 4);
         assert!(v4.appearance.is_some());
+
+        // Format 5 (1.4) is accepted through its own adapter, with goals and closings.
+        let v5_fixture: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/format5-1.4.0.json"))
+                .unwrap();
+        let v5 = parse_val(&v5_fixture).unwrap();
+        assert_eq!(v5.format_version, 5);
+        assert_eq!((v5.goals.len(), v5.closings.len()), (4, 3));
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn every_shipped_fixture_imports_and_round_trips() {
         // Fixture provenance & reproducibility (`tests/fixtures/format2-1.1.0.json`, pinned LF in `.gitattributes`):
         // Generated via `application::services::export::export_json` on shipped `v1.1.0` (`e09f49f`;
@@ -1998,10 +2267,36 @@ mod tests {
                 .is_empty()
         );
         let mut from_db4 = ImportPlan::from_db(db4.conn(), &v4_plan.profile).unwrap();
+        from_db4.format_version = v4_plan.format_version;
         v4_plan.source_name.clear();
         v4_plan.exported_at.clear();
         v4_plan.app_version.clear();
         from_db4.app_version.clear();
         assert_eq!(v4_plan, from_db4);
+
+        // Format 5 (1.4): the same data plus goals with contributions and saved closings.
+        let v5_bytes = include_bytes!("../../../tests/fixtures/format5-1.4.0.json");
+        assert!(
+            !v5_bytes.windows(2).any(|w| w
+                == b"
+"),
+            "format5-1.4.0.json must stay pinned to LF"
+        );
+        let mut v5_plan = parse_and_validate(v5_bytes, "format5-1.4.0.json").unwrap();
+        assert_eq!(v5_plan.format_version, 5);
+        assert!(!v5_plan.goals.is_empty() && !v5_plan.closings.is_empty());
+        let db5 = Db::open_in_memory().unwrap();
+        crate::infrastructure::db::import_repo::replace(db5.conn(), &v5_plan).unwrap();
+        assert!(
+            crate::infrastructure::db::integrity::check(db5.conn())
+                .unwrap()
+                .is_empty()
+        );
+        let mut from_db5 = ImportPlan::from_db(db5.conn(), &v5_plan.profile).unwrap();
+        v5_plan.source_name.clear();
+        v5_plan.exported_at.clear();
+        v5_plan.app_version.clear();
+        from_db5.app_version.clear();
+        assert_eq!(v5_plan, from_db5);
     }
 }

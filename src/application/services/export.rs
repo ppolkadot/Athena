@@ -59,7 +59,7 @@ mod tests {
     use crate::domain::money::Money;
     use crate::infrastructure::db::{people_repo, transactions_repo};
     use crate::infrastructure::export::format_v1::DocumentV1;
-    use crate::infrastructure::export::format_v3::DocumentV3;
+    use crate::infrastructure::export::format_v5::DocumentV5;
     use crate::infrastructure::export::json::{FORMAT_NAME, FORMAT_VERSION};
     use crate::shared::test_fixtures::{
         date, draft_with, profile, seed_all_kinds, seed_month, seed_people, seeded_db,
@@ -76,7 +76,7 @@ mod tests {
         assert!(receipt.bytes > 0);
         assert_eq!(receipt.record_count, 3);
         let text = std::fs::read_to_string(&path).unwrap();
-        let doc: DocumentV3 = serde_json::from_str(&text).unwrap();
+        let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
         assert_eq!(doc.format, FORMAT_NAME);
         assert_eq!(doc.format_version, FORMAT_VERSION);
         assert_eq!(doc.exported_at, STAMP);
@@ -127,7 +127,7 @@ mod tests {
             "money is integer cents"
         );
         assert!(text.contains("\"date\": \"2026-11-10\""));
-        let doc: DocumentV3 = serde_json::from_str(&text).unwrap();
+        let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
         let dates: Vec<_> = doc
             .transactions
             .iter()
@@ -149,7 +149,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("\"schema_version\""), "{text}");
         assert!(text.contains("\"templates\": []"), "{text}");
-        let doc: DocumentV3 = serde_json::from_str(&text).unwrap();
+        let doc: DocumentV5 = serde_json::from_str(&text).unwrap();
         assert_eq!(doc.format, "athena-profile");
         assert_eq!(doc.format_version, FORMAT_VERSION);
         assert!(
@@ -182,7 +182,7 @@ mod tests {
         let path = dir.path().join("no-trash.json");
         let receipt = export_json(db.conn(), &profile(), STAMP, &path).unwrap();
         assert_eq!(receipt.record_count, 2);
-        let doc: DocumentV3 =
+        let doc: DocumentV5 =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(doc.transactions.len(), 2);
         assert!(doc.transactions.iter().all(|t| t.id != trashed_id));

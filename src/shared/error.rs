@@ -39,6 +39,45 @@ pub enum RestoreError {
     Failed(String),
 }
 
+/// What is wrong with an imported goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalIssue {
+    NonPositiveId,
+    DuplicateId,
+    BlankName,
+    NonPositiveTarget,
+    InvalidDate,
+    InvalidFrequency,
+    InvalidStatus,
+    /// The pre-archive status is missing for an archived goal, present otherwise, or invalid.
+    ArchiveShape,
+    MissingPerson(i64),
+    InvalidTimestamp,
+}
+
+/// What is wrong with an imported contribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContributionIssue {
+    NonPositiveId,
+    DuplicateId,
+    NonPositiveAmount,
+    InvalidDate,
+    InvalidTimestamp,
+}
+
+/// What is wrong with an imported closing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosingIssue {
+    InvalidMonth,
+    DuplicateMonth,
+    /// The saved figures, optional groups or fingerprints are inconsistent.
+    Inconsistent,
+    MissingCategory(i64),
+    /// The largest-expense reference points at an entry that is not in the file.
+    MissingExpense(i64),
+    InvalidTimestamp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ImportError {
     #[error("the chosen file exceeds the 64 MiB limit")]
@@ -156,6 +195,16 @@ pub enum ImportError {
     InvalidTemplateShape { id: i64 },
     #[error("template #{id} has an invalid timestamp")]
     InvalidTemplateTimestamp { id: i64 },
+    #[error("goal #{id} is invalid: {issue:?}")]
+    InvalidGoal { id: i64, issue: GoalIssue },
+    #[error("contribution #{id} of goal #{goal_id} is invalid: {issue:?}")]
+    InvalidContribution {
+        goal_id: i64,
+        id: i64,
+        issue: ContributionIssue,
+    },
+    #[error("the closing for {month} is invalid: {issue:?}")]
+    InvalidClosing { month: String, issue: ClosingIssue },
     #[error("imported totals exceed the 64-bit integer limit")]
     Overflow,
     #[error("could not create a pre-import safety snapshot: {0}")]
