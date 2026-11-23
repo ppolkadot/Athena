@@ -63,3 +63,6 @@ These need a live Windows window or the final artifacts and remain **open**:
 - [ ] Carried over from 1.1.x and still open: the interactive items listed in `docs/smoke-1.1.md`.
 
 These remain open and are not waived by this record.
+
+The 1.4 candidate aligns the native client-area minimum with the 640 × 410 logical-point
+Month and Calendar harness. The native walkthrough on final artifacts remains open.

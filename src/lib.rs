@@ -12,6 +12,9 @@ use crate::infrastructure::config::{AppDirs, init_tracing};
 use crate::infrastructure::db::{Db, recovery as db_recovery};
 use crate::shared::error::{AppError, Result};
 
+/// Smallest supported native viewport in logical points.
+pub(crate) const MIN_WINDOW_SIZE: eframe::egui::Vec2 = eframe::egui::Vec2::new(640.0, 410.0);
+
 /// Resolve folders, take the single-instance lock, start logging, open the window.
 ///
 /// # Errors
@@ -25,7 +28,7 @@ pub fn run() -> Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Athena")
             .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([760.0, 560.0])
+            .with_min_inner_size(MIN_WINDOW_SIZE)
             .with_icon(window_icon()),
         ..Default::default()
     };

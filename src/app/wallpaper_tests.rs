@@ -1,9 +1,7 @@
 //! The wallpaper through the whole app (contract §14.2): one shared live frame behind every main
 //! screen, legible rendered samples over extreme wallpapers, and nothing decorative when paused.
 
-use std::cell::Cell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32};
@@ -28,11 +26,11 @@ use crate::ui::appearance::background::{composed_pixel, scrim_alpha};
 use crate::ui::snapshot_tests::GPU;
 use crate::ui::theme::{self, contrast_ratio, stock_palette};
 
-struct Fake(Rc<Cell<PlatformPrefs>>);
+struct Fake(Arc<Mutex<PlatformPrefs>>);
 
 impl PlatformPreferences for Fake {
     fn read(&self) -> PlatformPrefs {
-        self.0.get()
+        *self.0.lock().unwrap()
     }
 }
 
@@ -72,7 +70,7 @@ struct Rig {
     harness: Harness<'static, AthenaApp>,
     _root: tempfile::TempDir,
     t0: Instant,
-    platform: Rc<Cell<PlatformPrefs>>,
+    platform: Arc<Mutex<PlatformPrefs>>,
 }
 
 fn rig(
@@ -99,7 +97,7 @@ fn rig(
         media: Some(staged),
     })))
     .unwrap();
-    let platform = Rc::new(Cell::new(supported()));
+    let platform = Arc::new(Mutex::new(supported()));
     let t0 = Instant::now();
     let mut app = AthenaApp::for_test_with_platform(core, Box::new(Fake(platform.clone())));
     app.pin_instant(t0);
@@ -310,7 +308,7 @@ fn high_contrast_renders_the_plain_canvas_without_the_wallpaper() {
         egui::Vec2::new(900.0, 640.0),
         1.0,
     );
-    rig.platform.set(PlatformPrefs {
+    *rig.platform.lock().unwrap() = PlatformPrefs {
         high_contrast: Some(HighContrast {
             on: true,
             colors: Some(SystemColors {
@@ -321,9 +319,8 @@ fn high_contrast_renders_the_plain_canvas_without_the_wallpaper() {
             }),
         }),
         ..supported()
-    });
+    };
     // Resume re-reads the platform; the next frames restyle.
-    let t = Instant::now() + Duration::from_secs(5);
     let blurred = crate::infrastructure::platform::WindowState {
         focused: false,
         visible: true,
@@ -332,8 +329,8 @@ fn high_contrast_renders_the_plain_canvas_without_the_wallpaper() {
         focused: true,
         visible: true,
     };
-    rig.harness.state_mut().platform.poll(t, blurred);
-    rig.harness.state_mut().platform.poll(t, active);
+    rig.harness.state().platform.update_window(blurred);
+    rig.harness.state().platform.update_window(active);
     rig.harness.run_steps(4);
     let sample = rig.pixel(20, 20);
     assert_eq!(

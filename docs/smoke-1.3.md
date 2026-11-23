@@ -117,11 +117,16 @@ Every gate below must pass on real hardware, with the numbers recorded, before a
 may add it; the spike's own measurements are not repeated here.
 
 - [ ] Real swapchain presentation p95 at most 16.7 ms at 60 Hz for Solid, Tint and Glass.
-- [ ] Zero decorative requests and zero frames in five seconds of focused idle. The 1.3
-  two-second focused platform poll wakes the window and therefore cannot pass this gate until the
-  poll is replaced by something that schedules no frames.
+- [ ] Zero decorative requests and zero frames in five seconds of focused idle. The 1.4 candidate
+  moved the two-second check to a Windows worker and removed the periodic preference repaint
+  deadline. The native zero-frame sample and a count of worker wake-ups still need measurement.
 - [ ] Native 100 / 125 / 150 / 200 % DPI visual checks, interactive resize, typing continuity and
   bright/dark seam and edge inspection.
 - [ ] Integrated-GPU and discrete-GPU baselines.
-- [ ] Real Windows resource and device-failure behavior with a full fallback to Tint, with no idle
-  retry loop.
+- [ ] Real Windows resource and device-failure behavior. Verify a readable Tint underlay on the
+  failing frame and a Solid fallback without an idle retry loop.
+
+The 1.4 candidate reran the full spike test command with `--nocapture` on a GeForce GT 340
+(driver `9.18.13.4192`). The nine hardware-independent cases passed. The real-`wgpu` case
+printed `SKIP` because a device could not be acquired. No Glass hardware gate was closed.
+The [1.4 smoke record](smoke-1.4.md) also records the refreshed 1.4 goldens.

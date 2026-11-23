@@ -1,9 +1,8 @@
 //! Injected platform preferences driving the whole app (contract §14.2): supported, missing,
 //! high contrast and focus/resume transitions while a preview, a paused wallpaper and a draft exist.
 
-use std::cell::Cell;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::Harness;
@@ -23,11 +22,11 @@ use crate::ui::screens::settings::SettingsPage;
 use crate::ui::theme::effective::Material;
 use crate::ui::theme::{self, contrast_ratio};
 
-struct Fake(Rc<Cell<PlatformPrefs>>);
+struct Fake(Arc<Mutex<PlatformPrefs>>);
 
 impl PlatformPreferences for Fake {
     fn read(&self) -> PlatformPrefs {
-        self.0.get()
+        *self.0.lock().unwrap()
     }
 }
 
@@ -57,7 +56,7 @@ fn high_contrast() -> PlatformPrefs {
     }
 }
 
-fn app(platform: &Rc<Cell<PlatformPrefs>>) -> Harness<'static, AthenaApp> {
+fn app(platform: &Arc<Mutex<PlatformPrefs>>) -> Harness<'static, AthenaApp> {
     let mut core = AppCore::empty_for_test(Db::open_in_memory().unwrap());
     core.complete_onboarding(OnboardingResult {
         display_name: "A3".into(),
@@ -95,9 +94,36 @@ fn app(platform: &Rc<Cell<PlatformPrefs>>) -> Harness<'static, AthenaApp> {
 }
 
 #[test]
+fn focused_preference_refresh_does_not_schedule_a_frame() {
+    let _reset = theme::active::ResetOnDrop;
+    let cell = Arc::new(Mutex::new(supported()));
+    let mut h = app(&cell);
+    let ctx = egui::Context::default();
+    for pass in 0..3 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                focused: true,
+                ..Default::default()
+            },
+            |_| {
+                h.state_mut().refresh_appearance(&ctx);
+            },
+        );
+        output.textures_delta.clear();
+        if pass == 2 {
+            assert_eq!(
+                output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+                Duration::MAX,
+                "unchanged platform preferences should never schedule a focused repaint"
+            );
+        }
+    }
+}
+
+#[test]
 fn supported_platform_state_gives_tint_motion_and_the_chosen_accent() {
     let _reset = theme::active::ResetOnDrop;
-    let cell = Rc::new(Cell::new(supported()));
+    let cell = Arc::new(Mutex::new(supported()));
     let h = app(&cell);
     let look = &h.state().look;
     assert!(!look.reduced_motion && look.material == Material::Tint);
@@ -111,7 +137,7 @@ fn supported_platform_state_gives_tint_motion_and_the_chosen_accent() {
 #[test]
 fn missing_platform_state_falls_back_to_solid_and_reduced() {
     let _reset = theme::active::ResetOnDrop;
-    let cell = Rc::new(Cell::new(PlatformPrefs::default()));
+    let cell = Arc::new(Mutex::new(PlatformPrefs::default()));
     let h = app(&cell);
     let look = &h.state().look;
     // The user chose Full motion, so unknown OS state does not take it away; chrome goes solid.
@@ -123,7 +149,7 @@ fn missing_platform_state_falls_back_to_solid_and_reduced() {
 #[test]
 fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
     let _reset = theme::active::ResetOnDrop;
-    let cell = Rc::new(Cell::new(supported()));
+    let cell = Arc::new(Mutex::new(supported()));
     let mut h = app(&cell);
     // An open draft owns focus; a preview and a paused wallpaper are in play.
     h.key_press_modifiers(Modifiers::COMMAND, Key::N);
@@ -143,8 +169,7 @@ fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
     let before_style = h.ctx.global_style().visuals.panel_fill;
 
     // The user turns high contrast on while the window is in the background.
-    cell.set(high_contrast());
-    let t = Instant::now() + Duration::from_secs(10);
+    *cell.lock().unwrap() = high_contrast();
     let blurred = WindowState {
         focused: false,
         visible: true,
@@ -153,9 +178,9 @@ fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
         focused: true,
         visible: true,
     };
-    h.state_mut().platform.poll(t, blurred);
-    let (changed, _) = h.state_mut().platform.poll(t, active);
-    assert!(changed, "resume re-reads the platform");
+    h.state().platform.update_window(blurred);
+    h.state().platform.update_window(active);
+    assert_eq!(h.state().platform.current(), high_contrast());
     h.run_steps(3);
 
     let look = h.state().look.clone();
@@ -180,10 +205,9 @@ fn high_contrast_resume_restyles_while_previewing_and_paused_and_keeps_focus() {
     // Turning it back off (and closing the preview) restores the chosen look.
     h.state_mut().core.ui.settings.appearance = None;
     h.state_mut().core.ui.settings.page = SettingsPage::General;
-    cell.set(supported());
-    let later = t + Duration::from_secs(5);
-    h.state_mut().platform.poll(later, blurred);
-    h.state_mut().platform.poll(later, active);
+    *cell.lock().unwrap() = supported();
+    h.state().platform.update_window(blurred);
+    h.state().platform.update_window(active);
     h.run_steps(3);
     assert!(!h.state().look.high_contrast);
     assert_eq!(h.state().look.wallpaper, Wallpaper::Builtin);

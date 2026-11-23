@@ -1,6 +1,7 @@
 # Athena 1.3 native appearance implementation plan
 
 > **Status:** A2–A5 are implemented in the 1.3.0 candidate (schema 5, format 4); contract §14.2 is frozen for 1.3 and the [1.3 smoke record](../../smoke-1.3.md) lists what is verified and what remains open. Production Glass (A4's optional task) is not shipped.
+> The 1.4 candidate follows the updated [A2b platform preference plan](2026-11-18-athena-stalled-ui-roadmap-plan.md#a2b-platform-preferences-142). The smoke records track the mixed automated and native checks in the original checklist below.
 
 > **Execution handoff:** Use the [1.3 roadmap milestone](2026-11-18-athena-stalled-ui-roadmap-plan.md#130-native-appearance) for the current baseline, A2–A5 sequence and §14.2 freeze decisions. A1 is complete as an isolated experiment. The baseline narrative below records the earlier snapshot.
 

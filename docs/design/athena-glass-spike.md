@@ -110,12 +110,13 @@ Both release runs executed on `windows (x86_64)` with `NVIDIA GeForce RTX 3060 T
 
 ## Proposed Future Validation Gate
 
-Before enabling `Glass` in production (`1.3.0+`), all four gates below must be measured and recorded against `Solid` and `Tint` baselines (with `Glass` remaining opt-in/disabled behind `Solid`/`Tint` fallback until every gate passes):
+Before enabling `Glass` in production, measure and record the gates below against `Solid` and `Tint` baselines. Glass remains unavailable in production until every gate passes and the contract is revised.
 
 1. **Display presentation timing (`p95 <= 16.7 ms` at 60 Hz):** Measure actual swapchain presentation intervals (e.g., PresentMon / ETW or GPU pass timestamp queries when enabled) separately from `request_repaint_after` timer wakeup jitter so that scheduler granularity does not mask real frame presentation cost.
 2. **Focused interactive idle check (`Focused: true`, `5.0 s`):** Run the stationary idle check in a focused desktop window after interactive typing and mode switching; assert zero decorative repaint requests and zero idle frames observed after settling.
 3. **Native Windows OS DPI scaling (`100% / 125% / 150% / 200%`):** Inspect real OS display scaling (not simulated `--scale` alone) for crisp Polaris Semibold/Bold typography, corner/border anti-aliasing, checker-boundary continuity, live resize stability, and WCAG-AA contrast in both Dark and Light themes.
 4. **Integrated-GPU reference hardware baseline:** Capture Cold + Warm frame pacing, CPU/GPU time, and Working Set / Private memory on a target low-power integrated-GPU Windows machine (e.g., Intel UHD/Iris or AMD Radeon integrated graphics), in addition to discrete GPUs.
+5. **Windows device-loss fallback:** Exercise resource and device failure on Windows. Verify a legible Tint underlay on the failing frame, a Solid fallback, and no idle retry loop. The scoped validation-error test covers only part of this gate.
 
 ## Recommendation
 

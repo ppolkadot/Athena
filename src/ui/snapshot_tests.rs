@@ -127,7 +127,7 @@ fn snapshot_populated_month() {
 }
 
 /// 640 x 410 logical points: the narrow supported viewport.
-const NARROW: egui::Vec2 = egui::Vec2::new(640.0, 410.0);
+const NARROW: egui::Vec2 = crate::MIN_WINDOW_SIZE;
 
 /// Seed the month plus an entry with a long title and a very large amount.
 fn narrow_core(language: Language, theme: Theme, screen: Screen) -> AppCore {

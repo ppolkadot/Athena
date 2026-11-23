@@ -5,7 +5,9 @@
 #[cfg(windows)]
 pub mod windows_prefs;
 
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 /// An opaque `[r, g, b]` color.
 pub type Rgb = [u8; 3];
@@ -35,7 +37,7 @@ pub struct PlatformPrefs {
 }
 
 /// A source of [`PlatformPrefs`]; tests inject their own.
-pub trait PlatformPreferences {
+pub trait PlatformPreferences: Send {
     fn read(&self) -> PlatformPrefs;
 }
 
@@ -60,22 +62,6 @@ impl PlatformPreferences for FixedPlatform {
     }
 }
 
-/// The provider for the running OS.
-#[must_use]
-pub fn system_provider() -> Box<dyn PlatformPreferences> {
-    #[cfg(windows)]
-    {
-        Box::new(windows_prefs::WindowsPrefs)
-    }
-    #[cfg(not(windows))]
-    {
-        Box::new(UnknownPlatform)
-    }
-}
-
-/// How often a focused, visible window re-reads the preferences.
-pub const FOCUSED_POLL: Duration = Duration::from_secs(2);
-
 /// The window state the watcher needs each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowState {
@@ -83,76 +69,160 @@ pub struct WindowState {
     pub visible: bool,
 }
 
-/// Holds the latest preferences. Reads once at creation and on focus regain or resume, then every
-/// [`FOCUSED_POLL`] while the window is focused and visible. Unfocused or hidden windows schedule
-/// nothing, so this never wakes an idle background window.
+/// Reads at startup and resume. On Windows, a worker checks while focused and visible
+/// and notifies the app only when a sample changes.
 pub struct PlatformWatch {
-    provider: Box<dyn PlatformPreferences>,
-    current: PlatformPrefs,
-    last_read: Instant,
-    was_active: bool,
+    shared: Arc<SharedWatch>,
+    worker: Option<JoinHandle<()>>,
 }
 
-impl PlatformWatch {
-    #[must_use]
-    pub fn new(provider: Box<dyn PlatformPreferences>, now: Instant) -> Self {
-        let current = provider.read();
-        Self {
-            provider,
-            current,
-            last_read: now,
-            was_active: false,
-        }
-    }
+struct SharedWatch {
+    state: Mutex<WatchState>,
+    activity: Condvar,
+}
 
-    #[must_use]
-    pub fn current(&self) -> PlatformPrefs {
-        self.current
-    }
+struct WatchState {
+    provider: Box<dyn PlatformPreferences>,
+    current: PlatformPrefs,
+    active: bool,
+    stopped: bool,
+}
 
-    fn read(&mut self, now: Instant) -> bool {
+impl WatchState {
+    fn read(&mut self) -> bool {
         let next = self.provider.read();
-        self.last_read = now;
         let changed = next != self.current;
         self.current = next;
         changed
     }
+}
 
-    /// Advance one frame. Returns whether the preferences changed and when to wake next (`None`
-    /// when no check is due until the window becomes active again).
-    pub fn poll(&mut self, now: Instant, window: WindowState) -> (bool, Option<Duration>) {
-        let active = window.focused && window.visible;
-        if !active {
-            self.was_active = false;
-            return (false, None);
+impl PlatformWatch {
+    #[must_use]
+    pub fn new(provider: Box<dyn PlatformPreferences>) -> Self {
+        let current = provider.read();
+        Self {
+            shared: Arc::new(SharedWatch {
+                state: Mutex::new(WatchState {
+                    provider,
+                    current,
+                    active: false,
+                    stopped: false,
+                }),
+                activity: Condvar::new(),
+            }),
+            worker: None,
         }
-        let resumed = !self.was_active;
-        self.was_active = true;
-        let due = now.saturating_duration_since(self.last_read) >= FOCUSED_POLL;
-        let changed = if resumed || due {
-            self.read(now)
-        } else {
-            false
-        };
-        let wait = FOCUSED_POLL.saturating_sub(now.saturating_duration_since(self.last_read));
-        (changed, Some(wait))
+    }
+
+    /// Start the system watcher. The callback may run on the Windows worker thread.
+    #[must_use]
+    pub fn system(on_change: impl Fn() + Send + 'static) -> Self {
+        #[cfg(windows)]
+        let provider = windows_prefs::WindowsPrefs;
+        #[cfg(not(windows))]
+        let provider = UnknownPlatform;
+        let mut watch = Self::new(Box::new(provider));
+        if cfg!(windows) {
+            watch.start_worker(Duration::from_secs(2), on_change);
+        }
+        watch
+    }
+
+    #[must_use]
+    pub fn current(&self) -> PlatformPrefs {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .current
+    }
+
+    /// Apply a window-state change and read immediately on focus regain or resume.
+    pub fn update_window(&self, window: WindowState) -> PlatformPrefs {
+        let active = window.focused && window.visible;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if state.active != active {
+            state.active = active;
+            if active {
+                state.read();
+            }
+            self.shared.activity.notify_one();
+        }
+        state.current
+    }
+
+    fn start_worker(&mut self, interval: Duration, on_change: impl Fn() + Send + 'static) {
+        let shared = Arc::clone(&self.shared);
+        let worker = std::thread::Builder::new()
+            .name("athena-platform-prefs".into())
+            .spawn(move || shared.watch(interval, on_change));
+        match worker {
+            Ok(worker) => self.worker = Some(worker),
+            Err(err) => tracing::warn!("could not start the platform preference watcher: {err}"),
+        }
+    }
+}
+
+impl SharedWatch {
+    fn watch(&self, interval: Duration, on_change: impl Fn()) {
+        loop {
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let state = self
+                .activity
+                .wait_while(state, |s| !s.active && !s.stopped)
+                .unwrap_or_else(PoisonError::into_inner);
+            let (mut state, elapsed) = self
+                .activity
+                .wait_timeout_while(state, interval, |s| s.active && !s.stopped)
+                .unwrap_or_else(PoisonError::into_inner);
+            if state.stopped {
+                break;
+            }
+            let changed = elapsed.timed_out() && state.active && state.read();
+            // The next frame also locks the sample. Release it before asking egui to wake.
+            drop(state);
+            if changed {
+                on_change();
+            }
+        }
+    }
+}
+
+impl Drop for PlatformWatch {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            self.shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stopped = true;
+            self.shared.activity.notify_one();
+            let _ = worker.join();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::mpsc;
 
     use super::*;
 
-    #[derive(Clone)]
-    struct Fake(Rc<Cell<PlatformPrefs>>, Rc<Cell<u32>>);
+    struct Fake {
+        prefs: Arc<Mutex<PlatformPrefs>>,
+        reads: mpsc::Sender<()>,
+    }
 
     impl PlatformPreferences for Fake {
         fn read(&self) -> PlatformPrefs {
-            self.1.set(self.1.get() + 1);
-            self.0.get()
+            let prefs = *self.prefs.lock().unwrap();
+            self.reads.send(()).unwrap();
+            prefs
         }
     }
 
@@ -163,69 +233,79 @@ mod tests {
         }
     }
 
-    fn fake(initial: PlatformPrefs) -> (Fake, Rc<Cell<PlatformPrefs>>, Rc<Cell<u32>>) {
-        let cell = Rc::new(Cell::new(initial));
-        let reads = Rc::new(Cell::new(0));
-        (Fake(cell.clone(), reads.clone()), cell, reads)
+    fn fake(
+        initial: PlatformPrefs,
+    ) -> (PlatformWatch, Arc<Mutex<PlatformPrefs>>, mpsc::Receiver<()>) {
+        let prefs = Arc::new(Mutex::new(initial));
+        let (reads, samples) = mpsc::channel();
+        let watch = PlatformWatch::new(Box::new(Fake {
+            prefs: Arc::clone(&prefs),
+            reads,
+        }));
+        (watch, prefs, samples)
     }
 
     #[test]
     fn reads_at_startup_and_on_focus_regain() {
-        let t0 = Instant::now();
-        let (provider, cell, reads) = fake(PlatformPrefs {
+        let (watch, prefs, reads) = fake(PlatformPrefs {
             animations: Some(true),
             ..PlatformPrefs::default()
         });
-        let mut watch = PlatformWatch::new(Box::new(provider), t0);
-        assert_eq!(reads.get(), 1);
+        reads.try_recv().unwrap();
         assert_eq!(watch.current().animations, Some(true));
-        // The first active frame counts as a resume and reads again.
-        assert!(!watch.poll(t0, active()).0);
-        assert_eq!(reads.get(), 2);
+        watch.update_window(active());
+        reads.try_recv().unwrap();
         // A change while unfocused is noticed the moment focus returns.
-        cell.set(PlatformPrefs {
+        *prefs.lock().unwrap() = PlatformPrefs {
             animations: Some(false),
             ..PlatformPrefs::default()
-        });
-        let blurred = WindowState {
+        };
+        watch.update_window(WindowState {
             focused: false,
             visible: true,
-        };
-        assert_eq!(watch.poll(t0, blurred), (false, None));
-        let (changed, _) = watch.poll(t0, active());
-        assert!(changed);
+        });
+        assert_eq!(reads.try_recv(), Err(mpsc::TryRecvError::Empty));
+        watch.update_window(active());
+        reads.try_recv().unwrap();
         assert_eq!(watch.current().animations, Some(false));
     }
 
     #[test]
-    fn focused_polling_runs_every_two_seconds_and_hidden_never() {
-        let t0 = Instant::now();
-        let (provider, cell, reads) = fake(PlatformPrefs::default());
-        let mut watch = PlatformWatch::new(Box::new(provider), t0);
-        watch.poll(t0, active());
-        let after_resume = reads.get();
-        let (changed, wait) = watch.poll(t0 + Duration::from_millis(500), active());
-        assert!(!changed);
-        assert_eq!(reads.get(), after_resume, "no read before the interval");
-        assert_eq!(wait, Some(Duration::from_millis(1500)));
-        cell.set(PlatformPrefs {
+    fn worker_notifies_only_on_changes_and_suspends_while_hidden() {
+        let (mut watch, prefs, reads) = fake(PlatformPrefs::default());
+        let (on_change, notifications) = mpsc::channel();
+        let interval = Duration::from_millis(15);
+        let timeout = Duration::from_secs(5);
+        watch.start_worker(interval, move || on_change.send(()).unwrap());
+        watch.update_window(active());
+        // Read at startup, on first focus and twice on the worker with no change.
+        for _ in 0..4 {
+            reads.recv_timeout(timeout).unwrap();
+        }
+        assert_eq!(notifications.try_recv(), Err(mpsc::TryRecvError::Empty));
+        *prefs.lock().unwrap() = PlatformPrefs {
             transparency: Some(false),
             ..PlatformPrefs::default()
-        });
-        let (changed, wait) = watch.poll(t0 + Duration::from_secs(2), active());
-        assert!(changed);
-        assert_eq!(wait, Some(FOCUSED_POLL));
-        // Minimized or hidden: no read, no wake-up.
-        let hidden = WindowState {
+        };
+        notifications.recv_timeout(timeout).unwrap();
+        assert_eq!(watch.current().transparency, Some(false));
+        watch.update_window(WindowState {
             focused: true,
             visible: false,
-        };
-        let before = reads.get();
+        });
+        for () in reads.try_iter() {}
+        *prefs.lock().unwrap() = PlatformPrefs::default();
         assert_eq!(
-            watch.poll(t0 + Duration::from_mins(1), hidden),
-            (false, None)
+            reads.recv_timeout(3 * interval),
+            Err(mpsc::RecvTimeoutError::Timeout)
         );
-        assert_eq!(reads.get(), before);
+        watch.update_window(active());
+        assert_eq!(watch.current(), PlatformPrefs::default());
+        drop(watch);
+        assert_eq!(
+            notifications.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        );
     }
 
     #[test]

@@ -5,45 +5,48 @@ schema 7, document format 5, and full-history Goals and Closings workbook sheets
 [1.4 roadmap](superpowers/plans/2026-11-18-athena-stalled-ui-roadmap-plan.md#140-goals-and-closings),
 [contracts](superpowers/specs/contracts.md) (§13 and §14.1–§14.3), and the [definition of done](dod.md).
 
-Status **candidate**. The local executable below is a developer build. The Windows release
-artifacts and their hashes are pending. Repeat native checks on the exact final artifacts if the
-hashes change.
+Status **candidate**. The local artifacts below were built on the developer machine. Hosted CI
+artifacts and final hashes are pending. Repeat native checks against the exact final artifacts.
 
 ## Local release candidate
 
-| Item | Value |
-|---|---|
-| Source | commit after `87a3f94` on `main` (1.4.0 version bump, this record, and `docs/status.md`) |
-| Local build | `cargo build --release --locked`, `target/release/athena.exe` |
-| Platform | Windows 11 Pro, Rust 1.95.0 |
-| Local build size | 22,226,944 bytes |
-| Local build SHA-256 | `88bf371a7b3caf6df6cb7037693cdaf7f34a29e846347494f4a7f1204d1cc965` |
+Built from the 1.4 continuation on top of `4bfa8bd`, on Windows 11 Pro build 26200 with
+Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
+
+| Local artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `athena-1.4.0-windows-x64.exe` | 22,237,696 | `0b7f89c931961ed8a62d6167b14f6edeee311f4e58af99a1f8a4b10c70b8c04d` |
+| `Athena-1.4.0-setup.exe` | 8,506,765 | `7e74f7e9214ac2b3e4214981cab783ee192b067df8ea944b68fbe072736ca0b1` |
+| `LICENSE.txt` | 3,274 | `931886d07182110715ccee3504a076b59929503e4ebacadbe0da789184850a61` |
+| `ICONS-LICENSE.txt` | 880 | `1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc` |
 
 ## Automated checks
 
 - [x] `bash docs/superpowers/doc-lint.sh` exited 0 and printed `doc-lint: clean`.
 - [x] `cargo fmt --check` exited 0 with no output.
-- [x] `cargo clippy --all-targets --locked -- -D warnings` exited 0. Cargo reported
-  ``Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.56s``.
-- [x] `cargo test --locked --all-targets -- --skip real_wgpu_` exited 0 with 761 passed, 0 failed,
+- [x] `cargo clippy --all-targets --locked -- -D warnings` exited 0.
+- [x] `cargo test --locked --all-targets -- --skip real_wgpu_` exited 0 with 762 passed, 0 failed,
   4 ignored, 0 measured, and 1 filtered out. The ignored cases are two fixture regenerators and
   two 50,000-row benchmarks. The filter excludes the example's real-GPU case.
-- [x] `cargo build --release --locked` exited 0. Cargo reported
-  ``Finished `release` profile [optimized] target(s) in 2m 51s``. The executable's Windows file
-  and product versions are both 1.4.0.
+- [x] `cargo build --release --locked` and Inno Setup compilation of `installer/athena.iss`
+  exited 0. Both executable products report version 1.4.0. The two packaging metadata tests
+  passed, covering installer version alignment and CI artifact names and provenance.
 - [x] `git diff --check` exited 0 with no whitespace errors. Git printed LF-to-CRLF conversion
   notices for modified text files outside the fixture policy.
 
 | Test target | Passed | Failed | Ignored | Measured | Filtered out | Time |
 |---|---:|---:|---:|---:|---:|---:|
-| Library | 742 | 0 | 4 | 0 | 0 | 48.40 s |
+| Library | 743 | 0 | 4 | 0 | 0 | 66.58 s |
 | Main executable | 0 | 0 | 0 | 0 | 0 | 0.00 s |
 | `design_assets` | 1 | 0 | 0 | 0 | 0 | 0.00 s |
-| `fonts` | 5 | 0 | 0 | 0 | 0 | 0.00 s |
-| `no_transactions_table` | 2 | 0 | 0 | 0 | 0 | 0.09 s |
+| `fonts` | 5 | 0 | 0 | 0 | 0 | 0.01 s |
+| `no_transactions_table` | 2 | 0 | 0 | 0 | 0 | 0.10 s |
 | `packaging_metadata` | 2 | 0 | 0 | 0 | 0 | 0.00 s |
-| `glass_spike` example | 9 | 0 | 0 | 0 | 1 | 0.29 s |
+| `glass_spike` example | 9 | 0 | 0 | 0 | 1 | 0.28 s |
 
+- [x] The UI regression observed no preference repaint deadline in a settled focused frame.
+  The worker test verified changed-sample notification and suspension while hidden. The native
+  five-second idle gate remains open.
 - [x] Synthetic upgrades from every schema 1–6 reached schema 7. The file-backed 5/6
   regressions preserved appearance and existing goal contributions. Restore upgraded a schema-1
   backup and refused a newer schema.
@@ -60,8 +63,22 @@ hashes change.
 - [x] Designer brief and Appendix A were byte-identical. `design_assets` passed at 3,993
   characters, including the final LF.
 
+## Local portable smoke
+
+- The listed portable executable opened a responsive Athena window from a disposable directory
+  with `athena.portable` and both license notices. With `WGPU_BACKEND=dx12` it used the Microsoft
+  Basic Render Driver and closed with exit code 0. The portable database reported schema 7,
+  `PRAGMA integrity_check` returned `ok`, and `PRAGMA foreign_key_check` returned no rows.
+- On the GeForce GT 340 machine, shutdown was intermittent with default renderer selection
+  and with `WGPU_BACKEND=gl`. In failed trials the window became unresponsive after `WM_CLOSE`
+  and the harness stopped the process. The default selection also timed out in a matched trial
+  of a release build from `4bfa8bd`. The cause remains open.
+
 ## Snapshot review
 
+- [x] Regenerated all 48 goldens to a scratch directory and compared them pixel by pixel.
+  Updated the 25 with stale 1.3.0 footers. The affected Portuguese light goldens also show
+  the current Settings item without its overlapping shortcut hint. Reviewed both changes.
 - [x] Inspected the Goals empty, split-pane, and narrow detail views in English/Dark and
   Português/Light for notes, exact amounts, Funded labels, and action placement.
 - [x] Inspected the Month and Calendar goldens in both variants. The Month card keeps the
@@ -95,5 +112,7 @@ hashes change.
 - [ ] Run installer install, launch, and uninstall on a clean Windows machine. Launch the portable
   executable with `athena.portable` and verify both distributions include the Lucide and Polaris
   notices.
+- [ ] Investigate the intermittent default-renderer shutdown timeout and verify normal shutdown
+  on the supported Windows hardware.
 - [ ] Carry forward outstanding interactive checks from the [1.1 record](smoke-1.1.md), the
   [1.2 record](smoke-1.2.md), and the [1.3 record](smoke-1.3.md).

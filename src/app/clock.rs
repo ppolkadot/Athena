@@ -1,6 +1,6 @@
 //! The local-midnight deadline the app schedules itself, so date-sensitive hints (the goal
 //! contribution plan, closings) refresh on their own. It never depends on wallpaper playback or
-//! the platform preference poll.
+//! platform preference changes.
 
 use std::time::Duration;
 

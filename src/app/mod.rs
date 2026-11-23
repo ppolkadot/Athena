@@ -46,7 +46,7 @@ use crate::infrastructure::db::Db;
 use crate::infrastructure::media::MediaError;
 use crate::infrastructure::media::assets::{MediaStore, StagedMedia};
 use crate::infrastructure::platform::{
-    self, PlatformPreferences, PlatformPrefs, PlatformWatch, WindowState,
+    PlatformPreferences, PlatformPrefs, PlatformWatch, WindowState,
 };
 use crate::shared::error::{AppError, Result};
 use crate::ui::appearance::background::Backdrop;
@@ -372,7 +372,10 @@ impl AthenaApp {
     #[must_use]
     pub fn from_core(ctx: &egui::Context, core: AppCore) -> Self {
         theme::install_fonts(ctx);
-        let platform = PlatformWatch::new(platform::system_provider(), std::time::Instant::now());
+        let repaint_context = ctx.clone();
+        let platform = PlatformWatch::system(move || {
+            repaint_context.request_repaint_of(egui::ViewportId::ROOT);
+        });
         Self::with_platform(ctx, core, platform)
     }
 
@@ -409,7 +412,7 @@ impl AthenaApp {
         }
     }
 
-    /// Build the app on a core with injected platform preferences (tests and the real provider).
+    /// Build the app on a core with an injected provider that refreshes on focus or resume.
     #[must_use]
     pub fn with_provider(
         ctx: &egui::Context,
@@ -417,7 +420,7 @@ impl AthenaApp {
         provider: Box<dyn PlatformPreferences>,
     ) -> Self {
         theme::install_fonts(ctx);
-        let platform = PlatformWatch::new(provider, std::time::Instant::now());
+        let platform = PlatformWatch::new(provider);
         Self::with_platform(ctx, core, platform)
     }
 
@@ -440,21 +443,14 @@ impl AthenaApp {
         effective::resolve(&prefs, legacy, os_theme, platform)
     }
 
-    /// Re-read platform preferences when due, resolve the look and restyle egui only when the
-    /// styling key changed. Schedules the next platform check separately from decorative repaints.
+    /// Refresh on focus/resume, resolve the look and restyle egui when the styling key changes.
     fn refresh_appearance(&mut self, ctx: &egui::Context) -> bool {
         let (focused, minimized) =
             ctx.input(|i| (i.focused, i.viewport().minimized.unwrap_or(false)));
-        let (_, wait) = self.platform.poll(
-            std::time::Instant::now(),
-            WindowState {
-                focused,
-                visible: !minimized,
-            },
-        );
-        if let Some(wait) = wait {
-            ctx.request_repaint_after(wait);
-        }
+        let platform_prefs = self.platform.update_window(WindowState {
+            focused,
+            visible: !minimized,
+        });
         let os_theme = ctx.system_theme().map(|t| match t {
             egui::Theme::Dark => Theme::Dark,
             egui::Theme::Light => Theme::Light,
@@ -462,7 +458,7 @@ impl AthenaApp {
         let look = Self::resolve_look(
             &self.core,
             self.appearance_preview.as_ref(),
-            self.platform.current(),
+            platform_prefs,
             os_theme,
         );
         let key = look.style_key();
@@ -809,10 +805,9 @@ impl AthenaApp {
         core.store
             .freeze_today(crate::shared::test_fixtures::today());
         Self {
-            platform: PlatformWatch::new(
-                Box::new(platform::UnknownPlatform),
-                std::time::Instant::now(),
-            ),
+            platform: PlatformWatch::new(Box::new(
+                crate::infrastructure::platform::UnknownPlatform,
+            )),
             applied_style: None,
             look: effective::resolve_defaults(core.vm.profile_theme(), PlatformPrefs::default()),
             appearance_preview: None,
@@ -846,7 +841,7 @@ impl AthenaApp {
         provider: Box<dyn PlatformPreferences>,
     ) -> Self {
         let mut app = Self::for_test(core);
-        app.platform = PlatformWatch::new(provider, std::time::Instant::now());
+        app.platform = PlatformWatch::new(provider);
         app
     }
 
@@ -896,7 +891,7 @@ impl AthenaApp {
     }
 
     /// Wake the app at the next local midnight (or sooner, so a changed system clock is noticed)
-    /// to re-read the date. Independent of wallpaper playback and platform preference polls.
+    /// to re-read the date. Independent of wallpaper playback and platform preference changes.
     fn schedule_date_check(&self, ctx: &egui::Context) {
         if self.pinned_today.is_none() {
             ctx.request_repaint_after(clock::next_date_check(&chrono::Local::now()));
