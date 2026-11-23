@@ -24,20 +24,48 @@ pub fn run() -> Result<()> {
     let dirs = AppDirs::resolve()?;
     let (_instance, _log_guard, session) = boot_session_with_dirs(dirs, true)?;
 
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Athena")
-            .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size(MIN_WINDOW_SIZE)
-            .with_icon(window_icon()),
-        ..Default::default()
-    };
+    let options = native_options();
     eframe::run_native(
         "Athena",
         options,
         Box::new(move |cc| Ok(Box::new(AthenaWindow::new(cc, session)))),
     )
     .map_err(|e| AppError::Ui(e.to_string()))
+}
+
+/// Window and renderer options for the native shell (contract §11 shutdown, §14.2 hardware).
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("Athena")
+            .with_inner_size([1280.0, 820.0])
+            .with_min_inner_size(MIN_WINDOW_SIZE)
+            .with_icon(window_icon()),
+        wgpu_options: wgpu_configuration(eframe::egui_wgpu::wgpu::Backends::from_env()),
+        ..Default::default()
+    }
+}
+
+/// The GPU backends Athena allows: an explicit `WGPU_BACKEND` choice, otherwise the primary
+/// backends (Vulkan and DX12 on Windows) without OpenGL.
+///
+/// egui's default also allows GL. On pre-feature-level-11 GPUs DX12 resolves to the WARP software
+/// adapter, which wgpu ranks below the WGL adapter, so the window then runs on WGL and can hang
+/// while it is being closed.
+fn renderer_backends(
+    requested: Option<eframe::egui_wgpu::wgpu::Backends>,
+) -> eframe::egui_wgpu::wgpu::Backends {
+    requested.unwrap_or(eframe::egui_wgpu::wgpu::Backends::PRIMARY)
+}
+
+fn wgpu_configuration(
+    requested: Option<eframe::egui_wgpu::wgpu::Backends>,
+) -> eframe::egui_wgpu::WgpuConfiguration {
+    let mut config = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+        setup.instance_descriptor.backends = renderer_backends(requested);
+    }
+    config
 }
 
 fn boot_session_with_dirs(
@@ -145,6 +173,12 @@ impl eframe::App for AthenaWindow {
             }
         }
     }
+
+    fn on_exit(&mut self) {
+        if let Self::Active(app) = self {
+            app.shutdown();
+        }
+    }
 }
 
 /// The 64x64 RGBA window and taskbar icon, embedded in the binary.
@@ -167,6 +201,37 @@ mod tests {
         let dirs = AppDirs::from_root(dir.path().to_path_buf());
         dirs.ensure().unwrap();
         (dir, dirs)
+    }
+
+    #[test]
+    fn default_renderer_backends_exclude_opengl() {
+        use eframe::egui_wgpu::wgpu::Backends;
+        let backends = renderer_backends(None);
+        assert_eq!(backends, Backends::PRIMARY);
+        assert!(!backends.contains(Backends::GL));
+    }
+
+    #[test]
+    fn explicit_backend_requests_are_honored() {
+        use eframe::egui_wgpu::wgpu::Backends;
+        assert_eq!(renderer_backends(Some(Backends::GL)), Backends::GL);
+        assert_eq!(renderer_backends(Some(Backends::DX12)), Backends::DX12);
+    }
+
+    #[test]
+    fn native_wgpu_configuration_applies_the_backend_choice() {
+        use eframe::egui_wgpu::{WgpuSetup, wgpu::Backends};
+        for (requested, expected) in [
+            (None, Backends::PRIMARY),
+            (Some(Backends::GL), Backends::GL),
+        ] {
+            match wgpu_configuration(requested).wgpu_setup {
+                WgpuSetup::CreateNew(setup) => {
+                    assert_eq!(setup.instance_descriptor.backends, expected);
+                }
+                WgpuSetup::Existing(_) => panic!("Athena lets eframe create the device"),
+            }
+        }
     }
 
     #[test]

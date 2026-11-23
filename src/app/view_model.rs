@@ -565,6 +565,18 @@ impl ViewModel {
                 if ui.screen == Screen::Trash {
                     self.record_trash_load();
                 }
+                // Purging an entry nulls a saved closing's largest-expense link in the database
+                // (`ON DELETE SET NULL`); mirror that, keeping the captured title and amount.
+                if self
+                    .closings
+                    .values()
+                    .any(|c| c.largest_expense.as_ref().is_some_and(|e| e.id.is_some()))
+                {
+                    let (list, live) = read_closings(conn)?;
+                    self.closings = list;
+                    self.closing_live_expense = live;
+                    self.refresh_closing_status(store, ui, key.version);
+                }
             }
             RefreshScope::Backups => {
                 self.backups = if ui.screen == Screen::Settings {

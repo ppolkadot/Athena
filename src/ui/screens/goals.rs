@@ -7,7 +7,7 @@ use eframe::egui::{
     Stroke, Vec2, WidgetInfo,
 };
 
-use crate::app::ui_state::{GoalFocus, UiState};
+use crate::app::ui_state::{GoalFocus, UiState, filtered_goals};
 use crate::app::view_model::ViewModel;
 use crate::application::services::goals::{GoalDetail, GoalListItem};
 use crate::domain::goal::{
@@ -554,6 +554,11 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
     let p = palette(vm.theme());
     let mut events = Vec::new();
 
+    // Keep the visible ids current even when the list is not drawn, so Back and a removed
+    // selection find the right row.
+    let items = filtered_goals(&vm.goals, state.goals.filter);
+    state.goals.visible = items.iter().map(|g| g.goal.id).collect();
+
     let wide = ui.available_width() >= TWO_PANE_WIDTH;
     // On narrow widths an open goal replaces the list; Back returns to it.
     let drilled = !wide && state.goals.selected.is_some() && vm.goal_detail.is_some();
@@ -575,14 +580,6 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel, state: &mut UiState) -> Vec<Scree
     ui.add_space(tokens::space_s());
     tabs(ui, vm, state);
     ui.add_space(tokens::space_m());
-
-    let mut items: Vec<&GoalListItem> = vm
-        .goals
-        .iter()
-        .filter(|g| g.goal.status == state.goals.filter)
-        .collect();
-    items.sort_by_key(|g| std::cmp::Reverse(g.goal.id));
-    state.goals.visible = items.iter().map(|g| g.goal.id).collect();
 
     if vm.goals.is_empty() {
         if empty_state::show(

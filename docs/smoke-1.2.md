@@ -56,6 +56,9 @@ These need a live Windows window or the final artifacts and remain **open**:
   mouse and keyboard only (Tab, arrows, Enter/Space, Escape focus return).
 - [ ] Both XLSX scopes (viewed month, all history) opened in a spreadsheet application, including
   text starting with `=`, `+`, `-` or `@`, and an amount beyond 13 digits of cents.
+  > Superseded by 1.4.0: JSON export now emits `"format_version": 5`, and the `.xlsx` export adds the
+  > full-history `Goals` and `Closings` sheets next to `Entries` and `Allocations`. This 1.2.0 item
+  > describes the format 3, two-sheet workbook; see `docs/smoke-1.4.md` for the current checks.
 - [ ] Both languages and themes; 100/125/150/200 % Windows scaling; narrow (640 x 410) window;
   long text and maximum amounts; keyboard-only pass in the real window.
 - [ ] Installer install, launch and uninstall of `Athena-1.2.0-setup.exe`; clean Windows machine;

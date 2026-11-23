@@ -1039,6 +1039,16 @@ impl AthenaApp {
         }
     }
 
+    /// Stop the background workers and release the wallpaper textures before the renderer is torn
+    /// down, so closing the window waits on nothing the GPU surface depends on. Safe to repeat.
+    pub fn shutdown(&mut self) {
+        self.platform.stop();
+        if let Some(mut wallpaper) = self.wallpaper.take() {
+            // Textures first, then the decode worker joins when the runtime drops.
+            wallpaper.invalidate_all();
+        }
+    }
+
     fn apply_undo(&mut self, ctx: &egui::Context, action: AppAction) {
         if let Err(err) = self.core.apply(action) {
             tracing::warn!("undo action failed: {err}");
@@ -1050,6 +1060,10 @@ impl AthenaApp {
 impl eframe::App for AthenaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    fn on_exit(&mut self) {
+        self.shutdown();
     }
 }
 

@@ -73,6 +73,10 @@ yet recorded** and must be added here before any manual check below is ticked.
 - [x] All shipped fixtures (`format1-1.0.2.json`, `format2-1.1.0.json`, `format3-1.2.0.json`,
   `format4-1.3.0.json`) import through explicit version adapters, keep their LF endings, and
   round-trip.
+  > Superseded by 1.4.0: JSON export now emits `"format_version": 5` (format 4 remains an accepted
+  > import), and the `.xlsx` export adds the full-history `Goals` and `Closings` sheets next to
+  > `Entries` and `Allocations`. The format 4 round-trip above is the 1.3.0 record; see
+  > `docs/smoke-1.4.md` for the current checks.
 - [x] New and changed snapshots were inspected in English/dark and Português/light:
   new `settings_appearance_solid_*`, `settings_appearance_wallpaper_*`, `shell_wallpaper_*`;
   changed `settings_*`, `settings_data_*`, `settings_templates_*` (the Appearance tab, the moved

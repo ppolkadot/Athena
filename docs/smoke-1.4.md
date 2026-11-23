@@ -10,13 +10,15 @@ artifacts and final hashes are pending. Repeat native checks against the exact f
 
 ## Local release candidate
 
-Built from the 1.4 continuation on top of `4bfa8bd`, on Windows 11 Pro build 26200 with
-Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
+Rebuilt on 2026-11-23 from `4365b78` plus the working-tree fixes for the six bug-review
+findings (renderer backend selection and shutdown, narrow Goals focus, platform watcher locking,
+stale closing link after purge, and superseded smoke notes), on Windows 11 Pro build 26200 with
+Rust 1.95.0 and a local Inno Setup 6 `ISCC.exe`.
 
 | Local artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `athena-1.4.0-windows-x64.exe` | 22,237,696 | `0b7f89c931961ed8a62d6167b14f6edeee311f4e58af99a1f8a4b10c70b8c04d` |
-| `Athena-1.4.0-setup.exe` | 8,506,765 | `7e74f7e9214ac2b3e4214981cab783ee192b067df8ea944b68fbe072736ca0b1` |
+| `athena-1.4.0-windows-x64.exe` (`target/release/athena.exe`) | 22,241,792 | `ea703e80694e5871fa95970a1a3dda27022ae4832a9ded884a4e63685cb0c54f` |
+| `Athena-1.4.0-setup.exe` | 8,508,771 | `d4f0ae82b095a43b5186c823322ce3e4f9216bb4df4cea83a1c77846e52bcd16` |
 | `LICENSE.txt` | 3,274 | `931886d07182110715ccee3504a076b59929503e4ebacadbe0da789184850a61` |
 | `ICONS-LICENSE.txt` | 880 | `1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc` |
 
@@ -25,7 +27,7 @@ Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
 - [x] `bash docs/superpowers/doc-lint.sh` exited 0 and printed `doc-lint: clean`.
 - [x] `cargo fmt --check` exited 0 with no output.
 - [x] `cargo clippy --all-targets --locked -- -D warnings` exited 0.
-- [x] `cargo test --locked --all-targets -- --skip real_wgpu_` exited 0 with 762 passed, 0 failed,
+- [x] `cargo test --locked --all-targets -- --skip real_wgpu_` exited 0 with 772 passed, 0 failed,
   4 ignored, 0 measured, and 1 filtered out. The ignored cases are two fixture regenerators and
   two 50,000-row benchmarks. The filter excludes the example's real-GPU case.
 - [x] `cargo build --release --locked` and Inno Setup compilation of `installer/athena.iss`
@@ -36,16 +38,18 @@ Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
 
 | Test target | Passed | Failed | Ignored | Measured | Filtered out | Time |
 |---|---:|---:|---:|---:|---:|---:|
-| Library | 743 | 0 | 4 | 0 | 0 | 66.58 s |
+| Library | 753 | 0 | 4 | 0 | 0 | 50.32 s |
 | Main executable | 0 | 0 | 0 | 0 | 0 | 0.00 s |
 | `design_assets` | 1 | 0 | 0 | 0 | 0 | 0.00 s |
 | `fonts` | 5 | 0 | 0 | 0 | 0 | 0.01 s |
-| `no_transactions_table` | 2 | 0 | 0 | 0 | 0 | 0.10 s |
+| `no_transactions_table` | 2 | 0 | 0 | 0 | 0 | 0.09 s |
 | `packaging_metadata` | 2 | 0 | 0 | 0 | 0 | 0.00 s |
-| `glass_spike` example | 9 | 0 | 0 | 0 | 1 | 0.28 s |
+| `glass_spike` example | 9 | 0 | 0 | 0 | 1 | 0.30 s |
 
 - [x] The UI regression observed no preference repaint deadline in a settled focused frame.
-  The worker test verified changed-sample notification and suspension while hidden. The native
+  The worker tests verified changed-sample notification, suspension while hidden, focus-regain
+  reads on the worker, a provider read that blocks without blocking `current()` or
+  `update_window()`, and a read that finishes after stop being discarded. The native
   five-second idle gate remains open.
 - [x] Synthetic upgrades from every schema 1–6 reached schema 7. The file-backed 5/6
   regressions preserved appearance and existing goal contributions. Restore upgraded a schema-1
@@ -69,10 +73,24 @@ Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
   with `athena.portable` and both license notices. With `WGPU_BACKEND=dx12` it used the Microsoft
   Basic Render Driver and closed with exit code 0. The portable database reported schema 7,
   `PRAGMA integrity_check` returned `ok`, and `PRAGMA foreign_key_check` returned no rows.
-- On the GeForce GT 340 machine, shutdown was intermittent with default renderer selection
-  and with `WGPU_BACKEND=gl`. In failed trials the window became unresponsive after `WM_CLOSE`
-  and the harness stopped the process. The default selection also timed out in a matched trial
-  of a release build from `4bfa8bd`. The cause remains open.
+- On the GeForce GT 340 machine, the previous record found shutdown intermittent with default
+  renderer selection and with `WGPU_BACKEND=gl`: the window became unresponsive after `WM_CLOSE`
+  and the harness stopped the process. It also timed out in a matched trial of a release build
+  from `4bfa8bd`.
+- Cause and fix. egui's default wgpu setup allows `PRIMARY | GL`. On this pre-feature-level-11
+  GPU, DX12 resolves to the Microsoft software adapter (`DeviceType::Cpu`), which wgpu ranks below
+  the WGL adapter, so the default window ran on WGL. Athena now builds the wgpu options with
+  `WGPU_BACKEND` when set and `PRIMARY` (no GL) otherwise (`renderer_backends` in `src/lib.rs`),
+  and `on_exit` stops and joins the platform watcher and the media worker and drops the wallpaper
+  textures before the renderer is torn down (`AthenaApp::shutdown`). `run_and_return` was left at
+  its default so the instance lock and log guard still drop on return.
+- Re-measured on 2026-11-23 with the rebuilt `target/release/athena.exe` (SHA-256 above), copied
+  into a disposable directory with `athena.portable`, on the GeForce GT 340 machine, with no
+  `WGPU_BACKEND` set: 10 launches, each waited for a window and four more seconds, confirmed the
+  window responding, then sent `WM_CLOSE` (`CloseMainWindow`). All 10 exited with code 0 in
+  264 to 1,704 ms (nine in 264 to 440 ms). With `WGPU_BACKEND=gl` set, 3 of 3 launches also
+  exited 0 in 178 to 378 ms. Ten and three trials are a measurement, not proof that the
+  intermittent hang is gone; the supported-hardware shutdown check below stays open.
 
 ## Snapshot review
 
@@ -112,7 +130,7 @@ Rust 1.95.0 and the CI-pinned, SHA-256-verified Inno Setup 6.7.3 compiler.
 - [ ] Run installer install, launch, and uninstall on a clean Windows machine. Launch the portable
   executable with `athena.portable` and verify both distributions include the Lucide and Polaris
   notices.
-- [ ] Investigate the intermittent default-renderer shutdown timeout and verify normal shutdown
-  on the supported Windows hardware.
+- [ ] Verify normal default-renderer shutdown on the supported Windows hardware beyond the 10
+  trials recorded above, and with the installed build, including a wallpaper and an open modal.
 - [ ] Carry forward outstanding interactive checks from the [1.1 record](smoke-1.1.md), the
   [1.2 record](smoke-1.2.md), and the [1.3 record](smoke-1.3.md).

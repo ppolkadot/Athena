@@ -7,6 +7,7 @@ use egui_kittest::kittest::Queryable;
 
 use super::actions::{AppAction, AppearanceApply};
 use super::navigation::Screen;
+use super::ui_state::GoalFocus;
 use super::{AppCore, AthenaApp};
 use crate::domain::appearance::{AppearancePrefs, MotionPref, TextScale};
 use crate::domain::goal::{
@@ -381,6 +382,62 @@ fn narrow_widths_drill_in_and_back_out() {
     h.run_steps(4);
     assert_eq!(h.state().core.ui.goals.selected, None);
     assert!(h.query_by_label("Back to goals").is_none());
+}
+
+/// Back from a drill-in that never drew the list (narrow width, created from an empty tab) must
+/// still land on the list heading: the visible ids track the store, not the last painted list.
+#[test]
+fn narrow_back_after_creating_the_first_goal_restores_list_heading_focus() {
+    let mut h = harness_sized(core(), egui::Vec2::new(640.0, 410.0));
+    open_goals(&mut h);
+    assert!(h.state().core.ui.goals.visible.is_empty());
+    let id = create(&mut h.state_mut().core, "Trip", 100_000);
+    h.run_steps(4);
+    assert!(h.query_by_label("Back to goals").is_some(), "drilled in");
+    assert_eq!(h.state().core.ui.goals.visible, vec![id]);
+    h.get_by_label("Back to goals").click();
+    h.run_steps(4);
+    assert_eq!(h.state().core.ui.goals.selected, None);
+    assert!(focused(&h, crate::ui::screens::goals::heading_id()));
+}
+
+/// Pause, Complete and Archive from the narrow drill-in select the next valid goal in the list.
+#[test]
+fn narrow_drilled_in_lifecycle_changes_move_focus_to_the_next_valid_goal() {
+    for transition in [
+        GoalTransition::Pause,
+        GoalTransition::Complete,
+        GoalTransition::Archive,
+    ] {
+        let mut core = core();
+        let older = create(&mut core, "Trip", 100_000);
+        let newer = create(&mut core, "Car", 500_000);
+        let mut h = harness_sized(core, egui::Vec2::new(640.0, 410.0));
+        open_goals(&mut h);
+        h.run_steps(3);
+        assert_eq!(h.state().core.ui.goals.selected, Some(newer));
+        assert!(h.query_by_label("Back to goals").is_some(), "drilled in");
+        // The list is never drawn, yet the visible ids already list both goals, newest first.
+        assert_eq!(h.state().core.ui.goals.visible, vec![newer, older]);
+
+        h.state_mut()
+            .core
+            .apply(AppAction::ChangeGoalStatus(newer, transition))
+            .unwrap();
+        let goals = &h.state().core.ui.goals;
+        assert_eq!(goals.selected, None, "{transition:?}");
+        assert_eq!(
+            goals.pending_focus,
+            Some(GoalFocus::Row(older)),
+            "{transition:?}"
+        );
+        assert_eq!(goals.visible, vec![older], "{transition:?}");
+        h.run_steps(4);
+        assert!(
+            h.query_by_label("Back to goals").is_none(),
+            "{transition:?}"
+        );
+    }
 }
 
 #[test]

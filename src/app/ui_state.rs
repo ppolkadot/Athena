@@ -69,30 +69,44 @@ impl GoalsState {
 
     /// Drop a selection that is missing or no longer in the filtered list, moving focus to the next
     /// valid row (else the list heading). Returns whether the selection changed.
+    ///
+    /// Also refreshes `visible` from `goals`, so it is current after every store change even when
+    /// the list is not drawn (the narrow drill-in) and the next valid row can be found.
     pub fn reconcile(&mut self, goals: &[GoalListItem]) -> bool {
-        let Some(selected) = self.selected else {
-            return false;
-        };
-        let in_list = |id: i64| {
-            goals
+        let fresh: Vec<i64> = filtered_goals(goals, self.filter)
+            .iter()
+            .map(|g| g.goal.id)
+            .collect();
+        let mut changed = false;
+        if let Some(selected) = self.selected
+            && !fresh.contains(&selected)
+        {
+            let next = self
+                .visible
                 .iter()
-                .any(|g| g.goal.id == id && g.goal.status == self.filter)
-        };
-        if in_list(selected) {
-            return false;
+                .position(|id| *id == selected)
+                .and_then(|at| {
+                    self.visible[at + 1..]
+                        .iter()
+                        .chain(self.visible[..at].iter().rev())
+                        .copied()
+                        .find(|id| fresh.contains(id))
+                });
+            self.selected = None;
+            self.pending_focus = Some(next.map_or(GoalFocus::ListHeading, GoalFocus::Row));
+            changed = true;
         }
-        let position = self.visible.iter().position(|id| *id == selected);
-        let next = position.and_then(|at| {
-            self.visible[at + 1..]
-                .iter()
-                .chain(self.visible[..at].iter().rev())
-                .copied()
-                .find(|id| in_list(*id))
-        });
-        self.selected = None;
-        self.pending_focus = Some(next.map_or(GoalFocus::ListHeading, GoalFocus::Row));
-        true
+        self.visible = fresh;
+        changed
     }
+}
+
+/// The goals the list shows for a lifecycle tab, newest first.
+#[must_use]
+pub fn filtered_goals(goals: &[GoalListItem], filter: GoalStatus) -> Vec<&GoalListItem> {
+    let mut items: Vec<&GoalListItem> = goals.iter().filter(|g| g.goal.status == filter).collect();
+    items.sort_by_key(|g| std::cmp::Reverse(g.goal.id));
+    items
 }
 
 #[derive(Debug, Clone)]

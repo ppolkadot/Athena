@@ -305,6 +305,62 @@ fn the_saved_expense_opens_only_while_live_and_keeps_a_fallback_otherwise() {
     assert!(h.query_by_label_contains("Sofa").is_some());
 }
 
+/// A purge nulls the saved link in `SQLite` (`ON DELETE SET NULL`); the cached closing follows at once.
+#[test]
+fn purging_or_emptying_trash_clears_the_cached_largest_expense_link() {
+    for empty_all in [false, true] {
+        let mut core = core_in(Language::En);
+        save(&mut core, date(2026, 10, 5), 90_000, "Sofa");
+        save(&mut core, date(2026, 10, 6), 1_000, "Pen");
+        core.apply(AppAction::CloseMonth(oct())).unwrap();
+        let sofa = core
+            .vm
+            .transactions
+            .iter()
+            .find(|t| t.title == "Sofa")
+            .map(|t| t.id)
+            .or_else(|| {
+                closings_repo::get(core.store.db().conn(), oct())
+                    .unwrap()
+                    .and_then(|c| c.largest_expense)
+                    .and_then(|e| e.id)
+            })
+            .unwrap();
+        let saved = core.vm.closings[&oct()].largest_expense.clone().unwrap();
+        assert_eq!(saved.id, Some(sofa));
+        assert!(core.vm.closing_live_expense.contains(&oct()));
+
+        core.apply(AppAction::DeleteTransaction(sofa)).unwrap();
+        // In Trash the entry still exists: the link and its fallback both stay.
+        assert_eq!(
+            core.vm.closings[&oct()]
+                .largest_expense
+                .as_ref()
+                .unwrap()
+                .id,
+            Some(sofa)
+        );
+        assert!(!core.vm.closing_live_expense.contains(&oct()));
+
+        core.apply(if empty_all {
+            AppAction::EmptyTrash
+        } else {
+            AppAction::PurgeTransaction(sofa)
+        })
+        .unwrap();
+        let cached = core.vm.closings[&oct()].largest_expense.clone().unwrap();
+        assert_eq!(cached.id, None, "empty_all={empty_all}");
+        assert_eq!(cached.title, saved.title);
+        assert_eq!(cached.amount, saved.amount);
+        let stored = closings_repo::get(core.store.db().conn(), oct())
+            .unwrap()
+            .unwrap();
+        assert_eq!(core.vm.closings[&oct()], stored, "cache equals SQLite");
+        assert!(!core.vm.closing_live_expense.contains(&oct()));
+        assert_eq!(integrity::check(core.store.db().conn()).unwrap(), vec![]);
+    }
+}
+
 #[test]
 fn the_closing_flow_is_localized_in_portuguese() {
     let _reset = theme::active::ResetOnDrop;

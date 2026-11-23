@@ -367,3 +367,31 @@ fn a_paused_wallpaper_asks_for_no_further_frames() {
         Some(Duration::ZERO)
     );
 }
+
+/// Closing the window must release the textures and join the workers before the renderer drops.
+#[test]
+fn shutdown_releases_wallpaper_textures_and_workers_and_is_repeatable() {
+    let mut rig = rig(
+        solid_png([255, 0, 0]),
+        |wallpaper| AppearancePrefs {
+            wallpaper,
+            motion: MotionPref::Full,
+            ..AppearancePrefs::default()
+        },
+        egui::Vec2::new(900.0, 640.0),
+        1.0,
+    );
+    assert_eq!(
+        rig.app().wallpaper.as_ref().unwrap().live_textures(),
+        1,
+        "the wallpaper is bound before shutdown"
+    );
+    rig.harness.state_mut().shutdown();
+    assert!(
+        rig.app().wallpaper.is_none(),
+        "runtime and textures dropped"
+    );
+    rig.harness.state_mut().shutdown();
+    // A frame after shutdown must not panic or rebuild anything that blocks.
+    rig.harness.run_steps(1);
+}

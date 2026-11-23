@@ -42,11 +42,13 @@ Verified on Windows 11 Pro with Rust 1.95.0:
 - `bash docs/superpowers/doc-lint.sh`: clean
 - `cargo fmt --check`: clean
 - `cargo clippy --all-targets --locked -- -D warnings`: clean
-- `cargo test --locked --all-targets -- --skip real_wgpu_`: **762 passed, 0 failed, 4 ignored, 1 filtered out** (`743` library, `1` `design_assets`, `5` `fonts`, `2` `no_transactions_table`, `2` `packaging_metadata`, `9` `glass_spike`)
+- `cargo test --locked --all-targets -- --skip real_wgpu_`: **772 passed, 0 failed, 4 ignored, 1 filtered out** (`753` library, `1` `design_assets`, `5` `fonts`, `2` `no_transactions_table`, `2` `packaging_metadata`, `9` `glass_spike`)
 - `cargo build --release --locked` and local Inno Setup 6.7.3 compilation passed. The [1.4 smoke record](smoke-1.4.md#local-release-candidate) lists the local portable, installer and license hashes.
 - The local portable build reached a responsive window and created a clean schema-7 database.
-  Shutdown passed with the Microsoft software DX12 renderer. Default-renderer timeouts also
-  reproduced on the baseline build on this machine. See the [portable smoke record](smoke-1.4.md#local-portable-smoke).
+  Default renderer selection now excludes OpenGL unless `WGPU_BACKEND` asks for it, and exit stops
+  the background workers and frees the wallpaper textures first. On the GeForce GT 340 machine,
+  10 of 10 default-renderer `WM_CLOSE` trials exited 0 (264 to 1,704 ms). See the
+  [portable smoke record](smoke-1.4.md#local-portable-smoke).
 - `git diff --check`: clean
 
 ## Open Release & Manual Gates
